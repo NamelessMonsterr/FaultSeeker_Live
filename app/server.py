@@ -189,6 +189,24 @@ if os.path.isdir(REPO):
 
 CHAINS = ["eth", "bsc", "polygon", "arbitrum", "optimism", "avalanche", "base",
           "fantom", "zksync", "linea", "scroll", "gnosis", "celo", "cronos", "moonbeam", "aurora"]
+# Demo presets: documented Ethereum mainnet exploits, each verified on-chain
+# (receipt status 0x1 + QuickNode callTracer) on 2026-10-22. calls = internal
+# callTracer call count (kept small so live demos finish fast).
+PRESET_TXS = [
+    {"hash": "0x2606d459a50ca4920722a111745c2eeced1d8a01ff25ee762e22d5d4b1595739", "protocol": "Hedgey Finance", "date": "2024-04-19", "loss": "~$48M", "calls": 5},
+    {"hash": "0x23fcf9d4517f7cc39815b09b0a80c023ab2c8196c826c93b4100f2e26b701286", "protocol": "Seneca", "date": "2024-02-28", "loss": "~$6M", "calls": 3},
+    {"hash": "0x0b062361e16a2ea0942cc1b4462b6584208c8c864609ff73aaa640aaa2d92428", "protocol": "DODO", "date": "2021-03-08", "loss": "~$3.8M", "calls": 28},
+    {"hash": "0x8c3f442fc6d640a6ff3ea0b12be64f1d4609ea94edd2966f42c01cd9bdcf04b5", "protocol": "TempleDAO", "date": "2022-10-11", "loss": "~$2.3M", "calls": 7},
+    {"hash": "0xdd0636e2598f4d7b74f364fedb38f334365fd956747a04a6dd597444af0bc1c0", "protocol": "Unizen", "date": "2024-03-08", "loss": "~$2M", "calls": 10},
+    {"hash": "0x138daa4cbeaa3db42eefcec26e234fc2c89a4aa17d6b1870fc460b2856fd11a6", "protocol": "Dexible", "date": "2023-02-17", "loss": "~$1.5M", "calls": 38},
+    {"hash": "0x3c09c6306b67737227edc24c663462d870e7c2bf39e9ab66877a980c900dd5d5", "protocol": "Audius", "date": "2022-07-23", "loss": "704 ETH (~$1.08M)", "calls": 11},
+    {"hash": "0x256979ae169abb7fbbbbc14188742f4b9debf48b48ad5b5207cadcc99ccb493b", "protocol": "Morpho Blue", "date": "2024-10-13", "loss": "~$230k", "calls": 32},
+    {"hash": "0x3ed75df83d907412af874b7998d911fdf990704da87c2b1a8cf95ca5d21504cf", "protocol": "OlympusDAO", "date": "2022-10-21", "loss": "~$292k", "calls": 7},
+    {"hash": "0x90b468608fbcc7faef46502b198471311baca3baab49242a4a85b73d4924379b", "protocol": "CowSwap", "date": "2023-02-07", "loss": "~$120k", "calls": 7},
+    {"hash": "0x35a73969f582872c25c96c48d8bb31c23eab8a49c19282c67509b96186734e60", "protocol": "ParaSwap", "date": "2024-03-19", "loss": "~$24k", "calls": 12},
+]
+
+
 MODELS = [
     {"id": "gpt-6.1-sol-low", "label": "GPT-6.1 Sol low (Codex)", "keyEnv": "OPENAI_API_KEY"},
     {"id": "gpt-6.1-sol-medium", "label": "GPT-6.1 Sol medium (Codex)", "keyEnv": "OPENAI_API_KEY"},
@@ -867,7 +885,8 @@ async def capture():
 
 @app.get("/api/config")
 async def config():
-    return {"chains": CHAINS, "models": MODELS, "repo_present": os.path.isdir(REPO)}
+    return {"chains": CHAINS, "models": MODELS, "repo_present": os.path.isdir(REPO),
+            "preset_txs": PRESET_TXS}
 
 
 web = os.path.normpath(os.path.join(HERE, "web"))

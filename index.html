@@ -3,6 +3,31 @@
   <head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>FaultSeeker // Forensic Console</title>  <script type="module" crossorigin src="./assets/index-B9Da4QyI.js?v=2"></script>
   <link rel="stylesheet" crossorigin href="./assets/index-ut3zQWOW.css?v=2">
+  <script>
+(function(){
+  var DL_ID='fs-tx-presets';
+  function build(items){
+    if(document.getElementById(DL_ID)) return;
+    var dl=document.createElement('datalist'); dl.id=DL_ID;
+    items.forEach(function(p){
+      var o=document.createElement('option');
+      o.value=p.hash;
+      o.label=p.protocol+' - '+p.date+' - '+p.loss+' ('+p.calls+' calls, ETH)';
+      dl.appendChild(o);
+    });
+    document.body.appendChild(dl);
+  }
+  function attach(){
+    var inp=document.querySelector('input[placeholder^="0x"]');
+    if(inp && inp.getAttribute('list')!==DL_ID) inp.setAttribute('list',DL_ID);
+  }
+  fetch('/api/config').then(function(r){return r.json()}).then(function(c){
+    if(!c.preset_txs) return;
+    build(c.preset_txs); attach();
+    new MutationObserver(attach).observe(document.body,{childList:true,subtree:true});
+  }).catch(function(){});
+})();
+  </script>
 </head>
   <body><div id="root"></div></body>
 </html>
