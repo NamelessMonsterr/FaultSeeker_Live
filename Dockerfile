@@ -14,8 +14,12 @@ RUN curl -fsSL https://github.com/foundry-rs/foundry/releases/download/stable/fo
 # FaultSeeker pipeline source: the user's own fork (public repo, no secrets).
 # Pinned to the console-demo-compat branch until that PR merges into main.
 ARG FAULTSEEKER_REPO=https://github.com/NamelessMonsterr/FaultSeeker-.git
-ARG FAULTSEEKER_REF=c16c45c4bb8601ea5cfa77d2f1dd0e6193a852aa
-RUN git clone --depth 1 --branch "$FAULTSEEKER_REF" "$FAULTSEEKER_REPO" /srv/FaultSeeker-
+ARG FAULTSEEKER_REF=console-demo-compat
+# Bump this SHA to the fork commit to deploy: the changed ARG value invalidates
+# the Docker layer cache so the clone below re-runs (clone --branch needs a
+# branch/tag name, not a raw SHA).
+ARG FAULTSEEKER_SHA=c16c45c4bb8601ea5cfa77d2f1dd0e6193a852aa
+RUN echo "deploying fork commit $FAULTSEEKER_SHA"  && git clone --depth 1 --branch "$FAULTSEEKER_REF" "$FAULTSEEKER_REPO" /srv/FaultSeeker-
 
 RUN pip install -r /srv/FaultSeeker-/requirements.txt
 COPY app/requirements-app.txt app/requirements-app.txt
