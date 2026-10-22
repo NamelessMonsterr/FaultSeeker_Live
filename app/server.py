@@ -304,6 +304,14 @@ def worker(run_id, req, q):
             env_set.append(var)
 
         mode = req.get("mode", "no-llm")
+        # Groq's free tier caps output tokens/min hard; parallel Stage 2 workers
+        # blow through it together. Serialize unless the caller overrides.
+        _groqish = (req.get("mode") or "").startswith(("qwen/", "openai/gpt-oss", "allam-", "llama-"))
+        s2w = str(req.get("stage2_workers") or ("1" if _groqish else "")).strip()
+        if s2w:
+            env_prior["FAULTSEEKER_STAGE2_WORKERS"] = os.environ.get("FAULTSEEKER_STAGE2_WORKERS")
+            os.environ["FAULTSEEKER_STAGE2_WORKERS"] = s2w
+            env_set.append("FAULTSEEKER_STAGE2_WORKERS")
         fb_model = (req.get("fallback_model") or "").strip()
         if fb_model:
             env_prior["FAULTSEEKER_LLM_FALLBACK_MODEL"] = os.environ.get("FAULTSEEKER_LLM_FALLBACK_MODEL")
