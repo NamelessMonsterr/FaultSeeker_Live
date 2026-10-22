@@ -212,7 +212,7 @@ def rpc_selftest(chain: str = "eth", mode: str = "calltracer"):
 
 
 @app.get("/api/llm-selftest")
-def llm_selftest(model: str = "gemini-2.0-flash"):
+def llm_selftest(model: str = "gemini-3.8-flash", max_keys: int = 2):
     """Gated diagnostic: one real 8-token LLM call per configured key.
 
     Reports per-key ok/error (type + first chars) - never returns key material.
@@ -231,7 +231,7 @@ def llm_selftest(model: str = "gemini-2.0-flash"):
         if model.startswith(prefix):
             base_url = cfg[0]
             break
-    for i, k in enumerate(keys):
+    for i, k in enumerate(keys[:max(1, max_keys)]):
         try:
             client = _oai.OpenAI(api_key=k, base_url=base_url, timeout=30)
             r = client.chat.completions.create(
@@ -260,6 +260,14 @@ def sse(ev, data):
 def worker(run_id, req, q):
     """Runs in a child process: events go to the parent via q (mp.Queue), the
     result is delivered ONLY through the JSON file in RUNS_DIR."""
+    # Fork inherits uvicorn's SIGTERM/SIGINT handlers, which would swallow
+    # terminate()/cancel: restore default disposition so the watchdog works.
+    import signal
+    for _sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(_sig, signal.SIG_DFL)
+        except (OSError, ValueError):
+            pass
     env_set = []
     env_prior = {}
 
