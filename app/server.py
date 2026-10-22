@@ -1131,7 +1131,7 @@ def _adapt_result_for_view(res):
         "query_records": items(res.get("query_records")),
         "classification": {
             "rule_verdict": "INCONCLUSIVE" if res.get("analysis_status") in ("cancelled", "cancelling", "error", "died", "timeout", "stopped", "inconclusive", "interrupted") else (res.get("rule_verdict") if res.get("rule_verdict") in ("CONFIRMED", "EXPLOIT", "CLEAN", "SUSPECT", "INCONCLUSIVE") else ("SUSPECT" if cards or scored else "INCONCLUSIVE")),
-            "rule_confidence": number(res.get("rule_confidence")),
+            "rule_confidence": number(res["rule_confidence"]) if isinstance(res.get("rule_confidence"), (int, float)) and not isinstance(res.get("rule_confidence"), bool) else None,
             "matched_rule": ("evidence card: " + str(obj(cards[0].get("function_signature")).get("function", "?"))) if cards else "none",
             "vuln_type_hint": hint,
             "priority_score": number(res.get("priority_score")),
