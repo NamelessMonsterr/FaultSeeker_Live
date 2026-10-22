@@ -156,7 +156,12 @@ def rpc_selftest(chain: str = "eth"):
     """
     import faultseeker.utils.rpc_provider as rp
 
-    probe_tx = "0x0788ba222970c7c68a738b0e08fb197e669e61f9b226ceec4cab9b85abe8cceb"
+    # eth: a real tx exercises the full trace path; other chains: a dummy hash
+    # still separates "method disabled" (provider rejects the call) from
+    # "tx not found" (method available).
+    probe_tx = ("0x0788ba222970c7c68a738b0e08fb197e669e61f9b226ceec4cab9b85abe8cceb"
+                if chain == "eth" else
+                "0x0000000000000000000000000000000000000000000000000000000000000001")
     out = []
     for prov in rp._registry._providers(chain):
         host = re.sub(r"(https?://[^/\s]+).*", r"\1", prov.url)
