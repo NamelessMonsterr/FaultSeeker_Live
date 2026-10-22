@@ -14,7 +14,7 @@ RUN curl -fsSL https://github.com/foundry-rs/foundry/releases/download/stable/fo
 # FaultSeeker pipeline source: the user's own fork (public repo, no secrets).
 # Pinned to the console-demo-compat branch until that PR merges into main.
 ARG FAULTSEEKER_REPO=https://github.com/NamelessMonsterr/FaultSeeker-.git
-ARG FAULTSEEKER_REF=console-demo-compat
+ARG FAULTSEEKER_REF=c16c45c4bb8601ea5cfa77d2f1dd0e6193a852aa
 RUN git clone --depth 1 --branch "$FAULTSEEKER_REF" "$FAULTSEEKER_REPO" /srv/FaultSeeker-
 
 RUN pip install -r /srv/FaultSeeker-/requirements.txt
