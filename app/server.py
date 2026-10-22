@@ -168,6 +168,16 @@ def _gh_hist_seed():
                     f.write(ev)
             except OSError:
                 pass
+        blob = _gh_hist_get("runs/%s.json" % rid)
+        if blob:
+            try:
+                payload = json.loads(blob.decode())
+                res = payload.get("result") if isinstance(payload, dict) else None
+                if isinstance(res, dict):
+                    with open(os.path.join(RUNS_DIR, rid + ".json"), "w", encoding="utf-8") as f:
+                        json.dump(res, f)
+            except (ValueError, UnicodeDecodeError, OSError):
+                pass
 
 
 def _hist_log_event(run_id, ev, data):
