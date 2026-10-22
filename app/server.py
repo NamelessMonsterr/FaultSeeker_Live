@@ -338,16 +338,33 @@ def worker(run_id, req, q):
             if entry["keyEnv"] not in env_set:
                 env_prior[entry["keyEnv"]] = os.environ.get(entry["keyEnv"])
                 env_set.append(entry["keyEnv"])
+            # Optional per-stage split: a different model (and key) for Stage 1.
+            forensics = (req.get("forensics_model") or "").strip() or mode
+            f_entry = next((m for m in MODELS if m["id"] == forensics), None)
+            if not f_entry or not f_entry.get("keyEnv"):
+                raise ValueError(f"unknown forensics model {forensics}")
+            f_key = (req.get("forensics_model_key") or "").strip()
+            if f_key:
+                f_keys = [k.strip().strip('"').strip("'") for k in re.sub(r"[\s,;]+", " ", f_key).split() if k.strip()]
+            else:
+                f_keys = _key_list(f_entry["keyEnv"])
+            if not f_keys:
+                raise ValueError(f"forensics model {forensics} needs an API key")
+            if f_entry["keyEnv"] not in env_set:
+                env_prior[f_entry["keyEnv"]] = os.environ.get(f_entry["keyEnv"])
+                env_set.append(f_entry["keyEnv"])
+            os.environ[f_entry["keyEnv"]] = "\n".join(f_keys)
             if len(keys) > 1:
                 os.environ[entry["keyEnv"]] = "\n".join(keys)
             for ki, one_key in enumerate(keys):
                 if len(keys) == 1:
                     os.environ[entry["keyEnv"]] = one_key
                 which = f" (key {ki + 1}/{len(keys)})" if len(keys) > 1 else ""
-                q.put(("log", f"mode: full pipeline Stage 1-3 with {mode}{which} (cost tracking on)"))
+                split_note = f", Stage 1 on {forensics}" if forensics != mode else ""
+                q.put(("log", f"mode: full pipeline Stage 1-3 with {mode}{which}{split_note} (cost tracking on)"))
                 try:
                     result = fs_main(txn_hash=req["txn_hash"], chain=req["chain"],
-                                     forensics_model=mode, function_analysis_model=mode,
+                                     forensics_model=forensics, function_analysis_model=mode,
                                      track_cost=True, output_path=out_path)
                     break
                 except Exception as key_err:  # noqa: BLE001 - rotate fallback keys on auth/quota failures
