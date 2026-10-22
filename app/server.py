@@ -50,7 +50,11 @@ def _key_list(env_name):
         if not tok:
             continue
         if "=" in tok:
-            _, _, tok = tok.partition("=")
+            name, _, tok = tok.partition("=")
+            # .env dumps often carry sibling config lines (XAI_MODEL=,
+            # XAI_BASE_URL=, ...); only *_API_KEY* assignments are keys.
+            if "API_KEY" not in name:
+                continue
         tok = tok.strip()
         if tok:
             keys.append(tok)
