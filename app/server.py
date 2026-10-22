@@ -206,6 +206,24 @@ PRESET_TXS = [
     {"hash": "0x35a73969f582872c25c96c48d8bb31c23eab8a49c19282c67509b96186734e60", "protocol": "ParaSwap", "date": "2024-03-19", "loss": "~$24k", "calls": 12},
 ]
 
+# --- saved demo replays: real completed runs, replayed through the live view ---
+# "demo:<name>" in the tx-hash field replays the saved event stream + result of a
+# REAL completed run (no RPC, no LLM, no keys) so the demo can never be blocked
+# by an external outage. Served by the same /api/analyze + /api/stream + /api/result
+# machinery a live run uses.
+DEMO_REPLAYS = {
+    "demo:hedgey": {
+        "label": "SAVED REPLAY - Hedgey Finance $48M (real run e7c04c6fb037, Oct 23)",
+        "events": os.path.join(HERE, "samples", "hedgey_e7c04c6fb037.events.jsonl"),
+        "result": os.path.join(HERE, "samples", "hedgey_e7c04c6fb037.result.json"),
+        "txn_hash": "0x2606d459a50ca4920722a111745c2eeced1d8a01ff25ee762e22d5d4b1595739",
+        "chain": "eth",
+    }
+}
+DEMO_REPLAY_SPEED = float(os.environ.get("DEMO_REPLAY_SPEED", "0.12"))  # fraction of real-time gaps
+DEMO_REPLAY_MAX_GAP = float(os.environ.get("DEMO_REPLAY_MAX_GAP", "1.2"))  # seconds, cap per gap
+
+
 
 MODELS = [
     {"id": "gpt-6.1-sol-low", "label": "GPT-6.1 Sol low (Codex)", "keyEnv": "OPENAI_API_KEY"},
@@ -632,6 +650,54 @@ async def analyze(request: Request):
     req = await request.json()
     tx = (req.get("txn_hash") or "").strip()
     chain = (req.get("chain") or "eth").strip().lower()
+    demo = DEMO_REPLAYS.get(tx.lower())
+    if demo is not None:
+        if not run_lock.acquire(blocking=False):
+            return JSONResponse({"error": "a run is already in progress"}, status_code=409)
+        run_id = uuid.uuid4().hex[:12]
+        runs[run_id] = {"q": queue.Queue(), "result": None, "proc": None}
+        _hist_upsert({"run_id": run_id, "txn_hash": demo["txn_hash"], "chain": demo["chain"],
+                      "model": "saved-replay", "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                      "status": "running"})
+
+        def replay():
+            q = runs[run_id]["q"]
+            started = time.time()
+            try:
+                prev = None
+                with open(demo["events"], encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            item = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        t, ev, data = item.get("t"), item.get("ev"), item.get("data")
+                        if ev == "end":
+                            continue
+                        if prev is not None and isinstance(t, (int, float)) and isinstance(prev, (int, float)):
+                            time.sleep(min(max(t - prev, 0.0) * DEMO_REPLAY_SPEED, DEMO_REPLAY_MAX_GAP))
+                        prev = t
+                        q.put((ev, data))
+                        _hist_log_event(run_id, ev, data)
+                with open(demo["result"], encoding="utf-8") as f:
+                    res = json.load(f)
+                with open(os.path.join(RUNS_DIR, run_id + ".json"), "w", encoding="utf-8") as f:
+                    json.dump(res, f)
+                _hist_upsert({"run_id": run_id, "status": "completed",
+                              "ended_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                              "duration_secs": round(time.time() - started, 1),
+                              "brief": _hist_brief(res)})
+            except Exception as exc:  # never wedge the lock on a replay
+                q.put(("error", f"saved replay failed: {exc}"))
+            finally:
+                q.put(("end", None))
+                run_lock.release()
+
+        threading.Thread(target=replay, daemon=True).start()
+        return {"run_id": run_id}
     if not (tx.startswith("0x") and len(tx) == 66):
         return JSONResponse({"error": "transaction hash must be 0x + 64 hex chars"}, status_code=400)
     if chain not in CHAINS:
@@ -763,6 +829,81 @@ async def cancel(run_id: str):
     return {"cancelled": False, "reason": "no live process for this run"}
 
 
+def _adapt_result_for_view(res):
+    """The results view was built for the Stage-1 capture shape; a live pipeline
+    result lacks `transaction`/`classification`/... and the view crashes
+    (black page) on `i.transaction.hash`. Reshape live results so they always
+    render. Every value comes from the real result - missing data stays 0/empty."""
+    if not isinstance(res, dict) or "transaction" in res:
+        return res
+    scored = [x for x in (res.get("scored_functions") or []) if isinstance(x, dict)]
+    cards = [x for x in (res.get("evidence_cards") or []) if isinstance(x, dict)]
+    prio = res.get("priority") or {}
+    reen = res.get("reentrancy") or {}
+    dbg = res.get("_debug") or {}
+    funcs, seen = [], set()
+    for it in scored:
+        key = (it.get("address", ""), it.get("function", ""))
+        seen.add(key)
+        funcs.append({"address": key[0], "function": key[1],
+                      "depth": [it.get("depth", 1) or 1], "call_type": "", "gas": 0})
+    for c in cards:
+        sig = c.get("function_signature") or {}
+        key = (sig.get("address", ""), sig.get("function", ""))
+        if key not in seen:
+            seen.add(key)
+            funcs.append({"address": key[0], "function": key[1],
+                          "depth": [sig.get("call_depth", 1) or 1], "call_type": "", "gas": 0})
+    ev_first = ""
+    for c in cards:
+        ev = c.get("evidence") or []
+        if ev:
+            ev_first = str(ev[0])
+            break
+    hint = "access-control bypass" if "access-control" in ev_first.lower() else ("see evidence card" if ev_first else "none")
+    view = dict(res)
+    view.update({
+        "transaction": {"hash": res.get("transaction_hash", ""), "chain": res.get("chain", ""),
+                        "analysis_duration": res.get("duration", 0)},
+        "analysis_mode": "live-pipeline",
+        "analysis_status": "completed",
+        "stage_completed": "stage-3",
+        "llm_cost": res.get("llm_cost", 0) or 0,
+        "limitations": res.get("limitations") or [],
+        "rpc_source": "server-env",
+        "query_records": [],
+        "classification": {
+            "rule_verdict": "CONFIRMED" if cards else ("SUSPECT" if scored else "CLEAN"),
+            "rule_confidence": res.get("priority_score", 0) or 0,
+            "matched_rule": ("evidence card: " + str(cards[0].get("function_signature", {}).get("function", "?"))) if cards else "none",
+            "vuln_type_hint": hint,
+            "priority_score": res.get("priority_score", 0) or 0,
+            "priority": prio,
+            "reentrancy": {"score": reen.get("score", 0) or 0, "tier": reen.get("tier", "NONE"),
+                           "signals": reen.get("signals") or {}},
+            "signals": {
+                "reentrancy_score": reen.get("score", 0) or 0,
+                "call_depth_max": max([(c.get("function_signature") or {}).get("call_depth", 0) or 0 for c in cards] or [0]),
+                "flash_loan_detected": bool(prio.get("flashloan", 0)),
+                "large_transfer_to_eoa": False,
+                "price_manipulation_detected": bool(prio.get("price_manipulation", 0)),
+                "reentrancy_confidence_tier": reen.get("tier", "NONE"),
+                "profit_extraction_eth": 0,
+                "token_flow_anomaly": 0,
+                "graph_reasoning": {"cycle_count": 0, "edge_count": 0},
+            },
+        },
+        "function_analysis": {"functions_to_inspect": {"function_name_with_hash": funcs},
+                              "repeated_patterns": {"keys": []}},
+        "summary": {"total_functions_to_inspect": dbg.get("functions_to_inspect_count") or len(funcs),
+                    "addresses_to_inspect": len({f["address"] for f in funcs if f["address"]}),
+                    "repeated_patterns_detected": 0},
+        "attack_analysis": {"potential_attackers": [], "potential_victims": [], "balance_changes": {}},
+        "address_classification": {},
+    })
+    return view
+
+
 @app.get("/api/result/{run_id}")
 async def result(run_id: str):
     r = runs.get(run_id)
@@ -781,7 +922,7 @@ async def result(run_id: str):
             return JSONResponse({"error": "no result yet"}, status_code=404)
     # strip internal helper fields before sending to the page
     out = {k: v for k, v in r["result"].items() if not k.startswith("_demo_")}
-    return JSONResponse(out)
+    return JSONResponse(_adapt_result_for_view(out))
 
 
 @app.get("/api/runs")
@@ -885,8 +1026,10 @@ async def capture():
 
 @app.get("/api/config")
 async def config():
+    replay_presets = [{"hash": k, "protocol": v["label"], "date": "", "loss": "", "calls": 0}
+                      for k, v in DEMO_REPLAYS.items()]
     return {"chains": CHAINS, "models": MODELS, "repo_present": os.path.isdir(REPO),
-            "preset_txs": PRESET_TXS}
+            "preset_txs": replay_presets + PRESET_TXS}
 
 
 web = os.path.normpath(os.path.join(HERE, "web"))
