@@ -97,7 +97,7 @@ PORT = int(os.environ.get("PORT", "8420"))
 GATE = os.environ.get("DEMO_GATE_PASSWORD", "").strip()
 RUN_LIMIT_PER_HOUR = int(os.environ.get("DEMO_RUN_LIMIT_PER_HOUR", "10"))
 RUN_LIMIT_PER_DAY = int(os.environ.get("DEMO_RUN_LIMIT_PER_DAY", "40"))
-RUN_TIMEOUT_SECS = int(os.environ.get("DEMO_RUN_TIMEOUT_SECS", "1500"))  # hard wall-clock cap per run
+RUN_TIMEOUT_SECS = int(os.environ.get("DEMO_RUN_TIMEOUT_SECS", "7200"))  # hard wall-clock cap per run
 _runs_by_ip = {}
 
 

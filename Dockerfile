@@ -2,7 +2,7 @@
 FROM python:3.11-slim
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 # Free-tier LLM rate limits (Groq OTPM 1000) can stretch a full run past 25 min.
-ENV DEMO_RUN_TIMEOUT_SECS=3600
+ENV DEMO_RUN_TIMEOUT_SECS=7200
 WORKDIR /srv
 
 RUN apt-get update \
