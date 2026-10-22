@@ -148,6 +148,31 @@ async def gate_submit(request: Request):
     return HTMLResponse(GATE_PAGE.replace("__ERR__", '<div class=err>wrong code</div>'), status_code=401)
 
 
+@app.get("/api/rpc-selftest")
+def rpc_selftest(chain: str = "eth"):
+    """Gated diagnostic: which registered RPC providers can trace from here.
+
+    Hosts only - never returns URLs with embedded keys or provider payloads.
+    """
+    import faultseeker.utils.rpc_provider as rp
+
+    probe_tx = "0x0788ba222970c7c68a738b0e08fb197e669e61f9b226ceec4cab9b85abe8cceb"
+    out = []
+    for prov in rp._registry._providers(chain):
+        host = re.sub(r"(https?://[^/\s]+).*", r"\1", prov.url)
+        try:
+            body = json.dumps({"jsonrpc": "2.0", "method": "debug_traceTransaction",
+                               "params": [probe_tx, {"tracer": "callTracer", "timeout": "60s"}],
+                               "id": 1}).encode()
+            data = rp._http_post(prov.url, body, timeout=30)
+            result = rp._check_rpc_error(data)
+            out.append({"host": host, "ok": bool(result)})
+        except Exception as e:  # noqa: BLE001 - diagnostic reports every failure type
+            out.append({"host": host, "ok": False,
+                        "err": f"{type(e).__name__}: {str(e)[:140]}"})
+    return {"chain": chain, "providers": out}
+
+
 @app.get("/healthz")
 async def healthz():
     return {"ok": True}
