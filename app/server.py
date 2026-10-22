@@ -11,6 +11,8 @@ import re
 import sys
 import threading
 import uuid
+import asyncio
+from urllib.parse import urlsplit, quote
 
 from datetime import datetime, timezone
 
@@ -20,17 +22,19 @@ from fastapi.staticfiles import StaticFiles
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.environ.get("FAULTSEEKER_REPO", os.path.normpath(os.path.join(HERE, "..", "FaultSeeker-")))
-CAPTURE = os.environ.get("FAULTSEEKER_CAPTURE", os.path.join(REPO, "demo_outputs", "eth_0x0788ba22.json"))
-RUNS_DIR = os.path.join(HERE, "runs")
+CAPTURE = os.environ.get("FAULTSEEKER_CAPTURE", os.path.join(HERE, "..", "api", "capture"))
+RUNS_DIR = os.environ.get("FAULTSEEKER_RUNS_DIR", os.path.join(HERE, "runs"))
 os.makedirs(RUNS_DIR, exist_ok=True)
 HISTORY_PATH = os.path.join(RUNS_DIR, "index.json")
+history_lock = threading.RLock()
 
 
 
 def _hist_load():
     try:
         with open(HISTORY_PATH, encoding="utf-8") as f:
-            return json.load(f)
+            entries = json.load(f)
+            return entries if isinstance(entries, list) else []
     except (OSError, json.JSONDecodeError):
         return []
 
@@ -43,14 +47,15 @@ def _hist_save(entries):
 
 
 def _hist_upsert(entry):
-    entries = _hist_load()
-    for i, e in enumerate(entries):
-        if e.get("run_id") == entry.get("run_id"):
-            entries[i] = {**e, **entry}
-            _hist_save(entries)
-            return
-    entries.append(entry)
-    _hist_save(entries)
+    with history_lock:
+        entries = _hist_load()
+        for i, e in enumerate(entries):
+            if e.get("run_id") == entry.get("run_id"):
+                entries[i] = {**e, **_redact(entry)}
+                _hist_save(entries)
+                return
+        entries.append(_redact(entry))
+        _hist_save(entries)
 
 
 def _hist_brief(res):
@@ -188,7 +193,7 @@ def _hist_log_event(run_id, ev, data):
             return  # cap: stop logging a runaway stream
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps({"t": round(time.time(), 1), "ev": ev,
-                                "data": _redact(data) if isinstance(data, str) else data}) + "\n")
+                                "data": _redact(data)}) + "\n")
     except OSError:
         pass
 _gh_hist_seed()
@@ -297,13 +302,25 @@ class RunBus:
     own cursor, so viewers no longer consume each other's events and a page
     reload mid-run resumes the full stream."""
 
-    def __init__(self):
+    def __init__(self, max_events=2000, secrets=()):
         self.events = []
         self.cond = threading.Condition()
+        self.offset = 0
+        self.max_events = max(2, max_events)
+        self.secrets = tuple(secrets)
+        self.closed = False
 
     def put(self, item):
         with self.cond:
-            self.events.append(item)
+            ev, data = item
+            if self.closed:
+                return
+            self.events.append((ev, _redact(data, self.secrets)))
+            self.closed = ev == "end"
+            overflow = len(self.events) - self.max_events
+            if overflow > 0:
+                del self.events[:overflow]
+                self.offset += overflow
             self.cond.notify_all()
 
 
@@ -356,6 +373,8 @@ async def gate_and_limit(request: Request, call_next):
     if GATE:
         cookie = request.cookies.get("fs_gate", "")
         if not hmac.compare_digest(cookie, _gate_token()):
+            if path.startswith("/api/"):
+                return JSONResponse({"error": "Session expired. Sign in again.", "login_url": "/gate"}, status_code=401)
             return RedirectResponse(url="/gate", status_code=303)
     if path in ("/api/llm-selftest", "/api/rpc-selftest"):
         ip = request.client.host if request.client else "unknown"
@@ -449,7 +468,7 @@ def rpc_selftest(chain: str = "eth", mode: str = "calltracer"):
             out.append(entry)
         except Exception as e:  # noqa: BLE001 - diagnostic reports every failure type
             out.append({"host": host, "ok": False,
-                        "err": f"{type(e).__name__}: {str(e)[:140]}"})
+                         "err": _redact(f"{type(e).__name__}: {str(e)[:140]}")})
     return {"chain": chain, "mode": mode, "providers": out}
 
 
@@ -478,9 +497,6 @@ def llm_selftest(model: str = "gemini-3.8-flash", max_keys: int = 1,
     req_keys = [k.strip().strip('"').strip("'")
                 for k in re.sub(r"[\s,;]+", " ", keys or "").split() if k.strip()]
     keys = req_keys or _key_list(entry["keyEnv"])
-    _env_prior = os.environ.get(entry["keyEnv"])
-    if req_keys:
-        os.environ[entry["keyEnv"]] = "\n".join(req_keys)
     env_report = {v: (os.getenv(v) is not None)
                   for v in ("GROQ_BASE_URL", "NARAROUTER_BASE_URL", "OPENAI_BASE_URL",
                             "HTTP_PROXY", "HTTPS_PROXY", "FAULTSEEKER_LLM_FALLBACK_MODEL")}
@@ -505,15 +521,12 @@ def llm_selftest(model: str = "gemini-3.8-flash", max_keys: int = 1,
                         "reply": (r.choices[0].message.content or "")[:40]})
         except Exception as e:  # noqa: BLE001 - diagnostic reports every failure type
             out.append({"key_index": i + 1, "ok": False,
-                        "err": f"{type(e).__name__}: {str(e)[:160]}"})
-    if req_keys:
-        if _env_prior is None:
-            os.environ.pop(entry["keyEnv"], None)
-        else:
-            os.environ[entry["keyEnv"]] = _env_prior
+                         "err": _redact(f"{type(e).__name__}: {str(e)[:160]}", keys)})
     result = {"model": model, "base_url": base_url, "keys": out, "key_count": len(keys),
               "openai_version": getattr(_oai_ver, "__version__", "?"), "env_overrides_set": env_report}
-    if replay == "stage2" and keys:
+    if replay == "stage2" and req_keys:
+        result["stage2_replay"] = {"ok": False, "err": "Use a live analysis to test Stage 2 with request-supplied keys."}
+    elif replay == "stage2" and keys:
         try:
             import json as _json
             from faultseeker.utils.agent import UniversalAgent
@@ -538,7 +551,7 @@ def llm_selftest(model: str = "gemini-3.8-flash", max_keys: int = 1,
         except Exception as e:  # noqa: BLE001 - this endpoint exists to surface it
             result["stage2_replay"] = {"ok": False,
                                        "err": f"{type(e).__name__}: {str(e)[:300]}"}
-    return result
+    return _redact(result, keys)
 
 
 @app.get("/healthz")
@@ -560,23 +573,30 @@ for _v in ("OPENAI_API_KEY", "GOOGLE_API_KEY", "XAI_API_KEY", "GROQ_API_KEY",
             _SECRET_VALUES.append(_seg)
 
 
-def _redact(s):
-    """Strip any known secret (and generic bearer/api-key shapes) from streamed text."""
+def _redact(s, secrets=()):
+    """Preserve JSON structure while stripping request and server credentials."""
+    if isinstance(s, dict):
+        return {k: ("***" if re.search(r"(?i)(api.?key|password|authorization|rpc_key|model_key|secret|access_token)", str(k)) else _redact(v, secrets)) for k, v in s.items()}
+    if isinstance(s, (list, tuple)):
+        return [_redact(v, secrets) for v in s]
     if not isinstance(s, str):
-        try:
-            s = json.dumps(s)
-        except Exception:
-            s = str(s)
-    for v in _SECRET_VALUES:
+        return s
+    known = list(_SECRET_VALUES) + list(secrets)
+    for name, value in os.environ.items():
+        if any(part in name for part in ("API_KEY", "RPC_URL", "HISTORY_TOKEN", "GATE_PASSWORD")):
+            known.extend(re.split(r"[\s,;]+", value))
+    for v in sorted({v for v in known if isinstance(v, str) and len(v) >= 6}, key=len, reverse=True):
         if v in s:
             s = s.replace(v, "***")
     s = re.sub(r"(?i)bearer\s+[A-Za-z0-9._\-]{12,}", "Bearer ***", s)
-    s = re.sub(r"(?i)(api[_-]?key|token|password)([=:\\s]+)[^\\s,;&]{8,}", r"\1\2***", s)
+    s = re.sub(r"(?i)((?:api[_-]?key|dkey|token|password)\s*[=:]\s*)[^\s,;&\"'<>]+", r"\1***", s)
+    s = re.sub(r"(?i)(https?://)[^/\s:@]+:[^/\s@]+@", r"\1***@", s)
     return s
 
 
-def sse(ev, data):
-    return f"event: {ev}\ndata: {json.dumps(_redact(data) if isinstance(data, str) else data)}\n\n"
+def sse(ev, data, event_id=None):
+    prefix = f"id: {event_id}\n" if event_id is not None else ""
+    return prefix + f"event: {ev}\ndata: {json.dumps(_redact(data))}\n\n"
 
 
 def worker(run_id, req, q):
@@ -592,13 +612,23 @@ def worker(run_id, req, q):
             pass
     env_set = []
     env_prior = {}
+    request_secrets = []
+    for name in ("model_key", "rpc_key", "rpc_url", "forensics_model_key"):
+        value = req.get(name) or ""
+        request_secrets.extend(re.split(r"[\s,;]+", value))
+    class SafeQueue:
+        def put(self, item):
+            ev, data = item
+            q_original.put((ev, _redact(data, request_secrets)))
+    q_original = q
+    q = SafeQueue()
 
     class Tap(io.TextIOBase):
         def write(self, s):
             if s and s.strip():
                 # Never stream credentials to the browser: the fork echoes
                 # full RPC URLs (keys embedded) in its diagnostics.
-                line = re.sub(r"(https?://[^/\s'\"]+)[^\s)'\"]*", r"\1/•••", s.strip())
+                line = _redact(re.sub(r"(https?://[^/\s'\"]+)[^\s)'\"]*", r"\1/•••", s.strip()), request_secrets)
                 for pat, idx in STAGE_LINES:
                     if pat in line:
                         q.put(("stage", {"index": idx}))
@@ -607,11 +637,15 @@ def worker(run_id, req, q):
             return len(s) if s else 0
 
     old_out = sys.stdout
+    old_err = sys.stderr
     sys.stdout = Tap()
+    sys.stderr = Tap()
     try:
         rpc_url = (req.get("rpc_url") or "").strip()
         rpc_key = (req.get("rpc_key") or "").strip()
         model_key = (req.get("model_key") or "").strip()
+        if rpc_key and rpc_url:
+            rpc_url = rpc_url.replace("{key}", quote(rpc_key, safe=""))
         if rpc_url:
             # The pipeline reads {CHAIN}_RPC_URL (key embedded in the URL for
             # dRPC/BlockPI style endpoints). Request value wins over server env.
@@ -637,10 +671,11 @@ def worker(run_id, req, q):
         from faultseeker.main import main as fs_main
 
         out_path = os.path.join(RUNS_DIR, run_id + ".json")
+        pipeline_path = os.path.join(RUNS_DIR, run_id + ".pipeline.json")
         if mode == "no-llm":
             q.put(("log", "mode: no-llm (deterministic Stage 1, free RPC)"))
             result = fs_main(txn_hash=req["txn_hash"], chain=req["chain"],
-                             no_llm=True, output_path=out_path)
+                             no_llm=True, output_path=pipeline_path)
         else:
             entry = next((m for m in MODELS if m["id"] == mode), None)
             if not entry:
@@ -684,7 +719,7 @@ def worker(run_id, req, q):
                 try:
                     result = fs_main(txn_hash=req["txn_hash"], chain=req["chain"],
                                      forensics_model=forensics, function_analysis_model=mode,
-                                     track_cost=True, output_path=out_path)
+                                     track_cost=True, output_path=pipeline_path)
                     break
                 except Exception as key_err:  # noqa: BLE001 - rotate fallback keys on auth/quota failures
                     low = f"{type(key_err).__name__} {key_err}".lower()
@@ -697,14 +732,29 @@ def worker(run_id, req, q):
                         q.put(("log", f"{entry['keyEnv']} key {ki + 1} failed ({type(key_err).__name__}); rotating to fallback key {ki + 2}"))
                         continue
                     raise
+        if not isinstance(result, dict):
+            raise ValueError("pipeline returned an invalid result")
         result["_demo_model_requested"] = mode
-        with open(out_path, "w", encoding="utf-8") as f:
-            json.dump(result, f)
+        result["analysis_mode"] = "no-llm" if mode == "no-llm" else "live-pipeline"
+        if result.get("error"):
+            raise ValueError(str(result["error"]))
+        meaningful = any(k in result for k in ("transaction", "transaction_hash", "scored_functions", "evidence_cards", "classification"))
+        result.setdefault("analysis_status", "completed" if meaningful else "inconclusive")
+        result.setdefault("stage_completed", ("stage-1" if mode == "no-llm" else "stage-3") if result["analysis_status"] == "completed" else "unknown")
+        tmp_path = out_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(_redact(result, request_secrets), f)
+        os.replace(tmp_path, out_path)
         q.put(("done", {"ok": True}))
     except Exception as e:  # noqa: BLE001 - surface any pipeline failure as fallback trigger
         q.put(("error", _redact(f"{type(e).__name__}: {str(e)[:400]}")))
     finally:
         sys.stdout = old_out
+        sys.stderr = old_err
+        try:
+            os.remove(os.path.join(RUNS_DIR, run_id + ".pipeline.json"))
+        except OSError:
+            pass
         for k in env_set:
             if env_prior.get(k) is None:
                 os.environ.pop(k, None)
@@ -715,7 +765,18 @@ def worker(run_id, req, q):
 
 @app.post("/api/analyze")
 async def analyze(request: Request):
-    req = await request.json()
+    try:
+        req = await request.json()
+    except (ValueError, UnicodeDecodeError):
+        return JSONResponse({"error": "Request must contain valid JSON."}, status_code=400)
+    if not isinstance(req, dict):
+        return JSONResponse({"error": "Request must be a JSON object."}, status_code=400)
+    fields = ("txn_hash", "chain", "mode", "rpc_url", "rpc_key", "model_key", "forensics_model", "forensics_model_key", "fallback_model")
+    if any(k in req and (not isinstance(req[k], str) or len(req[k]) > 8192) for k in fields):
+        return JSONResponse({"error": "Analysis fields must be strings of at most 8192 characters."}, status_code=400)
+    req = {k: v for k, v in req.items() if k in fields or k == "stage2_workers"}
+    if "stage2_workers" in req and (type(req["stage2_workers"]) is not int or not 1 <= req["stage2_workers"] <= 5):
+        return JSONResponse({"error": "stage2_workers must be an integer from 1 to 5."}, status_code=400)
     tx = (req.get("txn_hash") or "").strip()
     chain = (req.get("chain") or "eth").strip().lower()
     demo = DEMO_REPLAYS.get(tx.lower())
@@ -723,10 +784,15 @@ async def analyze(request: Request):
         if not run_lock.acquire(blocking=False):
             return JSONResponse({"error": "a run is already in progress"}, status_code=409)
         run_id = uuid.uuid4().hex[:12]
-        runs[run_id] = {"q": RunBus(), "result": None, "proc": None}
-        _hist_upsert({"run_id": run_id, "txn_hash": demo["txn_hash"], "chain": demo["chain"],
-                      "model": "saved-replay", "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                      "status": "running"})
+        runs[run_id] = {"q": RunBus(), "result": None, "proc": None, "status": "running", "cancel": threading.Event()}
+        try:
+            _hist_upsert({"run_id": run_id, "txn_hash": demo["txn_hash"], "chain": demo["chain"],
+                           "model": "saved-replay", "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                           "status": "running"})
+        except Exception:
+            runs.pop(run_id, None)
+            run_lock.release()
+            return JSONResponse({"error": "Could not record the run. Check server storage."}, status_code=503)
 
         def replay():
             q = runs[run_id]["q"]
@@ -743,7 +809,9 @@ async def analyze(request: Request):
                         except json.JSONDecodeError:
                             continue
                         t, ev, data = item.get("t"), item.get("ev"), item.get("data")
-                        if ev == "end":
+                        if runs[run_id]["cancel"].is_set():
+                            raise RuntimeError("Replay cancelled")
+                        if ev in ("end", "done"):
                             continue
                         if prev is not None and isinstance(t, (int, float)) and isinstance(prev, (int, float)):
                             time.sleep(min(max(t - prev, 0.0) * DEMO_REPLAY_SPEED, DEMO_REPLAY_MAX_GAP))
@@ -752,13 +820,20 @@ async def analyze(request: Request):
                         _hist_log_event(run_id, ev, data)
                 with open(demo["result"], encoding="utf-8") as f:
                     res = json.load(f)
+                res["analysis_mode"] = "saved-replay"
+                res["analysis_status"] = "completed"
+                res["stage_completed"] = "stage-3"
                 with open(os.path.join(RUNS_DIR, run_id + ".json"), "w", encoding="utf-8") as f:
                     json.dump(res, f)
+                runs[run_id]["status"] = "completed"
+                q.put(("done", {"ok": True, "source": "saved-replay"}))
                 _hist_upsert({"run_id": run_id, "status": "completed",
                               "ended_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                               "duration_secs": round(time.time() - started, 1),
                               "brief": _hist_brief(res)})
             except Exception as exc:  # never wedge the lock on a replay
+                runs[run_id]["status"] = "cancelled" if runs[run_id]["cancel"].is_set() else "error"
+                _hist_upsert({"run_id": run_id, "status": runs[run_id]["status"]})
                 q.put(("error", f"saved replay failed: {exc}"))
             finally:
                 q.put(("end", None))
@@ -771,20 +846,41 @@ async def analyze(request: Request):
             run_lock.release()
             return JSONResponse({"error": f"could not start replay: {exc}"}, status_code=500)
         return {"run_id": run_id}
-    if not (tx.startswith("0x") and len(tx) == 66):
+    if not re.fullmatch(r"0x[0-9a-fA-F]{64}", tx):
         return JSONResponse({"error": "transaction hash must be 0x + 64 hex chars"}, status_code=400)
     if chain not in CHAINS:
         return JSONResponse({"error": f"unsupported chain {chain}"}, status_code=400)
     if (req.get("mode") or "no-llm") not in {m["id"] for m in MODELS}:
         return JSONResponse({"error": "unknown model"}, status_code=400)
+    if req.get("rpc_url"):
+        try:
+            parsed = urlsplit(req["rpc_url"])
+            if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
+                raise ValueError()
+        except ValueError:
+            return JSONResponse({"error": "RPC URL must be an HTTP(S) endpoint without userinfo."}, status_code=400)
+    if req.get("rpc_key") and "{key}" not in req.get("rpc_url", ""):
+        return JSONResponse({"error": "Use {key} in the RPC URL when supplying a separate RPC key, or paste the complete endpoint URL and leave RPC key blank."}, status_code=400)
+    # Keep recent stream buffers bounded; older completed reports remain on disk.
+    finished = [rid for rid, state in runs.items() if state.get("status") not in ("running", "cancelling")]
+    for rid in finished[:-20]:
+        runs.pop(rid, None)
+    req["mode"] = req.get("mode") or "no-llm"
     if not run_lock.acquire(blocking=False):
         return JSONResponse({"error": "a run is already in progress"}, status_code=409)
     run_id = uuid.uuid4().hex[:12]
-    runs[run_id] = {"q": RunBus(), "result": None, "proc": None}
-    _hist_upsert({"run_id": run_id, "txn_hash": tx, "chain": chain,
+    secrets = [v for k, v in req.items() if k in ("model_key", "rpc_key", "rpc_url", "forensics_model_key")]
+    secrets = [part for value in secrets for part in re.split(r"[\s,;]+", value)]
+    runs[run_id] = {"q": RunBus(secrets=secrets), "result": None, "proc": None, "status": "running", "cancel": threading.Event()}
+    try:
+        _hist_upsert({"run_id": run_id, "txn_hash": tx, "chain": chain,
                   "model": req.get("mode", "no-llm"),
                   "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                   "status": "running"})
+    except Exception:
+        runs.pop(run_id, None)
+        run_lock.release()
+        return JSONResponse({"error": "Could not record the run. Check server storage."}, status_code=503)
     req["chain"] = chain
     req["txn_hash"] = tx
 
@@ -797,9 +893,11 @@ async def analyze(request: Request):
             proc = mp.Process(target=worker, args=(run_id, req, mp_q), daemon=True)
             proc.start()
         except Exception as exc:  # never leak the global lock on startup failure
+            runs[run_id]["status"] = "error"
             q.put(("error", _redact(f"worker failed to start: {type(exc).__name__}: {exc}")))
             q.put(("end", None))
             run_lock.release()
+            _hist_upsert({"run_id": run_id, "status": "error", "detail": "worker failed to start"})
             return
         runs[run_id]["proc"] = proc
         deadline = time.time() + RUN_TIMEOUT_SECS
@@ -809,9 +907,15 @@ async def analyze(request: Request):
         outcome_msg = ""
         try:
             while True:
+                if runs[run_id]["cancel"].is_set():
+                    proc.terminate()
+                    outcome, outcome_msg = "cancelled", "Analysis cancelled by user."
+                    q.put(("error", outcome_msg))
+                    break
                 try:
                     ev, data = mp_q.get(timeout=2)
-                    q.put((ev, data))
+                    if ev != "end":
+                        q.put((ev, data))
                     _hist_log_event(run_id, ev, data)
                     if ev == "error":
                         outcome, outcome_msg = "error", str(data)[:200]
@@ -825,7 +929,8 @@ async def analyze(request: Request):
                     while True:
                         try:
                             ev, data = mp_q.get(timeout=0.2)
-                            q.put((ev, data))
+                            if ev != "end":
+                                q.put((ev, data))
                             _hist_log_event(run_id, ev, data)
                             if ev == "error":
                                 outcome, outcome_msg = "error", str(data)[:200]
@@ -845,16 +950,15 @@ async def analyze(request: Request):
             if proc.is_alive():
                 proc.kill()
                 proc.join(timeout=5)
-            if not ended and outcome != "timeout":
+            if not ended and outcome not in ("timeout", "cancelled"):
                 # Worker died without emitting an error event: surface the exit
                 # code so silent wedges (OOM SIGKILL=-9, segfault=-11) are visible.
                 outcome = "cancelled" if proc.exitcode == -15 else "died"
                 outcome_msg = f"worker exit code {proc.exitcode} (-9 usually means OOM)"
                 q.put(("error", f"worker process died unexpectedly (exit code {proc.exitcode}; -9 usually means OOM)"))
         finally:
-            if not ended:
-                q.put(("end", None))
-            run_lock.release()
+            if runs[run_id]["cancel"].is_set():
+                outcome = "cancelled"
             # finalize the history entry: status + brief from the result file
             res = None
             out_path = os.path.join(RUNS_DIR, run_id + ".json")
@@ -865,15 +969,22 @@ async def analyze(request: Request):
                 res = None
             if res is not None and outcome in ("stopped",):
                 outcome = "completed" if ended else outcome
-            if res is not None and ended and outcome != "error":
+            if res is not None and ended and outcome not in ("error", "cancelled", "timeout", "died"):
                 outcome = "completed"
+            runs[run_id]["status"] = outcome
             final_entry = {"run_id": run_id, "status": outcome,
                            "detail": outcome_msg,
                            "ended_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                            "duration_secs": round(time.time() - started, 1),
                            "brief": _hist_brief(res) if res else {}}
-            _hist_upsert(final_entry)
-            _gh_hist_sync(run_id, final_entry, res)
+            try:
+                _hist_upsert(final_entry)
+                _gh_hist_sync(run_id, final_entry, res)
+            except Exception:
+                q.put(("log", "Run finished, but history persistence failed. The report remains available for this process."))
+            finally:
+                q.put(("end", None))
+                run_lock.release()
 
     try:
         threading.Thread(target=guarded, daemon=True).start()
@@ -885,27 +996,47 @@ async def analyze(request: Request):
 
 
 @app.get("/api/stream/{run_id}")
-async def stream(run_id: str):
+async def stream(run_id: str, request: Request):
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", run_id):
+        return JSONResponse({"error": "Invalid run ID."}, status_code=400)
     if run_id not in runs:
         return JSONResponse({"error": "unknown run"}, status_code=404)
     q = runs[run_id]["q"]
 
-    def gen():
-        cursor = 0
+    try:
+        cursor = max(0, int(request.headers.get("last-event-id") or request.query_params.get("after", "0")))
+    except ValueError:
+        return JSONResponse({"error": "Invalid event cursor."}, status_code=400)
+
+    async def gen():
+        nonlocal cursor
+        last_heartbeat = time.monotonic()
         while True:
+            if await request.is_disconnected():
+                return
             with q.cond:
-                if cursor >= len(q.events):
-                    q.cond.wait(timeout=15)
-                batch = q.events[cursor:]
-                cursor += len(batch)
+                dropped = cursor < q.offset
+                cursor = max(q.offset, min(cursor, q.offset + len(q.events)))
+                start = cursor
+                batch = q.events[cursor - q.offset:]
+                closed = q.closed
+            if dropped:
+                yield sse("replay-gap", {"message": "Older technical logs expired; showing recent activity."})
             if not batch:
-                yield ": hb\n\n"  # heartbeat: hold proxies open on quiet runs
-                continue
-            for ev, data in batch:
-                if ev == "end":
+                if closed:
                     yield sse("end", {})
                     return
-                yield sse(ev, data)
+                if time.monotonic() - last_heartbeat >= 15:
+                    yield ": hb\n\n"
+                    last_heartbeat = time.monotonic()
+                await asyncio.sleep(0.1)
+                continue
+            for index, (ev, data) in enumerate(batch, start + 1):
+                cursor = index
+                if ev == "end":
+                    yield sse("end", {}, index)
+                    return
+                yield sse(ev, data, index)
 
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -913,10 +1044,17 @@ async def stream(run_id: str):
 
 @app.post("/api/cancel/{run_id}")
 async def cancel(run_id: str):
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", run_id):
+        return JSONResponse({"error": "Invalid run ID."}, status_code=400)
     r = runs.get(run_id)
     if not r:
         return JSONResponse({"error": "unknown run"}, status_code=404)
     proc = r.get("proc")
+    if r.get("status") == "running":
+        r.setdefault("cancel", threading.Event()).set()
+        r["status"] = "cancelling"
+        if proc is None:
+            return {"cancelled": True, "status": "cancelling"}
     if proc and proc.is_alive():
         proc.terminate()  # the watchdog notices and releases the lock
         r["q"].put(("log", "cancel requested - terminating the run process"))
@@ -924,34 +1062,58 @@ async def cancel(run_id: str):
     return {"cancelled": False, "reason": "no live process for this run"}
 
 
+@app.get("/api/status/{run_id}")
+async def run_status(run_id: str):
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", run_id):
+        return JSONResponse({"error": "Invalid run ID."}, status_code=400)
+    r = runs.get(run_id)
+    if r:
+        return {"run_id": run_id, "status": r.get("status", "unknown")}
+    entry = next((e for e in _hist_load() if e.get("run_id") == run_id), None)
+    if not entry:
+        return JSONResponse({"error": "Unknown run."}, status_code=404)
+    status = entry.get("status", "unknown")
+    if status in ("running", "cancelling"):
+        status = "interrupted"
+    return {"run_id": run_id, "status": status}
+
+
 def _adapt_result_for_view(res):
     """The results view was built for the Stage-1 capture shape; a live pipeline
     result lacks `transaction`/`classification`/... and the view crashes
     (black page) on `i.transaction.hash`. Reshape live results so they always
     render. Every value comes from the real result - missing data stays 0/empty."""
-    if not isinstance(res, dict) or "transaction" in res:
+    if not isinstance(res, dict):
+        return {"analysis_status": "inconclusive", "classification": {"rule_verdict": "INCONCLUSIVE"}}
+    if isinstance(res.get("transaction"), dict) and isinstance(res.get("classification"), dict):
         return res
-    scored = [x for x in (res.get("scored_functions") or []) if isinstance(x, dict)]
-    cards = [x for x in (res.get("evidence_cards") or []) if isinstance(x, dict)]
-    prio = res.get("priority") or {}
-    reen = res.get("reentrancy") or {}
-    dbg = res.get("_debug") or {}
+    def obj(value):
+        return value if isinstance(value, dict) else {}
+    def items(value):
+        return value if isinstance(value, list) else []
+    def number(value):
+        return value if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+    scored = [x for x in items(res.get("scored_functions")) if isinstance(x, dict)]
+    cards = [x for x in items(res.get("evidence_cards")) if isinstance(x, dict)]
+    prio = obj(res.get("priority"))
+    reen = obj(res.get("reentrancy"))
+    dbg = obj(res.get("_debug"))
     funcs, seen = [], set()
     for it in scored:
-        key = (it.get("address", ""), it.get("function", ""))
+        key = (str(it.get("address") or ""), str(it.get("function") or ""))
         seen.add(key)
         funcs.append({"address": key[0], "function": key[1],
-                      "depth": [it.get("depth", 1) or 1], "call_type": "", "gas": 0})
+                      "depth": [number(it.get("depth")) or 1], "call_type": "", "gas": 0})
     for c in cards:
-        sig = c.get("function_signature") or {}
-        key = (sig.get("address", ""), sig.get("function", ""))
+        sig = obj(c.get("function_signature"))
+        key = (str(sig.get("address") or ""), str(sig.get("function") or ""))
         if key not in seen:
             seen.add(key)
             funcs.append({"address": key[0], "function": key[1],
-                          "depth": [sig.get("call_depth", 1) or 1], "call_type": "", "gas": 0})
+                          "depth": [number(sig.get("call_depth")) or 1], "call_type": "", "gas": 0})
     ev_first = ""
     for c in cards:
-        ev = c.get("evidence") or []
+        ev = items(c.get("evidence"))
         if ev:
             ev_first = str(ev[0])
             break
@@ -960,25 +1122,25 @@ def _adapt_result_for_view(res):
     view.update({
         "transaction": {"hash": res.get("transaction_hash", ""), "chain": res.get("chain", ""),
                         "analysis_duration": res.get("duration", 0)},
-        "analysis_mode": "live-pipeline",
-        "analysis_status": "completed" if (scored or cards or dbg) else "inconclusive",
-        "stage_completed": "stage-3" if dbg.get("analysis_duration") else ("stage-2" if dbg.get("forensics_duration") else "unknown"),
-        "llm_cost": res.get("llm_cost", 0) or 0,
-        "limitations": res.get("limitations") or [],
-        "rpc_source": "server-env",
-        "query_records": [],
+        "analysis_mode": res.get("analysis_mode") or "live-pipeline",
+        "analysis_status": res.get("analysis_status") or "inconclusive",
+        "stage_completed": res.get("stage_completed") or "unknown",
+        "llm_cost": number(res.get("llm_cost")),
+        "limitations": items(res.get("limitations")),
+        "rpc_source": res.get("rpc_source") or "unknown",
+        "query_records": items(res.get("query_records")),
         "classification": {
-            "rule_verdict": "CONFIRMED" if cards else ("SUSPECT" if scored else "INCONCLUSIVE"),
-            "rule_confidence": res.get("priority_score", 0) or 0,
-            "matched_rule": ("evidence card: " + str(cards[0].get("function_signature", {}).get("function", "?"))) if cards else "none",
+            "rule_verdict": "INCONCLUSIVE" if res.get("analysis_status") in ("cancelled", "cancelling", "error", "died", "timeout", "stopped", "inconclusive", "interrupted") else (res.get("rule_verdict") if res.get("rule_verdict") in ("CONFIRMED", "EXPLOIT", "CLEAN", "SUSPECT", "INCONCLUSIVE") else ("SUSPECT" if cards or scored else "INCONCLUSIVE")),
+            "rule_confidence": number(res.get("rule_confidence")),
+            "matched_rule": ("evidence card: " + str(obj(cards[0].get("function_signature")).get("function", "?"))) if cards else "none",
             "vuln_type_hint": hint,
-            "priority_score": res.get("priority_score", 0) or 0,
+            "priority_score": number(res.get("priority_score")),
             "priority": prio,
             "reentrancy": {"score": reen.get("score", 0) or 0, "tier": reen.get("tier", "NONE"),
                            "signals": reen.get("signals") or {}},
             "signals": {
                 "reentrancy_score": reen.get("score", 0) or 0,
-                "call_depth_max": max([(c.get("function_signature") or {}).get("call_depth", 0) or 0 for c in cards] or [0]),
+                "call_depth_max": max([number(obj(c.get("function_signature")).get("call_depth")) for c in cards] or [0]),
                 "flash_loan_detected": bool(prio.get("flashloan", 0)),
                 "large_transfer_to_eoa": False,
                 "price_manipulation_detected": bool(prio.get("price_manipulation", 0)),
@@ -1001,7 +1163,11 @@ def _adapt_result_for_view(res):
 
 @app.get("/api/result/{run_id}")
 async def result(run_id: str):
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", run_id):
+        return JSONResponse({"error": "Invalid run ID."}, status_code=400)
     r = runs.get(run_id)
+    if r and r.get("status") in ("running", "cancelling"):
+        return JSONResponse({"error": "Analysis is still running. The report is not final."}, status_code=409)
     if r and r["result"] is not None:
         pass
     else:
@@ -1011,19 +1177,33 @@ async def result(run_id: str):
             return JSONResponse({"error": "no result yet"}, status_code=404)
         try:
             with open(out_path, encoding="utf-8") as f:
-                r = runs.setdefault(run_id, {"q": RunBus(), "result": None, "proc": None})
+                entry = next((e for e in _hist_load() if e.get("run_id") == run_id), {})
+                bus = RunBus()
+                bus.put(("end", None))
+                state = entry.get("status", "unknown")
+                if state in ("running", "cancelling"):
+                    state = "interrupted"
+                r = runs.setdefault(run_id, {"q": bus, "result": None, "proc": None, "status": state})
                 r["result"] = json.load(f)
         except (OSError, json.JSONDecodeError):
             return JSONResponse({"error": "no result yet"}, status_code=404)
     # strip internal helper fields before sending to the page
+    if not isinstance(r["result"], dict):
+        return JSONResponse({"error": "Stored result is invalid."}, status_code=502)
     out = {k: v for k, v in r["result"].items() if not k.startswith("_demo_")}
-    return JSONResponse(_adapt_result_for_view(out))
+    entry = next((e for e in _hist_load() if e.get("run_id") == run_id), {})
+    state = r.get("status") or entry.get("status")
+    if state in ("cancelled", "cancelling", "error", "died", "timeout", "stopped", "interrupted"):
+        out["analysis_status"] = state
+        out["limitations"] = list(out.get("limitations") or []) + ["The run did not complete successfully. This is a partial report."]
+        out["classification"] = {**(out.get("classification") if isinstance(out.get("classification"), dict) else {}), "rule_verdict": "INCONCLUSIVE"}
+    return JSONResponse(_redact(_adapt_result_for_view(out), getattr(r.get("q"), "secrets", ())))
 
 
 @app.get("/api/runs")
 async def list_runs():
     """Persistent run history (survives restarts; NOT redeploys on free tier)."""
-    return {"runs": list(reversed(_hist_load()))}
+    return {"runs": _redact(list(reversed(_hist_load())))}
 
 
 _STAGE_MARK = re.compile(r"(\[Stage \d|\[OK\]|\[\d+/\d+\]|Analyzing|completed|Ranking|Scoring)")
@@ -1031,6 +1211,8 @@ _STAGE_MARK = re.compile(r"(\[Stage \d|\[OK\]|\[\d+/\d+\]|Analyzing|completed|Ra
 
 @app.get("/api/runs/{run_id}")
 async def run_detail(run_id: str):
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", run_id):
+        return JSONResponse({"error": "Invalid run ID."}, status_code=400)
     entry = next((e for e in _hist_load() if e.get("run_id") == run_id), None)
     if not entry:
         return JSONResponse({"error": "unknown run"}, status_code=404)
@@ -1099,7 +1281,7 @@ async function main(){
         for(const st of (d.stages||[])) h += `<tr><td class=dim>+${st.at_secs}s</td><td></td><td>${esc(st.text)}</td></tr>`;
         h += '</table>';
         if(d.entry && d.entry.brief && (d.entry.brief.top_functions||[]).length)
-          h += '<div class=dim>top: '+d.entry.brief.top_functions.join(', ')+'</div>';
+          h += '<div class=dim>top: '+esc(d.entry.brief.top_functions.join(', '))+'</div>';
         det.innerHTML = h || 'no stage detail recorded';
       } else det.style.display='none';
     };
@@ -1125,6 +1307,9 @@ async def config():
     replay_presets = [{"hash": k, "protocol": v["label"], "date": "", "loss": "", "calls": 0}
                       for k, v in DEMO_REPLAYS.items()]
     return {"chains": CHAINS, "models": MODELS, "repo_present": os.path.isdir(REPO),
+            "server_key_available": {m["keyEnv"]: bool(_key_list(m["keyEnv"])) for m in MODELS if m.get("keyEnv")},
+            "capture_available": os.path.isfile(CAPTURE),
+            "live_available": True,
             "preset_txs": replay_presets + PRESET_TXS}
 
 
