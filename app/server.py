@@ -192,6 +192,7 @@ CHAINS = ["eth", "bsc", "polygon", "arbitrum", "optimism", "avalanche", "base",
 MODELS = [
     {"id": "gpt-6.1-sol-low", "label": "GPT-6.1 Sol low (Codex)", "keyEnv": "OPENAI_API_KEY"},
     {"id": "gpt-6.1-sol-medium", "label": "GPT-6.1 Sol medium (Codex)", "keyEnv": "OPENAI_API_KEY"},
+    {"id": "gpt-6.1-sol-high", "label": "GPT-6.1 Sol high (Codex)", "keyEnv": "OPENAI_API_KEY"},
     {"id": "z-ai/glm-5.3-flash", "label": "GLM 5.3 Flash (NVIDIA NIM)", "keyEnv": "NVIDIA_API_KEY"},
     {"id": "gpt-4o-mini", "label": "GPT-4o Mini (OpenAI)", "keyEnv": "OPENAI_API_KEY"},
     {"id": "gemini-3.8-flash", "label": "Gemini 3.8 Flash (Google)", "keyEnv": "GOOGLE_API_KEY"},
