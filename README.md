@@ -47,3 +47,26 @@ ANALYZE there cannot run live - it falls back to the saved capture, by design.
   model and its API key, cost tracking on. Real spend on your key.
 
 No API keys are stored anywhere in this repository. Do not commit any.
+
+## Hosted live deploy (Render)
+
+Live URL: **https://faultseeker-demo-console.onrender.com**
+
+The same console, hosted as a Docker web service (Render free tier, Oregon).
+Unlike the GitHub Pages replay, this one runs the real pipeline through your
+fork - ANALYZE works here.
+
+- Access is gated: the site asks for the demo access code first
+  (`DEMO_GATE_PASSWORD` env var on Render; rotate it there anytime). Rate
+  limits: 10 runs/hour, 40/day per network, one run at a time.
+- Keys still live only in your browser session: dRPC/BlockPI RPC and LLM keys
+  go in ⚙ Settings and are sent per-request over HTTPS, held in memory for
+  that run only. Nothing is stored on the host.
+- Free tier notes: 512 MB RAM, sleeps after 15 min idle (first load after
+  sleep takes ~30-60s). 750 free instance-hours/month.
+- Redeploy: Render auto-deploys on push to `main`. Manual: Render dashboard
+  -> faultseeker-demo-console -> Manual Deploy.
+- `Dockerfile` pins the pipeline to your fork's `console-demo-compat` branch;
+  after PR #1 merges, change `FAULTSEEKER_REF` to `main` in the Dockerfile.
+
+Health check: `/healthz` (used by the keep-alive ping).
