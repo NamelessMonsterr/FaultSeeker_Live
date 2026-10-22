@@ -190,6 +190,7 @@ if os.path.isdir(REPO):
 CHAINS = ["eth", "bsc", "polygon", "arbitrum", "optimism", "avalanche", "base",
           "fantom", "zksync", "linea", "scroll", "gnosis", "celo", "cronos", "moonbeam", "aurora"]
 MODELS = [
+    {"id": "gpt-6.1-sol-low", "label": "GPT-6.1 Sol low (Codex)", "keyEnv": "OPENAI_API_KEY"},
     {"id": "gpt-6.1-sol-medium", "label": "GPT-6.1 Sol medium (Codex)", "keyEnv": "OPENAI_API_KEY"},
     {"id": "z-ai/glm-5.3-flash", "label": "GLM 5.3 Flash (NVIDIA NIM)", "keyEnv": "NVIDIA_API_KEY"},
     {"id": "gpt-4o-mini", "label": "GPT-4o Mini (OpenAI)", "keyEnv": "OPENAI_API_KEY"},
