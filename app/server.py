@@ -328,14 +328,21 @@ def worker(run_id, req, q):
             entry = next((m for m in MODELS if m["id"] == mode), None)
             if not entry:
                 raise ValueError(f"unknown model {mode}")
-            keys = [model_key] if model_key else _key_list(entry["keyEnv"])
+            if model_key:
+                raw_keys = re.sub(r"[\s,;]+", " ", model_key).split()
+                keys = [k.strip().strip('"').strip("'") for k in raw_keys if k.strip()]
+            else:
+                keys = _key_list(entry["keyEnv"])
             if not keys:
                 raise ValueError(f"model {mode} needs an API key (Settings, or server env {entry['keyEnv']})")
             if entry["keyEnv"] not in env_set:
                 env_prior[entry["keyEnv"]] = os.environ.get(entry["keyEnv"])
                 env_set.append(entry["keyEnv"])
+            if len(keys) > 1:
+                os.environ[entry["keyEnv"]] = "\n".join(keys)
             for ki, one_key in enumerate(keys):
-                os.environ[entry["keyEnv"]] = one_key
+                if len(keys) == 1:
+                    os.environ[entry["keyEnv"]] = one_key
                 which = f" (key {ki + 1}/{len(keys)})" if len(keys) > 1 else ""
                 q.put(("log", f"mode: full pipeline Stage 1-3 with {mode}{which} (cost tracking on)"))
                 try:
