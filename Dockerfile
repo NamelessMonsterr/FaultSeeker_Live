@@ -18,7 +18,7 @@ ARG FAULTSEEKER_REF=console-demo-compat
 # Bump this SHA to the fork commit to deploy: the changed ARG value invalidates
 # the Docker layer cache so the clone below re-runs (clone --branch needs a
 # branch/tag name, not a raw SHA).
-ARG FAULTSEEKER_SHA=3b20f50c6136c02a671035a31dfde86f9176ea22
+ARG FAULTSEEKER_SHA=ad1f5b0514313811d9923442d02105cf8d9c36f1
 RUN echo "deploying fork commit $FAULTSEEKER_SHA"  && git clone --depth 1 --branch "$FAULTSEEKER_REF" "$FAULTSEEKER_REPO" /srv/FaultSeeker-
 
 RUN pip install -r /srv/FaultSeeker-/requirements.txt
