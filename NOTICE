@@ -1,0 +1,8 @@
+FaultSeeker // Forensic Console - hosted website build - third-party notices
+
+- Front-end skin: nerv-ui, MIT License.
+- The bundled capture (api/capture) is a saved Stage-1 analysis of a public
+  Ethereum transaction (Zunami UZD exploit, 0x0788ba22...e8cceb) produced by
+  FaultSeeker. All data in it is public on-chain trace data.
+- FaultSeeker (original research): Kairan Sun et al., "FaultSeeker", ASE 2025.
+  https://github.com/kairanskrr/FaultSeeker
