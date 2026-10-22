@@ -5,6 +5,7 @@ removed afterwards. They are never logged or written to disk."""
 import io
 import json
 import os
+import multiprocessing as mp
 import queue
 import re
 import sys
@@ -91,6 +92,7 @@ PORT = int(os.environ.get("PORT", "8420"))
 GATE = os.environ.get("DEMO_GATE_PASSWORD", "").strip()
 RUN_LIMIT_PER_HOUR = int(os.environ.get("DEMO_RUN_LIMIT_PER_HOUR", "10"))
 RUN_LIMIT_PER_DAY = int(os.environ.get("DEMO_RUN_LIMIT_PER_DAY", "40"))
+RUN_TIMEOUT_SECS = int(os.environ.get("DEMO_RUN_TIMEOUT_SECS", "1500"))  # hard wall-clock cap per run
 _runs_by_ip = {}
 
 
@@ -255,8 +257,9 @@ def sse(ev, data):
     return f"event: {ev}\ndata: {json.dumps(data)}\n\n"
 
 
-def worker(run_id, req):
-    q = runs[run_id]["q"]
+def worker(run_id, req, q):
+    """Runs in a child process: events go to the parent via q (mp.Queue), the
+    result is delivered ONLY through the JSON file in RUNS_DIR."""
     env_set = []
     env_prior = {}
 
@@ -326,7 +329,6 @@ def worker(run_id, req):
                         continue
                     raise
         result["_demo_model_requested"] = mode
-        runs[run_id]["result"] = result
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(result, f)
         q.put(("done", {"ok": True}))
@@ -354,14 +356,52 @@ async def analyze(request: Request):
     if not run_lock.acquire(blocking=False):
         return JSONResponse({"error": "a run is already in progress"}, status_code=409)
     run_id = uuid.uuid4().hex[:12]
-    runs[run_id] = {"q": queue.Queue(), "result": None}
+    runs[run_id] = {"q": queue.Queue(), "result": None, "proc": None}
     req["chain"] = chain
     req["txn_hash"] = tx
 
     def guarded():
+        """Owns the child process: drains its event queue, enforces the hard
+        run timeout, releases the global lock exactly once."""
+        q = runs[run_id]["q"]
+        mp_q = mp.Queue()
+        proc = mp.Process(target=worker, args=(run_id, req, mp_q), daemon=True)
+        proc.start()
+        runs[run_id]["proc"] = proc
+        deadline = time.time() + RUN_TIMEOUT_SECS
+        ended = False
         try:
-            worker(run_id, req)
+            while True:
+                try:
+                    ev, data = mp_q.get(timeout=2)
+                    q.put((ev, data))
+                    if ev == "end":
+                        ended = True
+                        break
+                except queue.Empty:
+                    pass
+                if not proc.is_alive():
+                    # drain whatever the child flushed before exiting
+                    while True:
+                        try:
+                            ev, data = mp_q.get(timeout=0.2)
+                            q.put((ev, data))
+                            if ev == "end":
+                                ended = True
+                        except queue.Empty:
+                            break
+                    break
+                if time.time() > deadline:
+                    proc.terminate()
+                    q.put(("error", f"run exceeded the {RUN_TIMEOUT_SECS // 60}-minute limit and was cancelled"))
+                    break
+            proc.join(timeout=5)
+            if proc.is_alive():
+                proc.kill()
+                proc.join(timeout=5)
         finally:
+            if not ended:
+                q.put(("end", None))
             run_lock.release()
 
     threading.Thread(target=guarded, daemon=True).start()
@@ -386,11 +426,35 @@ async def stream(run_id: str):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+@app.post("/api/cancel/{run_id}")
+async def cancel(run_id: str):
+    r = runs.get(run_id)
+    if not r:
+        return JSONResponse({"error": "unknown run"}, status_code=404)
+    proc = r.get("proc")
+    if proc and proc.is_alive():
+        proc.terminate()  # the watchdog notices and releases the lock
+        r["q"].put(("log", "cancel requested - terminating the run process"))
+        return {"cancelled": True}
+    return {"cancelled": False, "reason": "no live process for this run"}
+
+
 @app.get("/api/result/{run_id}")
 async def result(run_id: str):
     r = runs.get(run_id)
-    if not r or r["result"] is None:
-        return JSONResponse({"error": "no result yet"}, status_code=404)
+    if r and r["result"] is not None:
+        pass
+    else:
+        # the worker runs in a child process; its result arrives as a file
+        out_path = os.path.join(RUNS_DIR, run_id + ".json")
+        if not os.path.exists(out_path):
+            return JSONResponse({"error": "no result yet"}, status_code=404)
+        try:
+            with open(out_path, encoding="utf-8") as f:
+                r = runs.setdefault(run_id, {"q": queue.Queue(), "result": None, "proc": None})
+                r["result"] = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return JSONResponse({"error": "no result yet"}, status_code=404)
     # strip internal helper fields before sending to the page
     out = {k: v for k, v in r["result"].items() if not k.startswith("_demo_")}
     return JSONResponse(out)
