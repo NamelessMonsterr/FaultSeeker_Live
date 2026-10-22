@@ -33,6 +33,9 @@ MODELS = [
     {"id": "grok-3-mini", "label": "Grok 3 Mini (xAI)", "keyEnv": "XAI_API_KEY"},
     {"id": "claude-3-haiku-20240307", "label": "Claude 3 Haiku (Anthropic)", "keyEnv": "ANTHROPIC_API_KEY"},
     {"id": "qwen-turbo", "label": "Qwen Turbo (Alibaba DashScope)", "keyEnv": "DASHSCOPE_API_KEY"},
+    {"id": "agnes-2.5-flash", "label": "agnes 2.5 flash (NaraRouter free)", "keyEnv": "NARAROUTER_API_KEY"},
+    {"id": "nemotron-3-ultra-free", "label": "Nemotron 3 Ultra free (NaraRouter)", "keyEnv": "NARAROUTER_API_KEY"},
+    {"id": "nemotron-3.5-lightning-free", "label": "Nemotron 3.5 Lightning free (NaraRouter)", "keyEnv": "NARAROUTER_API_KEY"},
 ]
 
 
