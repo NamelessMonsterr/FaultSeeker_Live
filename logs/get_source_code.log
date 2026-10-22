@@ -1,0 +1,16 @@
+2026-10-22 08:36:22,192 - faultseeker.rpc - WARNING - [rpc FAIL +40] https://eth.llamarpc.com debug_traceTransaction: HTTP 403 auth error (47ms)
+2026-10-22 08:36:22,383 - faultseeker.rpc - WARNING - [rpc FAIL +40] https://rpc.ankr.com/eth debug_traceTransaction: Unauthorized: You must authenticate your request with an API key. Create an account on https://www.ankr.com/rpc/ and generate your personal API key for free. (191ms)
+2026-10-22 08:36:22,418 - faultseeker.rpc - WARNING - [rpc FAIL +40] https://ethereum.publicnode.com debug_traceTransaction: HTTP 403 auth error (35ms)
+2026-10-22 08:36:22,483 - faultseeker.rpc - WARNING - [rpc FAIL +40] https://cloudflare-eth.com debug_traceTransaction: HTTP 403 auth error (64ms)
+2026-10-22 08:36:22,533 - faultseeker.rpc - WARNING - [rpc FAIL +40] https://eth.llamarpc.com trace_replayTransaction: HTTP 403 auth error (50ms)
+2026-10-22 08:36:22,735 - faultseeker.rpc - WARNING - [rpc FAIL +40] https://rpc.ankr.com/eth trace_replayTransaction: Unauthorized: You must authenticate your request with an API key. Create an account on https://www.ankr.com/rpc/ and generate your personal API key for free. (202ms)
+2026-10-22 08:36:22,788 - faultseeker.rpc - WARNING - [rpc FAIL +40] https://ethereum.publicnode.com trace_replayTransaction: HTTP 403 auth error (53ms)
+2026-10-22 08:36:22,851 - faultseeker.rpc - WARNING - [rpc FAIL +40] https://cloudflare-eth.com trace_replayTransaction: HTTP 403 auth error (63ms)
+2026-10-22 08:36:26,971 - faultseeker.rpc - WARNING - [rpc FAIL +40] https://ethereum.publicnode.com debug_traceTransaction: HTTP 403 auth error (52ms)
+2026-10-22 08:36:26,971 - faultseeker.rpc - WARNING - [circuit TRIPPED] https://ethereum.publicnode.com — paused 60s
+2026-10-22 08:36:27,015 - faultseeker.rpc - WARNING - [rpc FAIL +40] https://eth.llamarpc.com debug_traceTransaction: HTTP 403 auth error (43ms)
+2026-10-22 08:36:27,015 - faultseeker.rpc - WARNING - [circuit TRIPPED] https://eth.llamarpc.com — paused 60s
+2026-10-22 08:36:27,071 - faultseeker.rpc - WARNING - [rpc FAIL +40] https://cloudflare-eth.com debug_traceTransaction: HTTP 403 auth error (56ms)
+2026-10-22 08:36:27,071 - faultseeker.rpc - WARNING - [circuit TRIPPED] https://cloudflare-eth.com — paused 60s
+2026-10-22 08:36:27,255 - faultseeker.rpc - WARNING - [rpc FAIL +40] https://rpc.ankr.com/eth debug_traceTransaction: Unauthorized: You must authenticate your request with an API key. Create an account on https://www.ankr.com/rpc/ and generate your personal API key for free. (184ms)
+2026-10-22 08:36:27,255 - faultseeker.rpc - WARNING - [circuit TRIPPED] https://rpc.ankr.com/eth — paused 60s

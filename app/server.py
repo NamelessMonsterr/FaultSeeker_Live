@@ -51,6 +51,81 @@ run_lock = threading.Lock()
 app = FastAPI()
 
 
+# --- hosted-demo protection: access gate + per-IP run limits ----------------
+import hashlib
+import hmac
+import time
+
+from fastapi.responses import HTMLResponse, RedirectResponse
+
+HOST = os.environ.get("HOST", "127.0.0.1")
+PORT = int(os.environ.get("PORT", "8420"))
+GATE = os.environ.get("DEMO_GATE_PASSWORD", "").strip()
+RUN_LIMIT_PER_HOUR = int(os.environ.get("DEMO_RUN_LIMIT_PER_HOUR", "10"))
+RUN_LIMIT_PER_DAY = int(os.environ.get("DEMO_RUN_LIMIT_PER_DAY", "40"))
+_runs_by_ip = {}
+
+
+def _gate_token():
+    return hmac.new(GATE.encode(), b"faultseeker-demo-gate", hashlib.sha256).hexdigest()
+
+
+GATE_PAGE = """<!doctype html><html><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>FaultSeeker demo - access</title><style>
+body{background:#0a0f0a;color:#c8e6c9;font-family:monospace;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}
+form{border:1px solid #2e4d2e;padding:2rem;display:flex;flex-direction:column;gap:1rem;min-width:280px}
+input,button{background:#0f1a0f;border:1px solid #2e4d2e;color:#c8e6c9;font-family:monospace;padding:.6rem;font-size:1rem}
+button{cursor:pointer;background:#16301a}.err{color:#ff7070;font-size:.85rem}</style></head>
+<body><form method=post action="/gate">
+<div><b>FaultSeeker // Forensic Console</b></div>
+<div>Enter the demo access code</div>
+<input type=password name=password autofocus autocomplete=current-password>
+<button type=submit>Enter</button>__ERR__</form></body></html>"""
+
+
+@app.middleware("http")
+async def gate_and_limit(request: Request, call_next):
+    path = request.url.path
+    if path in ("/healthz", "/gate"):
+        return await call_next(request)
+    if GATE:
+        cookie = request.cookies.get("fs_gate", "")
+        if not hmac.compare_digest(cookie, _gate_token()):
+            return RedirectResponse(url="/gate", status_code=303)
+    if path == "/api/analyze" and request.method == "POST":
+        ip = request.client.host if request.client else "unknown"
+        now = time.time()
+        stamps = [t for t in _runs_by_ip.get(ip, []) if now - t < 86400]
+        if len([t for t in stamps if now - t < 3600]) >= RUN_LIMIT_PER_HOUR or len(stamps) >= RUN_LIMIT_PER_DAY:
+            return JSONResponse({"error": "run limit reached for this network, try later"}, status_code=429)
+        stamps.append(now)
+        _runs_by_ip[ip] = stamps
+    return await call_next(request)
+
+
+@app.get("/gate", response_class=HTMLResponse)
+async def gate_form():
+    return GATE_PAGE.replace("__ERR__", "")
+
+
+@app.post("/gate")
+async def gate_submit(request: Request):
+    form = await request.form()
+    if GATE and hmac.compare_digest(str(form.get("password", "")), GATE):
+        resp = RedirectResponse(url="/", status_code=303)
+        resp.set_cookie("fs_gate", _gate_token(), max_age=7 * 24 * 3600,
+                        httponly=True, samesite="lax", secure=True)
+        return resp
+    return HTMLResponse(GATE_PAGE.replace("__ERR__", '<div class=err>wrong code</div>'), status_code=401)
+
+
+@app.get("/healthz")
+async def healthz():
+    return {"ok": True}
+
+
+
 def sse(ev, data):
     return f"event: {ev}\ndata: {json.dumps(data)}\n\n"
 
@@ -192,4 +267,4 @@ if os.path.isdir(web):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8420, log_level="warning")
+    uvicorn.run(app, host=HOST, port=PORT, log_level="warning")
