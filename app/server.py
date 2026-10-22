@@ -6,6 +6,7 @@ import io
 import json
 import os
 import queue
+import re
 import sys
 import threading
 import uuid
@@ -29,10 +30,32 @@ MODELS = [
     {"id": "gpt-4o-mini", "label": "GPT-4o Mini (OpenAI)", "keyEnv": "OPENAI_API_KEY"},
     {"id": "gemini-2.0-flash", "label": "Gemini 2.0 Flash (Google)", "keyEnv": "GOOGLE_API_KEY"},
     {"id": "grok-3-mini", "label": "Grok 3 Mini (xAI)", "keyEnv": "XAI_API_KEY"},
-    {"id": "grok-3-mini", "label": "Grok 3 Mini (xAI)", "keyEnv": "XAI_API_KEY"},
     {"id": "claude-3-haiku-20240307", "label": "Claude 3 Haiku (Anthropic)", "keyEnv": "ANTHROPIC_API_KEY"},
     {"id": "qwen-turbo", "label": "Qwen Turbo (Alibaba DashScope)", "keyEnv": "DASHSCOPE_API_KEY"},
 ]
+
+
+def _key_list(env_name):
+    """Parse an env var holding one or many API keys.
+
+    Tolerates newline/comma/space separators and .env-style VAR= prefixes,
+    so a pasted multi-line .env chunk works as-is. Returns bare keys.
+    """
+    raw = os.environ.get(env_name, "").strip()
+    if not raw:
+        return []
+    keys = []
+    for tok in re.split(r"[\s,;]+", raw):
+        tok = tok.strip().strip('"').strip("'")
+        if not tok:
+            continue
+        if "=" in tok:
+            _, _, tok = tok.partition("=")
+        tok = tok.strip()
+        if tok:
+            keys.append(tok)
+    return keys
+
 
 # stdout fragments from the real pipeline -> UI stage index (0..4)
 STAGE_LINES = [
@@ -173,18 +196,32 @@ def worker(run_id, req):
             entry = next((m for m in MODELS if m["id"] == mode), None)
             if not entry:
                 raise ValueError(f"unknown model {mode}")
-            if not model_key:
-                model_key = os.environ.get(entry["keyEnv"], "").strip()
-            if not model_key:
+            keys = [model_key] if model_key else _key_list(entry["keyEnv"])
+            if not keys:
                 raise ValueError(f"model {mode} needs an API key (Settings, or server env {entry['keyEnv']})")
             if entry["keyEnv"] not in env_set:
                 env_prior[entry["keyEnv"]] = os.environ.get(entry["keyEnv"])
-                os.environ[entry["keyEnv"]] = model_key
                 env_set.append(entry["keyEnv"])
-            q.put(("log", f"mode: full pipeline Stage 1-3 with {mode} (cost tracking on)"))
-            result = fs_main(txn_hash=req["txn_hash"], chain=req["chain"],
-                             forensics_model=mode, function_analysis_model=mode,
-                             track_cost=True, output_path=out_path)
+            for ki, one_key in enumerate(keys):
+                os.environ[entry["keyEnv"]] = one_key
+                which = f" (key {ki + 1}/{len(keys)})" if len(keys) > 1 else ""
+                q.put(("log", f"mode: full pipeline Stage 1-3 with {mode}{which} (cost tracking on)"))
+                try:
+                    result = fs_main(txn_hash=req["txn_hash"], chain=req["chain"],
+                                     forensics_model=mode, function_analysis_model=mode,
+                                     track_cost=True, output_path=out_path)
+                    break
+                except Exception as key_err:  # noqa: BLE001 - rotate fallback keys on auth/quota failures
+                    low = f"{type(key_err).__name__} {key_err}".lower()
+                    retryable = any(t in low for t in (
+                        "rate limit", "ratelimit", "429", "quota", "resource exhausted",
+                        "resource_exhausted", "401", "403", "unauthorized",
+                        "unauthenticated", "invalid api key", "api key not valid",
+                        "permission denied"))
+                    if ki < len(keys) - 1 and retryable:
+                        q.put(("log", f"{entry['keyEnv']} key {ki + 1} failed ({type(key_err).__name__}); rotating to fallback key {ki + 2}"))
+                        continue
+                    raise
         result["_demo_model_requested"] = mode
         runs[run_id]["result"] = result
         with open(out_path, "w", encoding="utf-8") as f:
