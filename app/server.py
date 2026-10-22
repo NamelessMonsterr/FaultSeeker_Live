@@ -188,7 +188,7 @@ def _hist_log_event(run_id, ev, data):
             return  # cap: stop logging a runaway stream
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps({"t": round(time.time(), 1), "ev": ev,
-                                "data": data if isinstance(data, (str, dict)) else str(data)}) + "\n")
+                                "data": _redact(data) if isinstance(data, str) else data}) + "\n")
     except OSError:
         pass
 _gh_hist_seed()
@@ -292,6 +292,21 @@ STAGE_LINES = [
     ("Stage 3", 4), ("Calibrated", 4),
 ]
 
+class RunBus:
+    """Append-only per-run event log. Any number of SSE clients replay from their
+    own cursor, so viewers no longer consume each other's events and a page
+    reload mid-run resumes the full stream."""
+
+    def __init__(self):
+        self.events = []
+        self.cond = threading.Condition()
+
+    def put(self, item):
+        with self.cond:
+            self.events.append(item)
+            self.cond.notify_all()
+
+
 runs = {}
 run_lock = threading.Lock()
 
@@ -312,6 +327,7 @@ RUN_LIMIT_PER_HOUR = int(os.environ.get("DEMO_RUN_LIMIT_PER_HOUR", "10"))
 RUN_LIMIT_PER_DAY = int(os.environ.get("DEMO_RUN_LIMIT_PER_DAY", "40"))
 RUN_TIMEOUT_SECS = int(os.environ.get("DEMO_RUN_TIMEOUT_SECS", "7200"))  # hard wall-clock cap per run
 _runs_by_ip = {}
+_diag_by_ip = {}
 
 
 def _gate_token():
@@ -341,6 +357,14 @@ async def gate_and_limit(request: Request, call_next):
         cookie = request.cookies.get("fs_gate", "")
         if not hmac.compare_digest(cookie, _gate_token()):
             return RedirectResponse(url="/gate", status_code=303)
+    if path in ("/api/llm-selftest", "/api/rpc-selftest"):
+        ip = request.client.host if request.client else "unknown"
+        now = time.time()
+        stamps = [t for t in _diag_by_ip.get(ip, []) if now - t < 3600]
+        if len(stamps) >= 30:
+            return JSONResponse({"error": "diagnostic limit reached for this network, try later"}, status_code=429)
+        stamps.append(now)
+        _diag_by_ip[ip] = stamps
     if path == "/api/analyze" and request.method == "POST":
         ip = request.client.host if request.client else "unknown"
         now = time.time()
@@ -430,7 +454,7 @@ def rpc_selftest(chain: str = "eth", mode: str = "calltracer"):
 
 
 @app.get("/api/llm-selftest")
-def llm_selftest(model: str = "gemini-3.8-flash", max_keys: int = 2,
+def llm_selftest(model: str = "gemini-3.8-flash", max_keys: int = 1,
                  keys: str = "", replay: str = ""):
     """Gated diagnostic. Default: one real 8-token LLM call per key.
 
@@ -454,6 +478,7 @@ def llm_selftest(model: str = "gemini-3.8-flash", max_keys: int = 2,
     req_keys = [k.strip().strip('"').strip("'")
                 for k in re.sub(r"[\s,;]+", " ", keys or "").split() if k.strip()]
     keys = req_keys or _key_list(entry["keyEnv"])
+    _env_prior = os.environ.get(entry["keyEnv"])
     if req_keys:
         os.environ[entry["keyEnv"]] = "\n".join(req_keys)
     env_report = {v: (os.getenv(v) is not None)
@@ -468,7 +493,7 @@ def llm_selftest(model: str = "gemini-3.8-flash", max_keys: int = 2,
         if model.startswith(prefix):
             base_url = cfg[0]
             break
-    for i, k in enumerate(keys[:max(1, max_keys)]):
+    for i, k in enumerate(keys[:min(max(1, max_keys), 3)]):
         try:
             client = _oai.OpenAI(api_key=k, base_url=base_url, timeout=30)
             r = client.chat.completions.create(
@@ -481,6 +506,11 @@ def llm_selftest(model: str = "gemini-3.8-flash", max_keys: int = 2,
         except Exception as e:  # noqa: BLE001 - diagnostic reports every failure type
             out.append({"key_index": i + 1, "ok": False,
                         "err": f"{type(e).__name__}: {str(e)[:160]}"})
+    if req_keys:
+        if _env_prior is None:
+            os.environ.pop(entry["keyEnv"], None)
+        else:
+            os.environ[entry["keyEnv"]] = _env_prior
     result = {"model": model, "base_url": base_url, "keys": out, "key_count": len(keys),
               "openai_version": getattr(_oai_ver, "__version__", "?"), "env_overrides_set": env_report}
     if replay == "stage2" and keys:
@@ -517,8 +547,36 @@ async def healthz():
 
 
 
+# --- central output redaction: no secret reaches browser/logs/mirror ----------
+_SECRET_VALUES = []
+for _v in ("OPENAI_API_KEY", "GOOGLE_API_KEY", "XAI_API_KEY", "GROQ_API_KEY",
+           "NARAROUTER_API_KEY", "GITHUB_HISTORY_TOKEN", "ETH_RPC_URL", "ETH_RPC_URL_2",
+           "BSC_RPC_URL", "BSC_RPC_URL_2", "DEMO_GATE_PASSWORD"):
+    _val = os.environ.get(_v, "").strip()
+    if len(_val) >= 8:
+        _SECRET_VALUES.append(_val)
+        # also redact key-bearing URL path segments (e.g. QuickNode token)
+        for _seg in re.findall(r"/([A-Za-z0-9_-]{20,})", _val):
+            _SECRET_VALUES.append(_seg)
+
+
+def _redact(s):
+    """Strip any known secret (and generic bearer/api-key shapes) from streamed text."""
+    if not isinstance(s, str):
+        try:
+            s = json.dumps(s)
+        except Exception:
+            s = str(s)
+    for v in _SECRET_VALUES:
+        if v in s:
+            s = s.replace(v, "***")
+    s = re.sub(r"(?i)bearer\s+[A-Za-z0-9._\-]{12,}", "Bearer ***", s)
+    s = re.sub(r"(?i)(api[_-]?key|token|password)([=:\\s]+)[^\\s,;&]{8,}", r"\1\2***", s)
+    return s
+
+
 def sse(ev, data):
-    return f"event: {ev}\ndata: {json.dumps(data)}\n\n"
+    return f"event: {ev}\ndata: {json.dumps(_redact(data) if isinstance(data, str) else data)}\n\n"
 
 
 def worker(run_id, req, q):
@@ -644,7 +702,7 @@ def worker(run_id, req, q):
             json.dump(result, f)
         q.put(("done", {"ok": True}))
     except Exception as e:  # noqa: BLE001 - surface any pipeline failure as fallback trigger
-        q.put(("error", f"{type(e).__name__}: {str(e)[:400]}"))
+        q.put(("error", _redact(f"{type(e).__name__}: {str(e)[:400]}")))
     finally:
         sys.stdout = old_out
         for k in env_set:
@@ -665,7 +723,7 @@ async def analyze(request: Request):
         if not run_lock.acquire(blocking=False):
             return JSONResponse({"error": "a run is already in progress"}, status_code=409)
         run_id = uuid.uuid4().hex[:12]
-        runs[run_id] = {"q": queue.Queue(), "result": None, "proc": None}
+        runs[run_id] = {"q": RunBus(), "result": None, "proc": None}
         _hist_upsert({"run_id": run_id, "txn_hash": demo["txn_hash"], "chain": demo["chain"],
                       "model": "saved-replay", "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                       "status": "running"})
@@ -706,16 +764,23 @@ async def analyze(request: Request):
                 q.put(("end", None))
                 run_lock.release()
 
-        threading.Thread(target=replay, daemon=True).start()
+        try:
+            threading.Thread(target=replay, daemon=True).start()
+        except Exception as exc:
+            runs.pop(run_id, None)
+            run_lock.release()
+            return JSONResponse({"error": f"could not start replay: {exc}"}, status_code=500)
         return {"run_id": run_id}
     if not (tx.startswith("0x") and len(tx) == 66):
         return JSONResponse({"error": "transaction hash must be 0x + 64 hex chars"}, status_code=400)
     if chain not in CHAINS:
         return JSONResponse({"error": f"unsupported chain {chain}"}, status_code=400)
+    if (req.get("mode") or "no-llm") not in {m["id"] for m in MODELS}:
+        return JSONResponse({"error": "unknown model"}, status_code=400)
     if not run_lock.acquire(blocking=False):
         return JSONResponse({"error": "a run is already in progress"}, status_code=409)
     run_id = uuid.uuid4().hex[:12]
-    runs[run_id] = {"q": queue.Queue(), "result": None, "proc": None}
+    runs[run_id] = {"q": RunBus(), "result": None, "proc": None}
     _hist_upsert({"run_id": run_id, "txn_hash": tx, "chain": chain,
                   "model": req.get("mode", "no-llm"),
                   "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -727,9 +792,15 @@ async def analyze(request: Request):
         """Owns the child process: drains its event queue, enforces the hard
         run timeout, releases the global lock exactly once."""
         q = runs[run_id]["q"]
-        mp_q = mp.Queue()
-        proc = mp.Process(target=worker, args=(run_id, req, mp_q), daemon=True)
-        proc.start()
+        try:
+            mp_q = mp.Queue()
+            proc = mp.Process(target=worker, args=(run_id, req, mp_q), daemon=True)
+            proc.start()
+        except Exception as exc:  # never leak the global lock on startup failure
+            q.put(("error", _redact(f"worker failed to start: {type(exc).__name__}: {exc}")))
+            q.put(("end", None))
+            run_lock.release()
+            return
         runs[run_id]["proc"] = proc
         deadline = time.time() + RUN_TIMEOUT_SECS
         started = time.time()
@@ -804,7 +875,12 @@ async def analyze(request: Request):
             _hist_upsert(final_entry)
             _gh_hist_sync(run_id, final_entry, res)
 
-    threading.Thread(target=guarded, daemon=True).start()
+    try:
+        threading.Thread(target=guarded, daemon=True).start()
+    except Exception as exc:
+        runs.pop(run_id, None)
+        run_lock.release()
+        return JSONResponse({"error": f"could not start run: {exc}"}, status_code=500)
     return {"run_id": run_id}
 
 
@@ -815,12 +891,21 @@ async def stream(run_id: str):
     q = runs[run_id]["q"]
 
     def gen():
+        cursor = 0
         while True:
-            ev, data = q.get()
-            if ev == "end":
-                yield sse("end", {})
-                break
-            yield sse(ev, data)
+            with q.cond:
+                if cursor >= len(q.events):
+                    q.cond.wait(timeout=15)
+                batch = q.events[cursor:]
+                cursor += len(batch)
+            if not batch:
+                yield ": hb\n\n"  # heartbeat: hold proxies open on quiet runs
+                continue
+            for ev, data in batch:
+                if ev == "end":
+                    yield sse("end", {})
+                    return
+                yield sse(ev, data)
 
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -876,14 +961,14 @@ def _adapt_result_for_view(res):
         "transaction": {"hash": res.get("transaction_hash", ""), "chain": res.get("chain", ""),
                         "analysis_duration": res.get("duration", 0)},
         "analysis_mode": "live-pipeline",
-        "analysis_status": "completed",
-        "stage_completed": "stage-3",
+        "analysis_status": "completed" if (scored or cards or dbg) else "inconclusive",
+        "stage_completed": "stage-3" if dbg.get("analysis_duration") else ("stage-2" if dbg.get("forensics_duration") else "unknown"),
         "llm_cost": res.get("llm_cost", 0) or 0,
         "limitations": res.get("limitations") or [],
         "rpc_source": "server-env",
         "query_records": [],
         "classification": {
-            "rule_verdict": "CONFIRMED" if cards else ("SUSPECT" if scored else "CLEAN"),
+            "rule_verdict": "CONFIRMED" if cards else ("SUSPECT" if scored else "INCONCLUSIVE"),
             "rule_confidence": res.get("priority_score", 0) or 0,
             "matched_rule": ("evidence card: " + str(cards[0].get("function_signature", {}).get("function", "?"))) if cards else "none",
             "vuln_type_hint": hint,
@@ -926,7 +1011,7 @@ async def result(run_id: str):
             return JSONResponse({"error": "no result yet"}, status_code=404)
         try:
             with open(out_path, encoding="utf-8") as f:
-                r = runs.setdefault(run_id, {"q": queue.Queue(), "result": None, "proc": None})
+                r = runs.setdefault(run_id, {"q": RunBus(), "result": None, "proc": None})
                 r["result"] = json.load(f)
         except (OSError, json.JSONDecodeError):
             return JSONResponse({"error": "no result yet"}, status_code=404)
@@ -1000,17 +1085,18 @@ async function main(){
     const brief = e.status==='completed'
       ? `scored ${b.scored_functions??0} fn, ${b.evidence_cards??0} evidence cards, priority ${b.priority??'-'} (${b.priority_score??'-'})`
       : (e.detail||'');
-    div.innerHTML = `<span class="badge ${cls}">${e.status||'?'}</span> `+
-      `<b>${(e.model||'')}</b> ${(e.txn_hash||'').slice(0,12)}... ${e.chain||''} `+
-      `<span class=dim>${e.started_at||''}${e.duration_secs?` - ${Math.round(e.duration_secs)}s`:''}</span>`+
-      `<div class=dim>${brief}</div><div class=det style=display:none></div>`;
+    const esc = s => String(s??'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+    div.innerHTML = `<span class="badge ${cls}">${esc(e.status)||'?'}</span> `+
+      `<b>${esc(e.model)}</b> ${esc((e.txn_hash||'').slice(0,12))}... ${esc(e.chain)} `+
+      `<span class=dim>${esc(e.started_at)}${e.duration_secs?` - ${Math.round(e.duration_secs)}s`:''}</span>`+
+      `<div class=dim>${esc(brief)}</div><div class=det style=display:none></div>`;
     const det = div.querySelector('.det');
     div.onclick = async () => {
       if(det.style.display==='none'){
         det.style.display='block'; det.textContent='loading stages...';
         const d = await (await fetch('/api/runs/'+e.run_id)).json();
         let h = '<table>';
-        for(const st of (d.stages||[])) h += `<tr><td class=dim>+${st.at_secs}s</td><td></td><td>${st.text}</td></tr>`;
+        for(const st of (d.stages||[])) h += `<tr><td class=dim>+${st.at_secs}s</td><td></td><td>${esc(st.text)}</td></tr>`;
         h += '</table>';
         if(d.entry && d.entry.brief && (d.entry.brief.top_functions||[]).length)
           h += '<div class=dim>top: '+d.entry.brief.top_functions.join(', ')+'</div>';
