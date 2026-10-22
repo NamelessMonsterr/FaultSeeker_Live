@@ -190,6 +190,7 @@ if os.path.isdir(REPO):
 CHAINS = ["eth", "bsc", "polygon", "arbitrum", "optimism", "avalanche", "base",
           "fantom", "zksync", "linea", "scroll", "gnosis", "celo", "cronos", "moonbeam", "aurora"]
 MODELS = [
+    {"id": "gpt-6.1-sol-medium", "label": "GPT-6.1 Sol medium (Codex)", "keyEnv": "OPENAI_API_KEY"},
     {"id": "z-ai/glm-5.3-flash", "label": "GLM 5.3 Flash (NVIDIA NIM)", "keyEnv": "NVIDIA_API_KEY"},
     {"id": "gpt-4o-mini", "label": "GPT-4o Mini (OpenAI)", "keyEnv": "OPENAI_API_KEY"},
     {"id": "gemini-3.8-flash", "label": "Gemini 3.8 Flash (Google)", "keyEnv": "GOOGLE_API_KEY"},
@@ -516,7 +517,7 @@ def worker(run_id, req, q):
         mode = req.get("mode", "no-llm")
         # Groq's free tier caps output tokens/min hard; parallel Stage 2 workers
         # blow through it together. Serialize unless the caller overrides.
-        _groqish = (req.get("mode") or "").startswith(("qwen/", "openai/gpt-oss", "allam-", "llama-", "z-ai/", "deepseek-ai/", "nvidia/"))
+        _groqish = (req.get("mode") or "").startswith(("qwen/", "openai/gpt-oss", "allam-", "llama-", "z-ai/", "deepseek-ai/", "nvidia/", "gpt-"))
         s2w = str(req.get("stage2_workers") or ("1" if _groqish else "")).strip()
         if s2w:
             env_prior["FAULTSEEKER_STAGE2_WORKERS"] = os.environ.get("FAULTSEEKER_STAGE2_WORKERS")
