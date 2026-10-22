@@ -168,6 +168,20 @@ def rpc_selftest(chain: str = "eth", mode: str = "calltracer"):
         method = "debug_traceTransaction"
         params = [probe_tx, {"disableMemory": True, "disableStack": False,
                              "disableStorage": False, "timeout": "60s"}]
+    elif mode == "structlogs-notimeout":
+        method = "debug_traceTransaction"
+        params = [probe_tx, {"disableMemory": True, "disableStack": False,
+                             "disableStorage": False}]
+    elif mode == "structlogs-noconfig":
+        method = "debug_traceTransaction"
+        params = [probe_tx]
+    elif mode == "prestate":
+        method = "debug_traceTransaction"
+        params = [probe_tx, {"tracer": "prestateTracer", "timeout": "60s"}]
+    elif mode == "prestatediff":
+        method = "debug_traceTransaction"
+        params = [probe_tx, {"tracer": "prestateTracer", "timeout": "60s",
+                             "tracerConfig": {"diffMode": True}}]
     elif mode == "replay":
         method = "trace_replayTransaction"
         params = [probe_tx, ["trace", "stateDiff"]]
