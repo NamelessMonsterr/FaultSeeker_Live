@@ -201,6 +201,7 @@ MODELS = [
     {"id": "agnes-2.5-flash", "label": "agnes 2.5 flash (NaraRouter free)", "keyEnv": "NARAROUTER_API_KEY"},
     {"id": "laguna-s-2.1", "label": "Laguna S 2.1 (NaraRouter free)", "keyEnv": "NARAROUTER_API_KEY"},
     {"id": "qwen/qwen3.8-27b", "label": "Qwen 3.8 27B (Groq)", "keyEnv": "GROQ_API_KEY"},
+    {"id": "z-ai/glm-5.3-flash", "label": "GLM 5.3 Flash (NVIDIA NIM)", "keyEnv": "NVIDIA_API_KEY"},
 ]
 
 
@@ -515,7 +516,7 @@ def worker(run_id, req, q):
         mode = req.get("mode", "no-llm")
         # Groq's free tier caps output tokens/min hard; parallel Stage 2 workers
         # blow through it together. Serialize unless the caller overrides.
-        _groqish = (req.get("mode") or "").startswith(("qwen/", "openai/gpt-oss", "allam-", "llama-"))
+        _groqish = (req.get("mode") or "").startswith(("qwen/", "openai/gpt-oss", "allam-", "llama-", "z-ai/", "deepseek-ai/", "nvidia/"))
         s2w = str(req.get("stage2_workers") or ("1" if _groqish else "")).strip()
         if s2w:
             env_prior["FAULTSEEKER_STAGE2_WORKERS"] = os.environ.get("FAULTSEEKER_STAGE2_WORKERS")
