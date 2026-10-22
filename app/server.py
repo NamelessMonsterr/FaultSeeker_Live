@@ -190,7 +190,7 @@ if os.path.isdir(REPO):
 CHAINS = ["eth", "bsc", "polygon", "arbitrum", "optimism", "avalanche", "base",
           "fantom", "zksync", "linea", "scroll", "gnosis", "celo", "cronos", "moonbeam", "aurora"]
 MODELS = [
-    {"id": "no-llm", "label": "No LLM - deterministic Stage 1 (free RPC)", "keyEnv": None},
+    {"id": "z-ai/glm-5.3-flash", "label": "GLM 5.3 Flash (NVIDIA NIM)", "keyEnv": "NVIDIA_API_KEY"},
     {"id": "gpt-4o-mini", "label": "GPT-4o Mini (OpenAI)", "keyEnv": "OPENAI_API_KEY"},
     {"id": "gemini-3.8-flash", "label": "Gemini 3.8 Flash (Google)", "keyEnv": "GOOGLE_API_KEY"},
     {"id": "grok-3-mini", "label": "Grok 3 Mini (xAI)", "keyEnv": "XAI_API_KEY"},
@@ -201,7 +201,7 @@ MODELS = [
     {"id": "agnes-2.5-flash", "label": "agnes 2.5 flash (NaraRouter free)", "keyEnv": "NARAROUTER_API_KEY"},
     {"id": "laguna-s-2.1", "label": "Laguna S 2.1 (NaraRouter free)", "keyEnv": "NARAROUTER_API_KEY"},
     {"id": "qwen/qwen3.8-27b", "label": "Qwen 3.8 27B (Groq)", "keyEnv": "GROQ_API_KEY"},
-    {"id": "z-ai/glm-5.3-flash", "label": "GLM 5.3 Flash (NVIDIA NIM)", "keyEnv": "NVIDIA_API_KEY"},
+    {"id": "no-llm", "label": "No LLM - deterministic Stage 1 (free RPC)", "keyEnv": None},
 ]
 
 
