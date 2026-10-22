@@ -26,6 +26,7 @@ os.makedirs(RUNS_DIR, exist_ok=True)
 HISTORY_PATH = os.path.join(RUNS_DIR, "index.json")
 
 
+
 def _hist_load():
     try:
         with open(HISTORY_PATH, encoding="utf-8") as f:
@@ -70,6 +71,105 @@ def _hist_brief(res):
             "top_functions": top, "duration_secs": res.get("duration")}
 
 
+GH_HISTORY_TOKEN = os.environ.get("GITHUB_HISTORY_TOKEN", "").strip()
+GH_HISTORY_REPO = os.environ.get(
+    "GITHUB_HISTORY_REPO", "NamelessMonsterr/faultseeker-run-history").strip()
+
+
+def _gh_hist_put(path, content_bytes, message):
+    """Best-effort create/update of one file in the history repo (Contents API)."""
+    import base64
+    import urllib.request
+    if not GH_HISTORY_TOKEN:
+        return
+    api = "https://api.github.com/repos/%s/contents/%s" % (GH_HISTORY_REPO, path)
+    headers = {"Authorization": "Bearer " + GH_HISTORY_TOKEN,
+               "Accept": "application/vnd.github+json",
+               "User-Agent": "faultseeker-demo-console"}
+    sha = None
+    try:
+        req = urllib.request.Request(api, headers=headers)
+        with urllib.request.urlopen(req, timeout=15) as r:
+            sha = json.loads(r.read().decode()).get("sha")
+    except Exception:
+        sha = None
+    body = {"message": message,
+            "content": base64.b64encode(content_bytes).decode()}
+    if sha:
+        body["sha"] = sha
+    try:
+        req = urllib.request.Request(api, data=json.dumps(body).encode(),
+                                     headers=headers, method="PUT")
+        with urllib.request.urlopen(req, timeout=30) as r:
+            r.read()
+    except Exception:
+        pass  # mirror is best-effort; never break a run over it
+
+
+def _gh_hist_sync(run_id, entry, res):
+    """Mirror one finished run (result, event log, index) to GitHub."""
+    def work():
+        try:
+            _gh_hist_put("runs/%s.json" % run_id,
+                         json.dumps({"entry": entry, "result": res}, indent=1).encode(),
+                         "run %s: %s" % (run_id, entry.get("status")))
+            ev_path = os.path.join(RUNS_DIR, run_id + ".events.jsonl")
+            if os.path.exists(ev_path):
+                with open(ev_path, "rb") as f:
+                    _gh_hist_put("runs/%s.events.jsonl" % run_id, f.read(),
+                                 "run %s event log" % run_id)
+            _gh_hist_put("index.json",
+                         json.dumps(_hist_load(), indent=1).encode(),
+                         "history index update")
+        except Exception:
+            pass
+    threading.Thread(target=work, daemon=True).start()
+
+
+def _gh_hist_get(path):
+    """Fetch one file's raw bytes from the history repo; None on any miss."""
+    import base64
+    import urllib.request
+    if not GH_HISTORY_TOKEN:
+        return None
+    api = "https://api.github.com/repos/%s/contents/%s" % (GH_HISTORY_REPO, path)
+    headers = {"Authorization": "Bearer " + GH_HISTORY_TOKEN,
+               "Accept": "application/vnd.github+json",
+               "User-Agent": "faultseeker-demo-console"}
+    try:
+        req = urllib.request.Request(api, headers=headers)
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return base64.b64decode(json.loads(r.read().decode())["content"])
+    except Exception:
+        return None
+
+
+def _gh_hist_seed():
+    """On a fresh ephemeral disk, pull the GitHub-mirrored history back down."""
+    if os.path.exists(HISTORY_PATH) or not GH_HISTORY_TOKEN:
+        return
+    raw = _gh_hist_get("index.json")
+    if not raw:
+        return
+    try:
+        entries = json.loads(raw.decode())
+        if isinstance(entries, list):
+            _hist_save(entries)
+    except (ValueError, UnicodeDecodeError):
+        return
+    for e in entries[-30:]:
+        rid = e.get("run_id")
+        if not rid:
+            continue
+        ev = _gh_hist_get("runs/%s.events.jsonl" % rid)
+        if ev:
+            try:
+                with open(os.path.join(RUNS_DIR, rid + ".events.jsonl"), "wb") as f:
+                    f.write(ev)
+            except OSError:
+                pass
+
+
 def _hist_log_event(run_id, ev, data):
     """Append one run event to its JSONL log (capped)."""
     path = os.path.join(RUNS_DIR, run_id + ".events.jsonl")
@@ -81,6 +181,9 @@ def _hist_log_event(run_id, ev, data):
                                 "data": data if isinstance(data, (str, dict)) else str(data)}) + "\n")
     except OSError:
         pass
+_gh_hist_seed()
+
+
 if os.path.isdir(REPO):
     sys.path.insert(0, REPO)
 
@@ -595,11 +698,13 @@ async def analyze(request: Request):
                 outcome = "completed" if ended else outcome
             if res is not None and ended and outcome != "error":
                 outcome = "completed"
-            _hist_upsert({"run_id": run_id, "status": outcome,
-                          "detail": outcome_msg,
-                          "ended_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                          "duration_secs": round(time.time() - started, 1),
-                          "brief": _hist_brief(res) if res else {}})
+            final_entry = {"run_id": run_id, "status": outcome,
+                           "detail": outcome_msg,
+                           "ended_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                           "duration_secs": round(time.time() - started, 1),
+                           "brief": _hist_brief(res) if res else {}}
+            _hist_upsert(final_entry)
+            _gh_hist_sync(run_id, final_entry, res)
 
     threading.Thread(target=guarded, daemon=True).start()
     return {"run_id": run_id}
