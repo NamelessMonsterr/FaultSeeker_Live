@@ -7,6 +7,7 @@ ENV FAULTSEEKER_MAX_FUNCTIONS=5
 # Codex OAuth proxy: route gpt-* models here; medium reasoning calls can exceed 2 min
 ENV OPENAI_BASE_URL=https://codex-proxy-render.onrender.com/v1
 ENV FAULTSEEKER_LLM_TIMEOUT_SECS=300
+ENV FAULTSEEKER_SKIP_STRUCTLOGS=1
 WORKDIR /srv
 
 RUN apt-get update \
@@ -24,7 +25,7 @@ ARG FAULTSEEKER_REF=console-demo-compat
 # Bump this SHA to the fork commit to deploy: the changed ARG value invalidates
 # the Docker layer cache so the clone below re-runs (clone --branch needs a
 # branch/tag name, not a raw SHA).
-ARG FAULTSEEKER_SHA=6e5c5442a652a0f416a8505b2355833206324801
+ARG FAULTSEEKER_SHA=8f2ede73d25205c9ec7189c125ce1d5aa8884897
 RUN echo "deploying fork commit $FAULTSEEKER_SHA"  && git clone --depth 1 --branch "$FAULTSEEKER_REF" "$FAULTSEEKER_REPO" /srv/FaultSeeker-
 
 RUN pip install -r /srv/FaultSeeker-/requirements.txt
