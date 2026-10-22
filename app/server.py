@@ -12,6 +12,8 @@ import sys
 import threading
 import uuid
 
+from datetime import datetime, timezone
+
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -21,6 +23,64 @@ REPO = os.environ.get("FAULTSEEKER_REPO", os.path.normpath(os.path.join(HERE, ".
 CAPTURE = os.environ.get("FAULTSEEKER_CAPTURE", os.path.join(REPO, "demo_outputs", "eth_0x0788ba22.json"))
 RUNS_DIR = os.path.join(HERE, "runs")
 os.makedirs(RUNS_DIR, exist_ok=True)
+HISTORY_PATH = os.path.join(RUNS_DIR, "index.json")
+
+
+def _hist_load():
+    try:
+        with open(HISTORY_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def _hist_save(entries):
+    tmp = HISTORY_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(entries[-200:], f)  # keep last 200 runs
+    os.replace(tmp, HISTORY_PATH)
+
+
+def _hist_upsert(entry):
+    entries = _hist_load()
+    for i, e in enumerate(entries):
+        if e.get("run_id") == entry.get("run_id"):
+            entries[i] = {**e, **entry}
+            _hist_save(entries)
+            return
+    entries.append(entry)
+    _hist_save(entries)
+
+
+def _hist_brief(res):
+    """Short human summary of a result dict for the history list."""
+    if not isinstance(res, dict):
+        return {}
+    scored = res.get("scored_functions") or []
+    cards = res.get("evidence_cards") or []
+    ranked = res.get("ranked_suspicious_functions") or []
+    top = []
+    for it in ranked[:3]:
+        if isinstance(it, dict):
+            top.append(it.get("function") or it.get("function_name") or it.get("name") or "?")
+        else:
+            top.append(str(it))
+    return {"scored_functions": len(scored), "evidence_cards": len(cards),
+            "priority": res.get("priority"), "priority_score": res.get("priority_score"),
+            "top_functions": top, "duration_secs": res.get("duration")}
+
+
+def _hist_log_event(run_id, ev, data):
+    """Append one run event to its JSONL log (capped)."""
+    path = os.path.join(RUNS_DIR, run_id + ".events.jsonl")
+    try:
+        if os.path.exists(path) and os.path.getsize(path) > 2_000_000:
+            return  # cap: stop logging a runaway stream
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"t": round(time.time(), 1), "ev": ev,
+                                "data": data if isinstance(data, (str, dict)) else str(data)}) + "\n")
+    except OSError:
+        pass
 if os.path.isdir(REPO):
     sys.path.insert(0, REPO)
 
@@ -455,6 +515,10 @@ async def analyze(request: Request):
         return JSONResponse({"error": "a run is already in progress"}, status_code=409)
     run_id = uuid.uuid4().hex[:12]
     runs[run_id] = {"q": queue.Queue(), "result": None, "proc": None}
+    _hist_upsert({"run_id": run_id, "txn_hash": tx, "chain": chain,
+                  "model": req.get("mode", "no-llm"),
+                  "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                  "status": "running"})
     req["chain"] = chain
     req["txn_hash"] = tx
 
@@ -467,12 +531,18 @@ async def analyze(request: Request):
         proc.start()
         runs[run_id]["proc"] = proc
         deadline = time.time() + RUN_TIMEOUT_SECS
+        started = time.time()
         ended = False
+        outcome = "stopped"
+        outcome_msg = ""
         try:
             while True:
                 try:
                     ev, data = mp_q.get(timeout=2)
                     q.put((ev, data))
+                    _hist_log_event(run_id, ev, data)
+                    if ev == "error":
+                        outcome, outcome_msg = "error", str(data)[:200]
                     if ev == "end":
                         ended = True
                         break
@@ -484,6 +554,9 @@ async def analyze(request: Request):
                         try:
                             ev, data = mp_q.get(timeout=0.2)
                             q.put((ev, data))
+                            _hist_log_event(run_id, ev, data)
+                            if ev == "error":
+                                outcome, outcome_msg = "error", str(data)[:200]
                             if ev == "end":
                                 ended = True
                         except queue.Empty:
@@ -491,20 +564,42 @@ async def analyze(request: Request):
                     break
                 if time.time() > deadline:
                     proc.terminate()
+                    outcome = "timeout"
+                    outcome_msg = f"exceeded the {RUN_TIMEOUT_SECS // 60}-minute limit"
                     q.put(("error", f"run exceeded the {RUN_TIMEOUT_SECS // 60}-minute limit and was cancelled"))
+                    _hist_log_event(run_id, "error", outcome_msg)
                     break
             proc.join(timeout=5)
             if proc.is_alive():
                 proc.kill()
                 proc.join(timeout=5)
-            if not ended:
+            if not ended and outcome != "timeout":
                 # Worker died without emitting an error event: surface the exit
                 # code so silent wedges (OOM SIGKILL=-9, segfault=-11) are visible.
+                outcome = "cancelled" if proc.exitcode == -15 else "died"
+                outcome_msg = f"worker exit code {proc.exitcode} (-9 usually means OOM)"
                 q.put(("error", f"worker process died unexpectedly (exit code {proc.exitcode}; -9 usually means OOM)"))
         finally:
             if not ended:
                 q.put(("end", None))
             run_lock.release()
+            # finalize the history entry: status + brief from the result file
+            res = None
+            out_path = os.path.join(RUNS_DIR, run_id + ".json")
+            try:
+                with open(out_path, encoding="utf-8") as f:
+                    res = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                res = None
+            if res is not None and outcome in ("stopped",):
+                outcome = "completed" if ended else outcome
+            if res is not None and ended and outcome != "error":
+                outcome = "completed"
+            _hist_upsert({"run_id": run_id, "status": outcome,
+                          "detail": outcome_msg,
+                          "ended_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                          "duration_secs": round(time.time() - started, 1),
+                          "brief": _hist_brief(res) if res else {}})
 
     threading.Thread(target=guarded, daemon=True).start()
     return {"run_id": run_id}
@@ -560,6 +655,100 @@ async def result(run_id: str):
     # strip internal helper fields before sending to the page
     out = {k: v for k, v in r["result"].items() if not k.startswith("_demo_")}
     return JSONResponse(out)
+
+
+@app.get("/api/runs")
+async def list_runs():
+    """Persistent run history (survives restarts; NOT redeploys on free tier)."""
+    return {"runs": list(reversed(_hist_load()))}
+
+
+_STAGE_MARK = re.compile(r"(\[Stage \d|\[OK\]|\[\d+/\d+\]|Analyzing|completed|Ranking|Scoring)")
+
+
+@app.get("/api/runs/{run_id}")
+async def run_detail(run_id: str):
+    entry = next((e for e in _hist_load() if e.get("run_id") == run_id), None)
+    if not entry:
+        return JSONResponse({"error": "unknown run"}, status_code=404)
+    stages = []
+    t0 = None
+    path = os.path.join(RUNS_DIR, run_id + ".events.jsonl")
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if t0 is None:
+                    t0 = rec.get("t") or 0
+                if rec.get("ev") == "log" and isinstance(rec.get("data"), str):
+                    txt = rec["data"]
+                    if _STAGE_MARK.search(txt):
+                        stages.append({"at_secs": round((rec.get("t") or 0) - t0, 1),
+                                       "text": txt[:160]})
+                elif rec.get("ev") == "error":
+                    stages.append({"at_secs": round((rec.get("t") or 0) - t0, 1),
+                                   "text": "ERROR: " + str(rec.get("data"))[:160]})
+    except OSError:
+        pass
+    return {"entry": entry, "stages": stages}
+
+
+HISTORY_PAGE = """<!doctype html><html><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>FaultSeeker demo - run history</title><style>
+body{background:#0a0f0a;color:#c8e6c9;font-family:monospace;margin:0;padding:1.5rem}
+h1{font-size:1.1rem;border-bottom:1px solid #2e4d2e;padding-bottom:.5rem}
+a{color:#7fd07f}.run{border:1px solid #2e4d2e;margin:.6rem 0;padding:.7rem;cursor:pointer}
+.run:hover{background:#0f1a0f}.badge{display:inline-block;min-width:6.5rem;font-weight:bold}
+.ok{color:#6fe36f}.err{color:#ff7070}.warn{color:#ffd070}.dim{color:#6a8a6a;font-size:.85rem}
+.det{margin:.4rem 0 0 1rem;font-size:.85rem;white-space:pre-wrap}
+table{border-collapse:collapse}td{padding:.1rem .8rem .1rem 0;vertical-align:top}
+.foot{margin-top:1.5rem;color:#4a6a4a;font-size:.75rem}</style></head>
+<body><h1>FaultSeeker // run history</h1><div id=out>loading...</div>
+<div class=foot>History persists across service restarts but not redeploys (free-tier disk is ephemeral).</div>
+<script>
+async function main(){
+  const r = await fetch('/api/runs'); const j = await r.json();
+  const out = document.getElementById('out');
+  if(!j.runs || !j.runs.length){ out.textContent = 'no runs recorded yet'; return; }
+  out.innerHTML = '';
+  for(const e of j.runs){
+    const div = document.createElement('div'); div.className='run';
+    const cls = e.status==='completed'?'ok':(e.status==='running'?'warn':'err');
+    const b = e.brief||{};
+    const brief = e.status==='completed'
+      ? `scored ${b.scored_functions??0} fn, ${b.evidence_cards??0} evidence cards, priority ${b.priority??'-'} (${b.priority_score??'-'})`
+      : (e.detail||'');
+    div.innerHTML = `<span class="badge ${cls}">${e.status||'?'}</span> `+
+      `<b>${(e.model||'')}</b> ${(e.txn_hash||'').slice(0,12)}... ${e.chain||''} `+
+      `<span class=dim>${e.started_at||''}${e.duration_secs?` - ${Math.round(e.duration_secs)}s`:''}</span>`+
+      `<div class=dim>${brief}</div><div class=det style=display:none></div>`;
+    const det = div.querySelector('.det');
+    div.onclick = async () => {
+      if(det.style.display==='none'){
+        det.style.display='block'; det.textContent='loading stages...';
+        const d = await (await fetch('/api/runs/'+e.run_id)).json();
+        let h = '<table>';
+        for(const st of (d.stages||[])) h += `<tr><td class=dim>+${st.at_secs}s</td><td></td><td>${st.text}</td></tr>`;
+        h += '</table>';
+        if(d.entry && d.entry.brief && (d.entry.brief.top_functions||[]).length)
+          h += '<div class=dim>top: '+d.entry.brief.top_functions.join(', ')+'</div>';
+        det.innerHTML = h || 'no stage detail recorded';
+      } else det.style.display='none';
+    };
+    out.appendChild(div);
+  }
+}
+main();
+</script></body></html>"""
+
+
+@app.get("/history", response_class=HTMLResponse)
+async def history_page():
+    return HISTORY_PAGE
 
 
 @app.get("/api/capture")
