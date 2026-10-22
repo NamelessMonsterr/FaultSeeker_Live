@@ -37,6 +37,7 @@ MODELS = [
     {"id": "minimax-m3.1-flash:free", "label": "MiniMax M3.1 Flash free (NaraRouter)", "keyEnv": "NARAROUTER_API_KEY"},
     {"id": "agnes-2.5-flash", "label": "agnes 2.5 flash (NaraRouter free)", "keyEnv": "NARAROUTER_API_KEY"},
     {"id": "laguna-s-2.1", "label": "Laguna S 2.1 (NaraRouter free)", "keyEnv": "NARAROUTER_API_KEY"},
+    {"id": "qwen/qwen3.8-27b", "label": "Qwen 3.8 27B (Groq)", "keyEnv": "GROQ_API_KEY"},
 ]
 
 
