@@ -59,9 +59,11 @@ fork - ANALYZE works here.
 - Access is gated: the site asks for the demo access code first
   (`DEMO_GATE_PASSWORD` env var on Render; rotate it there anytime). Rate
   limits: 10 runs/hour, 40/day per network, one run at a time.
-- Keys still live only in your browser session: dRPC/BlockPI RPC and LLM keys
-  go in ⚙ Settings and are sent per-request over HTTPS, held in memory for
-  that run only. Nothing is stored on the host.
+- Keys: server-side env vars on Render power out-of-the-box live runs
+  (`ETH_RPC_URL` = dRPC endpoint, `GOOGLE_API_KEY` = Gemini, optional
+  `BSC_RPC_URL` = BlockPI). The page's ⚙ Settings fields override them
+  per-request; request-sent keys are held in memory for that run only and
+  server env values are restored after every run. Keys never enter the repo.
 - Free tier notes: 512 MB RAM, sleeps after 15 min idle (first load after
   sleep takes ~30-60s). 750 free instance-hours/month.
 - Redeploy: Render auto-deploys on push to `main`. Manual: Render dashboard

@@ -133,6 +133,7 @@ def sse(ev, data):
 def worker(run_id, req):
     q = runs[run_id]["q"]
     env_set = []
+    env_prior = {}
 
     class Tap(io.TextIOBase):
         def write(self, s):
@@ -152,16 +153,12 @@ def worker(run_id, req):
         rpc_key = (req.get("rpc_key") or "").strip()
         model_key = (req.get("model_key") or "").strip()
         if rpc_url:
-            if "drpc" in rpc_url.lower():
-                os.environ["DRPC_RPC_URL"] = rpc_url
-                env_set.append("DRPC_RPC_URL")
-                if rpc_key:
-                    os.environ["DRPC_API_KEY"] = rpc_key
-                    env_set.append("DRPC_API_KEY")
-            else:
-                var = f"{req['chain'].upper()}_RPC_URL"
-                os.environ[var] = rpc_url
-                env_set.append(var)
+            # The pipeline reads {CHAIN}_RPC_URL (key embedded in the URL for
+            # dRPC/BlockPI style endpoints). Request value wins over server env.
+            var = f"{req['chain'].upper()}_RPC_URL"
+            env_prior[var] = os.environ.get(var)
+            os.environ[var] = rpc_url
+            env_set.append(var)
 
         mode = req.get("mode", "no-llm")
         from faultseeker.main import main as fs_main
@@ -176,9 +173,13 @@ def worker(run_id, req):
             if not entry:
                 raise ValueError(f"unknown model {mode}")
             if not model_key:
-                raise ValueError(f"model {mode} requires an API key in Settings")
-            os.environ[entry["keyEnv"]] = model_key
-            env_set.append(entry["keyEnv"])
+                model_key = os.environ.get(entry["keyEnv"], "").strip()
+            if not model_key:
+                raise ValueError(f"model {mode} needs an API key (Settings, or server env {entry['keyEnv']})")
+            if entry["keyEnv"] not in env_set:
+                env_prior[entry["keyEnv"]] = os.environ.get(entry["keyEnv"])
+                os.environ[entry["keyEnv"]] = model_key
+                env_set.append(entry["keyEnv"])
             q.put(("log", f"mode: full pipeline Stage 1-3 with {mode} (cost tracking on)"))
             result = fs_main(txn_hash=req["txn_hash"], chain=req["chain"],
                              forensics_model=mode, function_analysis_model=mode,
@@ -193,7 +194,10 @@ def worker(run_id, req):
     finally:
         sys.stdout = old_out
         for k in env_set:
-            os.environ.pop(k, None)
+            if env_prior.get(k) is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = env_prior[k]
         q.put(("end", None))
 
 
