@@ -303,6 +303,11 @@ def worker(run_id, req, q):
             env_set.append(var)
 
         mode = req.get("mode", "no-llm")
+        fb_model = (req.get("fallback_model") or "").strip()
+        if fb_model:
+            env_prior["FAULTSEEKER_LLM_FALLBACK_MODEL"] = os.environ.get("FAULTSEEKER_LLM_FALLBACK_MODEL")
+            os.environ["FAULTSEEKER_LLM_FALLBACK_MODEL"] = fb_model
+            env_set.append("FAULTSEEKER_LLM_FALLBACK_MODEL")
         from faultseeker.main import main as fs_main
 
         out_path = os.path.join(RUNS_DIR, run_id + ".json")
