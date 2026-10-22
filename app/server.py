@@ -217,7 +217,18 @@ def rpc_selftest(chain: str = "eth", mode: str = "calltracer"):
 
 
 @app.get("/api/llm-selftest")
-def llm_selftest(model: str = "gemini-3.8-flash", max_keys: int = 2):
+def llm_selftest(model: str = "gemini-3.8-flash", max_keys: int = 2,
+                 keys: str = "", replay: str = ""):
+    """Gated diagnostic. Default: one real 8-token LLM call per key.
+
+    keys=  optional request-supplied keys (comma/space/newline separated), used
+           only for this probe (never stored, never returned).
+    replay=stage2 additionally replays the EXACT Stage-2 task-selection call
+           through the fork's UniversalAgent (same class, same kwargs, same
+           prompt template + realistic payload) and reports the REAL exception
+           that _send_message would swallow, plus openai lib version and which
+           provider-override env vars are set (values never returned).
+    """
     """Gated diagnostic: one real 8-token LLM call per configured key.
 
     Reports per-key ok/error (type + first chars) - never returns key material.
@@ -227,7 +238,15 @@ def llm_selftest(model: str = "gemini-3.8-flash", max_keys: int = 2):
     entry = next((m for m in MODELS if m["id"] == model), None)
     if not entry or not entry.get("keyEnv"):
         return {"model": model, "error": "unknown or keyless model"}
-    keys = _key_list(entry["keyEnv"])
+    req_keys = [k.strip().strip('"').strip("'")
+                for k in re.sub(r"[\s,;]+", " ", keys or "").split() if k.strip()]
+    keys = req_keys or _key_list(entry["keyEnv"])
+    if req_keys:
+        os.environ[entry["keyEnv"]] = "\n".join(req_keys)
+    env_report = {v: (os.getenv(v) is not None)
+                  for v in ("GROQ_BASE_URL", "NARAROUTER_BASE_URL", "OPENAI_BASE_URL",
+                            "HTTP_PROXY", "HTTPS_PROXY", "FAULTSEEKER_LLM_FALLBACK_MODEL")}
+    import openai as _oai_ver
     out = []
     import openai as _oai
     from faultseeker.utils.agent import PROVIDER_CONFIG
@@ -249,7 +268,34 @@ def llm_selftest(model: str = "gemini-3.8-flash", max_keys: int = 2):
         except Exception as e:  # noqa: BLE001 - diagnostic reports every failure type
             out.append({"key_index": i + 1, "ok": False,
                         "err": f"{type(e).__name__}: {str(e)[:160]}"})
-    return {"model": model, "base_url": base_url, "keys": out, "key_count": len(keys)}
+    result = {"model": model, "base_url": base_url, "keys": out, "key_count": len(keys),
+              "openai_version": getattr(_oai_ver, "__version__", "?"), "env_overrides_set": env_report}
+    if replay == "stage2" and keys:
+        try:
+            import json as _json
+            from faultseeker.utils.agent import UniversalAgent
+            from faultseeker.prompts.function_analysis.orchestration_session_prompts import OrchestrationSessionPrompts
+            from faultseeker.prompts.function_analysis.worker_prompts import WorkerPrompts
+            summary = {"function": "earned", "appearance_count": 50,
+                       "pattern": [{"type": "call", "gas": 18506,
+                                    "address": "0x4a866fE20A442Dff55FAA010684A5C1379151458",
+                                    "function": "earned",
+                                    "params": "0x19f0a60f4635d3E2c48647822Eda5332BA094fd3",
+                                    "call_type": "staticcall", "value": None}] * 50,
+                       "note": "synthetic replay payload"}
+            prompt = WorkerPrompts().function_call_task_selection.format(
+                task_tree="1. Basic Function Call Info Gathering - [completed]",
+                function_call_info_summary=summary,
+                current_understanding="replay probe")
+            agent = UniversalAgent(OrchestrationSessionPrompts().function_call_task_generation_init,
+                                   model)
+            reply = agent.query(prompt)
+            result["stage2_replay"] = {"ok": bool(reply), "reply_type": type(reply).__name__,
+                                       "reply": _json.dumps(reply)[:200]}
+        except Exception as e:  # noqa: BLE001 - this endpoint exists to surface it
+            result["stage2_replay"] = {"ok": False,
+                                       "err": f"{type(e).__name__}: {str(e)[:300]}"}
+    return result
 
 
 @app.get("/healthz")
