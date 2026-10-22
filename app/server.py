@@ -149,10 +149,12 @@ async def gate_submit(request: Request):
 
 
 @app.get("/api/rpc-selftest")
-def rpc_selftest(chain: str = "eth"):
+def rpc_selftest(chain: str = "eth", mode: str = "calltracer"):
     """Gated diagnostic: which registered RPC providers can trace from here.
 
     Hosts only - never returns URLs with embedded keys or provider payloads.
+    mode=calltracer | structlogs | replay mirrors the three calls the pipeline
+    makes in txn_replayer so we can see exactly which one a provider rejects.
     """
     import faultseeker.utils.rpc_provider as rp
 
@@ -162,20 +164,35 @@ def rpc_selftest(chain: str = "eth"):
     probe_tx = ("0x0788ba222970c7c68a738b0e08fb197e669e61f9b226ceec4cab9b85abe8cceb"
                 if chain == "eth" else
                 "0x0000000000000000000000000000000000000000000000000000000000000001")
+    if mode == "structlogs":
+        method = "debug_traceTransaction"
+        params = [probe_tx, {"disableMemory": True, "disableStack": False,
+                             "disableStorage": False, "timeout": "60s"}]
+    elif mode == "replay":
+        method = "trace_replayTransaction"
+        params = [probe_tx, ["trace", "stateDiff"]]
+    else:
+        method = "debug_traceTransaction"
+        params = [probe_tx, {"tracer": "callTracer", "timeout": "60s"}]
     out = []
     for prov in rp._registry._providers(chain):
         host = re.sub(r"(https?://[^/\s]+).*", r"\1", prov.url)
         try:
-            body = json.dumps({"jsonrpc": "2.0", "method": "debug_traceTransaction",
-                               "params": [probe_tx, {"tracer": "callTracer", "timeout": "60s"}],
-                               "id": 1}).encode()
-            data = rp._http_post(prov.url, body, timeout=30)
+            body = json.dumps({"jsonrpc": "2.0", "method": method,
+                               "params": params, "id": 1}).encode()
+            data = rp._http_post(prov.url, body, timeout=45)
             result = rp._check_rpc_error(data)
-            out.append({"host": host, "ok": bool(result)})
+            entry = {"host": host, "ok": bool(result)}
+            if isinstance(result, dict):
+                entry["result_keys"] = sorted(result.keys())[:8]
+                logs = result.get("structLogs")
+                if isinstance(logs, list):
+                    entry["struct_logs"] = len(logs)
+            out.append(entry)
         except Exception as e:  # noqa: BLE001 - diagnostic reports every failure type
             out.append({"host": host, "ok": False,
                         "err": f"{type(e).__name__}: {str(e)[:140]}"})
-    return {"chain": chain, "providers": out}
+    return {"chain": chain, "mode": mode, "providers": out}
 
 
 @app.get("/healthz")
