@@ -3,6 +3,7 @@ FROM python:3.11-slim
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 # Free-tier LLM rate limits (Groq OTPM 1000) can stretch a full run past 25 min.
 ENV DEMO_RUN_TIMEOUT_SECS=7200
+ENV FAULTSEEKER_MAX_FUNCTIONS=5
 WORKDIR /srv
 
 RUN apt-get update \
@@ -20,7 +21,7 @@ ARG FAULTSEEKER_REF=console-demo-compat
 # Bump this SHA to the fork commit to deploy: the changed ARG value invalidates
 # the Docker layer cache so the clone below re-runs (clone --branch needs a
 # branch/tag name, not a raw SHA).
-ARG FAULTSEEKER_SHA=0a5c777
+ARG FAULTSEEKER_SHA=751a27c
 RUN echo "deploying fork commit $FAULTSEEKER_SHA"  && git clone --depth 1 --branch "$FAULTSEEKER_REF" "$FAULTSEEKER_REPO" /srv/FaultSeeker-
 
 RUN pip install -r /srv/FaultSeeker-/requirements.txt
