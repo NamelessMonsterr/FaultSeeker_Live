@@ -209,6 +209,49 @@ def rpc_selftest(chain: str = "eth", mode: str = "calltracer"):
     return {"chain": chain, "mode": mode, "providers": out}
 
 
+@app.get("/api/llm-selftest")
+def llm_selftest(model: str = "gemini-2.0-flash"):
+    """Gated diagnostic: one real 8-token LLM call per configured key.
+
+    Reports per-key ok/error (type + first chars) - never returns key material.
+    Mirrors what the pipeline's UniversalAgent does so we can see the exact
+    provider error that the agent layer swallows as 'An error occurred.'
+    """
+    entry = next((m for m in MODELS if m["id"] == model), None)
+    if not entry or not entry.get("keyEnv"):
+        return {"model": model, "error": "unknown or keyless model"}
+    keys = _key_list(entry["keyEnv"])
+    out = []
+    import openai as _oai
+    from faultseeker.utils.agent import PROVIDER_CONFIG
+    base_url = None
+    for prefix, cfg in PROVIDER_CONFIG.items():
+        if model.startswith(prefix):
+            base_url = cfg[0]
+            break
+    for i, k in enumerate(keys):
+        old = os.environ.get(entry["keyEnv"])
+        try:
+            os.environ[entry["keyEnv"]] = k
+            client = _oai.OpenAI(api_key=k, base_url=base_url, timeout=30)
+            r = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": "Reply with the single word: ok"}],
+                max_tokens=8,
+            )
+            out.append({"key_index": i + 1, "ok": True,
+                        "reply": (r.choices[0].message.content or "")[:40]})
+        except Exception as e:  # noqa: BLE001 - diagnostic reports every failure type
+            out.append({"key_index": i + 1, "ok": False,
+                        "err": f"{type(e).__name__}: {str(e)[:160]}"})
+        finally:
+            if old is None:
+                os.environ.pop(entry["keyEnv"], None)
+            else:
+                os.environ[entry["keyEnv"]] = old
+    return {"model": model, "base_url": base_url, "keys": out, "key_count": len(keys)}
+
+
 @app.get("/healthz")
 async def healthz():
     return {"ok": True}
