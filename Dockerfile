@@ -8,6 +8,7 @@ ENV FAULTSEEKER_MAX_FUNCTIONS=5
 ENV OPENAI_BASE_URL=https://codex-proxy-render.onrender.com/v1
 ENV FAULTSEEKER_LLM_TIMEOUT_SECS=300
 ENV FAULTSEEKER_SKIP_STRUCTLOGS=1
+ENV FAULTSEEKER_SKIP_VIZ=1
 WORKDIR /srv
 
 RUN apt-get update \
@@ -25,7 +26,7 @@ ARG FAULTSEEKER_REF=console-demo-compat
 # Bump this SHA to the fork commit to deploy: the changed ARG value invalidates
 # the Docker layer cache so the clone below re-runs (clone --branch needs a
 # branch/tag name, not a raw SHA).
-ARG FAULTSEEKER_SHA=8f2ede73d25205c9ec7189c125ce1d5aa8884897
+ARG FAULTSEEKER_SHA=b53249a3f188972906fd1cafc7cf70fa8052dcc9
 RUN echo "deploying fork commit $FAULTSEEKER_SHA"  && git clone --depth 1 --branch "$FAULTSEEKER_REF" "$FAULTSEEKER_REPO" /srv/FaultSeeker-
 
 RUN pip install -r /srv/FaultSeeker-/requirements.txt
