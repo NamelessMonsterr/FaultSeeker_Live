@@ -230,9 +230,7 @@ def llm_selftest(model: str = "gemini-2.0-flash"):
             base_url = cfg[0]
             break
     for i, k in enumerate(keys):
-        old = os.environ.get(entry["keyEnv"])
         try:
-            os.environ[entry["keyEnv"]] = k
             client = _oai.OpenAI(api_key=k, base_url=base_url, timeout=30)
             r = client.chat.completions.create(
                 model=model,
@@ -244,11 +242,6 @@ def llm_selftest(model: str = "gemini-2.0-flash"):
         except Exception as e:  # noqa: BLE001 - diagnostic reports every failure type
             out.append({"key_index": i + 1, "ok": False,
                         "err": f"{type(e).__name__}: {str(e)[:160]}"})
-        finally:
-            if old is None:
-                os.environ.pop(entry["keyEnv"], None)
-            else:
-                os.environ[entry["keyEnv"]] = old
     return {"model": model, "base_url": base_url, "keys": out, "key_count": len(keys)}
 
 
