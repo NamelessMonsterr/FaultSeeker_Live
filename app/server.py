@@ -166,7 +166,9 @@ def worker(run_id, req):
     class Tap(io.TextIOBase):
         def write(self, s):
             if s and s.strip():
-                line = s.strip()
+                # Never stream credentials to the browser: the fork echoes
+                # full RPC URLs (keys embedded) in its diagnostics.
+                line = re.sub(r"(https?://[^/\s'\"]+)[^\s)'\"]*", r"\1/•••", s.strip())
                 for pat, idx in STAGE_LINES:
                     if pat in line:
                         q.put(("stage", {"index": idx}))
