@@ -497,6 +497,10 @@ async def analyze(request: Request):
             if proc.is_alive():
                 proc.kill()
                 proc.join(timeout=5)
+            if not ended:
+                # Worker died without emitting an error event: surface the exit
+                # code so silent wedges (OOM SIGKILL=-9, segfault=-11) are visible.
+                q.put(("error", f"worker process died unexpectedly (exit code {proc.exitcode}; -9 usually means OOM)"))
         finally:
             if not ended:
                 q.put(("end", None))
