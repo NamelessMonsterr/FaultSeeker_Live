@@ -241,6 +241,7 @@ DEMO_REPLAYS = {
         "result": os.path.join(HERE, "samples", "hedgey_e7c04c6fb037.result.json"),
         "txn_hash": "0x2606d459a50ca4920722a111745c2eeced1d8a01ff25ee762e22d5d4b1595739",
         "chain": "eth",
+        "integrity_warning": "This historical run used unverified selector-database function labels. Its localization is not a verified analysis of the recorded transaction.",
     }
 }
 DEMO_REPLAY_SPEED = float(os.environ.get("DEMO_REPLAY_SPEED", "0.12"))  # fraction of real-time gaps
@@ -317,6 +318,7 @@ class RunBus:
         self.max_events = max(2, max_events)
         self.secrets = tuple(secrets)
         self.closed = False
+        self.model_status = None
 
     def put(self, item):
         with self.cond:
@@ -324,6 +326,8 @@ class RunBus:
             if self.closed:
                 return
             self.events.append((ev, _redact(data, self.secrets)))
+            if ev == "model_status":
+                self.model_status = self.events[-1][1]
             self.closed = ev == "end"
             overflow = len(self.events) - self.max_events
             if overflow > 0:
@@ -607,6 +611,17 @@ def sse(ev, data, event_id=None):
     return prefix + f"event: {ev}\ndata: {json.dumps(_redact(data))}\n\n"
 
 
+def _prepare_pipeline(req, mode, q):
+    try:
+        from app.pipeline_guards import make_runtime
+    except ModuleNotFoundError as exc:
+        if exc.name != "app":
+            raise
+        from pipeline_guards import make_runtime
+    return make_runtime(req["txn_hash"], req["chain"], mode != "no-llm",
+                        lambda data: q.put(("model_status", data)))
+
+
 def worker(run_id, req, q):
     """Runs in a child process: events go to the parent via q (mp.Queue), the
     result is delivered ONLY through the JSON file in RUNS_DIR."""
@@ -620,6 +635,7 @@ def worker(run_id, req, q):
             pass
     env_set = []
     env_prior = {}
+    runtime = None
     request_secrets = []
     for name in ("model_key", "rpc_key", "rpc_url", "forensics_model_key"):
         value = req.get(name) or ""
@@ -649,6 +665,11 @@ def worker(run_id, req, q):
     sys.stdout = Tap()
     sys.stderr = Tap()
     try:
+        # Prevent upstream dotenv imports from overriding per-request credentials.
+        for var, value in (("PYTHON_DOTENV_DISABLED", "true"), ("FAULTSEEKER_LLM_FALLBACK_MODEL", "")):
+            env_prior[var] = os.environ.get(var)
+            os.environ[var] = value
+            env_set.append(var)
         rpc_url = (req.get("rpc_url") or "").strip()
         rpc_key = (req.get("rpc_key") or "").strip()
         model_key = (req.get("model_key") or "").strip()
@@ -671,16 +692,11 @@ def worker(run_id, req, q):
             env_prior["FAULTSEEKER_STAGE2_WORKERS"] = os.environ.get("FAULTSEEKER_STAGE2_WORKERS")
             os.environ["FAULTSEEKER_STAGE2_WORKERS"] = s2w
             env_set.append("FAULTSEEKER_STAGE2_WORKERS")
-        fb_model = (req.get("fallback_model") or "").strip()
-        if fb_model:
-            env_prior["FAULTSEEKER_LLM_FALLBACK_MODEL"] = os.environ.get("FAULTSEEKER_LLM_FALLBACK_MODEL")
-            os.environ["FAULTSEEKER_LLM_FALLBACK_MODEL"] = fb_model
-            env_set.append("FAULTSEEKER_LLM_FALLBACK_MODEL")
-        from faultseeker.main import main as fs_main
-
         out_path = os.path.join(RUNS_DIR, run_id + ".json")
         pipeline_path = os.path.join(RUNS_DIR, run_id + ".pipeline.json")
         if mode == "no-llm":
+            runtime = _prepare_pipeline(req, mode, q)
+            from faultseeker.main import main as fs_main
             q.put(("log", "mode: no-llm (deterministic Stage 1, free RPC)"))
             result = fs_main(txn_hash=req["txn_hash"], chain=req["chain"],
                              no_llm=True, output_path=pipeline_path)
@@ -716,32 +732,21 @@ def worker(run_id, req, q):
                     env_prior[f_entry["keyEnv"]] = os.environ.get(f_entry["keyEnv"])
                     env_set.append(f_entry["keyEnv"])
                 os.environ[f_entry["keyEnv"]] = "\n".join(f_keys)
-            if len(keys) > 1:
-                os.environ[entry["keyEnv"]] = "\n".join(keys)
-            for ki, one_key in enumerate(keys):
-                if len(keys) == 1:
-                    os.environ[entry["keyEnv"]] = one_key
-                which = f" (key {ki + 1}/{len(keys)})" if len(keys) > 1 else ""
-                split_note = f", Stage 1 on {forensics}" if forensics != mode else ""
-                q.put(("log", f"mode: full pipeline Stage 1-3 with {mode}{which}{split_note} (cost tracking on)"))
-                try:
-                    result = fs_main(txn_hash=req["txn_hash"], chain=req["chain"],
-                                     forensics_model=forensics, function_analysis_model=mode,
-                                     track_cost=True, output_path=pipeline_path)
-                    break
-                except Exception as key_err:  # noqa: BLE001 - rotate fallback keys on auth/quota failures
-                    low = f"{type(key_err).__name__} {key_err}".lower()
-                    retryable = any(t in low for t in (
-                        "rate limit", "ratelimit", "429", "quota", "resource exhausted",
-                        "resource_exhausted", "401", "403", "unauthorized",
-                        "unauthenticated", "invalid api key", "api key not valid",
-                        "permission denied"))
-                    if ki < len(keys) - 1 and retryable:
-                        q.put(("log", f"{entry['keyEnv']} key {ki + 1} failed ({type(key_err).__name__}); rotating to fallback key {ki + 2}"))
-                        continue
-                    raise
+            os.environ[entry["keyEnv"]] = "\n".join(keys)
+            runtime = _prepare_pipeline(req, mode, q)
+            runtime.preflight([mode, forensics], timeout=float(os.environ.get("FAULTSEEKER_MODEL_PREFLIGHT_SECS", "20")))
+            from faultseeker.main import main as fs_main
+            # Credential rotation belongs to the shared transport session. Never
+            # rerun expensive transaction analysis after its circuit has opened.
+            split_note = f", Stage 1 on {forensics}" if forensics != mode else ""
+            q.put(("log", f"mode: full pipeline Stage 1-3 with {mode}{split_note} (cost tracking on)"))
+            result = fs_main(txn_hash=req["txn_hash"], chain=req["chain"],
+                             forensics_model=forensics, function_analysis_model=mode,
+                             track_cost=True, output_path=pipeline_path)
         if not isinstance(result, dict):
             raise ValueError("pipeline returned an invalid result")
+        if runtime:
+            result = runtime.annotate_result(result)
         result["_demo_model_requested"] = mode
         result["analysis_mode"] = "no-llm" if mode == "no-llm" else "live-pipeline"
         if result.get("error"):
@@ -753,10 +758,21 @@ def worker(run_id, req, q):
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(_redact(result, request_secrets), f)
         os.replace(tmp_path, out_path)
-        q.put(("done", {"ok": True}))
-    except Exception as e:  # noqa: BLE001 - surface any pipeline failure as fallback trigger
+        q.put(("done", {"ok": result.get("analysis_status") == "completed", "analysis_status": result.get("analysis_status")}))
+    except Exception as e:  # A failed transport never becomes a no-finding verdict.
+        if runtime is not None:
+            try:
+                failed = _redact(runtime.failure_report(e), request_secrets)
+                failed_path = os.path.join(RUNS_DIR, run_id + ".json")
+                with open(failed_path + ".tmp", "w", encoding="utf-8") as f:
+                    json.dump(failed, f)
+                os.replace(failed_path + ".tmp", failed_path)
+            except Exception:
+                q.put(("log", "A failure report could not be persisted."))
         q.put(("error", _redact(f"{type(e).__name__}: {str(e)[:400]}")))
     finally:
+        if runtime is not None:
+            runtime.close()
         sys.stdout = old_out
         sys.stderr = old_err
         try:
@@ -829,13 +845,16 @@ async def analyze(request: Request):
                 with open(demo["result"], encoding="utf-8") as f:
                     res = json.load(f)
                 res["analysis_mode"] = "saved-replay"
-                res["analysis_status"] = "completed"
+                res["analysis_status"] = "partial" if demo.get("integrity_warning") else "completed"
                 res["stage_completed"] = "stage-3"
+                if demo.get("integrity_warning"):
+                    res["limitations"] = list(res.get("limitations") or []) + [demo["integrity_warning"]]
+                    res["analysis_integrity"] = {"localization_verified": False, "source": "historical_unverified_run"}
                 with open(os.path.join(RUNS_DIR, run_id + ".json"), "w", encoding="utf-8") as f:
                     json.dump(res, f)
-                runs[run_id]["status"] = "completed"
-                q.put(("done", {"ok": True, "source": "saved-replay"}))
-                _hist_upsert({"run_id": run_id, "status": "completed",
+                runs[run_id]["status"] = res["analysis_status"]
+                q.put(("done", {"ok": res["analysis_status"] == "completed", "source": "saved-replay"}))
+                _hist_upsert({"run_id": run_id, "status": res["analysis_status"],
                               "ended_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                               "duration_secs": round(time.time() - started, 1),
                               "brief": _hist_brief(res)})
@@ -979,6 +998,8 @@ async def analyze(request: Request):
                 outcome = "completed" if ended else outcome
             if res is not None and ended and outcome not in ("error", "cancelled", "timeout", "died"):
                 outcome = "completed"
+            if outcome == "completed" and isinstance(res, dict) and res.get("analysis_status") in ("partial", "failed", "inconclusive"):
+                outcome = res["analysis_status"]
             runs[run_id]["status"] = outcome
             final_entry = {"run_id": run_id, "status": outcome,
                            "detail": outcome_msg,
@@ -1076,7 +1097,8 @@ async def run_status(run_id: str):
         return JSONResponse({"error": "Invalid run ID."}, status_code=400)
     r = runs.get(run_id)
     if r:
-        return {"run_id": run_id, "status": r.get("status", "unknown")}
+        return {"run_id": run_id, "status": r.get("status", "unknown"),
+                "model_endpoint": getattr(r.get("q"), "model_status", None)}
     entry = next((e for e in _hist_load() if e.get("run_id") == run_id), None)
     if not entry:
         return JSONResponse({"error": "Unknown run."}, status_code=404)
@@ -1138,7 +1160,7 @@ def _adapt_result_for_view(res):
         "rpc_source": res.get("rpc_source") or "unknown",
         "query_records": items(res.get("query_records")),
         "classification": {
-            "rule_verdict": "INCONCLUSIVE" if res.get("analysis_status") in ("cancelled", "cancelling", "error", "died", "timeout", "stopped", "inconclusive", "interrupted") else (res.get("rule_verdict") if res.get("rule_verdict") in ("CONFIRMED", "EXPLOIT", "CLEAN", "SUSPECT", "INCONCLUSIVE") else ("SUSPECT" if cards or scored else "INCONCLUSIVE")),
+            "rule_verdict": "INCONCLUSIVE" if res.get("analysis_status") in ("cancelled", "cancelling", "error", "died", "timeout", "stopped", "inconclusive", "interrupted", "partial", "failed") else (res.get("rule_verdict") if res.get("rule_verdict") in ("CONFIRMED", "EXPLOIT", "CLEAN", "SUSPECT", "INCONCLUSIVE") else ("SUSPECT" if cards or scored else "INCONCLUSIVE")),
             "rule_confidence": number(res["rule_confidence"]) if isinstance(res.get("rule_confidence"), (int, float)) and not isinstance(res.get("rule_confidence"), bool) else None,
             "matched_rule": ("evidence card: " + str(obj(cards[0].get("function_signature")).get("function", "?"))) if cards else "none",
             "vuln_type_hint": hint,
@@ -1202,7 +1224,8 @@ async def result(run_id: str):
     entry = next((e for e in _hist_load() if e.get("run_id") == run_id), {})
     state = r.get("status") or entry.get("status")
     if state in ("cancelled", "cancelling", "error", "died", "timeout", "stopped", "interrupted"):
-        out["analysis_status"] = state
+        if out.get("analysis_status") not in ("partial", "failed"):
+            out["analysis_status"] = state
         out["limitations"] = list(out.get("limitations") or []) + ["The run did not complete successfully. This is a partial report."]
         out["classification"] = {**(out.get("classification") if isinstance(out.get("classification"), dict) else {}), "rule_verdict": "INCONCLUSIVE"}
     return JSONResponse(_redact(_adapt_result_for_view(out), getattr(r.get("q"), "secrets", ())))

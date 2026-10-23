@@ -34,7 +34,7 @@ def main():
         context = browser.new_context(viewport={"width": 1440, "height": 1000})
         page = context.new_page()
         page.on("pageerror", lambda error: errors.append(str(error)))
-        state = {"complete": False, "cancelled": False, "submitted": 0}
+        state = {"complete": False, "cancelled": False, "submitted": 0, "model_wait": True, "partial": False}
         def fixture(route):
             path = route.request.url.split("/api/")[-1].split("?")[0]
             if path == "config":
@@ -44,13 +44,19 @@ def main():
                 return route.fulfill(json={"run_id": "browserqa"})
             if path.startswith("stream/"):
                 if state["cancelled"]:
-                    body = event(7, "error", "Analysis cancelled by user") + event(8, "end", {})
+                    body = event(8, "error", "Analysis cancelled by user") + event(9, "end", {})
                 elif state["complete"]:
-                    body = event(7, "end", {})
+                    body = event(8, "end", {})
+                elif state["model_wait"]:
+                    body = event(1, "model_status", {"state": "waiting_on_model_endpoint", "phase": "preflight", "http_status": 502, "retry_in_seconds": 2})
                 else:
-                    body = "".join(event(i + 1, "stage", {"index": i}) for i in range(5)) + event(6, "log", "Long technical output " + "x" * 6000)
+                    body = "".join(event(i + 2, "stage", {"index": i}) for i in range(5)) + event(7, "log", "Long technical output " + "x" * 6000)
                 return route.fulfill(content_type="text/event-stream", body=body)
             if path.startswith("result/"):
+                if state["partial"]:
+                    return route.fulfill(json={**REPORT, "analysis_mode": "live-pipeline", "analysis_status": "partial", "scored_functions": [], "classification": {"rule_verdict": "INCONCLUSIVE"},
+                        "sections": {"deterministic_checks": "completed", "function_analysis": "failed", "scoring": "skipped"},
+                        "model_endpoint": {"failure": {"kind": "upstream_http", "http_status": 502, "message": "Model endpoint returned an upstream HTTP error. HTTP 502."}}})
                 return route.fulfill(json=REPORT)
             if path.startswith("status/"):
                 return route.fulfill(json={"status": "cancelled" if state["cancelled"] else "completed" if state["complete"] else "running"})
@@ -73,6 +79,12 @@ def main():
         page.locator("#rpc-key").fill("DUMMY_REQUEST_SECRET")
         page.locator("#analyze").click()
         expect(page.locator("#running")).to_be_visible()
+        expect(page.locator("#active-task")).to_have_text("Waiting on model endpoint")
+        expect(page.locator("#active-description")).to_contain_text("Retrying in 2s")
+        page.screenshot(path=str(artifacts / "model-wait-preview.png"), full_page=True)
+        passed.append("explicit endpoint preflight/retry status with no false stage completion")
+        state["model_wait"] = False
+        page.reload()
         expect(page.locator("#active-task")).to_have_text("Function analysis")
         expect(page.locator("#stepper li").last).to_contain_text("Pending")
         page.locator(".technical summary").click()
@@ -98,6 +110,17 @@ def main():
         page.get_by_role("button", name="View report", exact=True).click()
         expect(page.locator("#results")).to_be_visible()
         passed.append("history report recovery")
+        state["partial"] = True
+        page.locator("#history-button").click()
+        page.get_by_role("button", name="View report", exact=True).click()
+        expect(page.locator("#results")).to_contain_text("INCONCLUSIVE")
+        expect(page.locator("#results")).to_contain_text("Analysis coverage")
+        expect(page.locator("#results")).to_contain_text("Model endpoint failure")
+        expect(page.locator("#results")).to_contain_text("502")
+        page.set_viewport_size({"width": 1440, "height": 1000})
+        page.screenshot(path=str(artifacts / "partial-report-preview.png"), full_page=True)
+        passed.append("partial report exposes failed/skipped sections and safe HTTP502 classification")
+        state["partial"] = False
         page.get_by_role("button", name="New investigation", exact=True).click()
         state["complete"] = False
         page.locator("#transaction").fill(TX)

@@ -62,3 +62,21 @@ test('large forensic reports paginate findings without dropping downloadable rep
  const walk=el=>[el,...el.children.flatMap(walk)];let nodes=walk(app.elements.results);assert.equal(nodes.filter(n=>n.tagName==='article').length,20);assert.match(collect(app.elements.results),/Showing 20 of 803 findings/);
  const button=nodes.find(n=>n.textContent==='Show 20 more findings');button.onclick();nodes=walk(app.elements.results);assert.equal(nodes.filter(n=>n.tagName==='article').length,40);assert.match(collect(app.elements.results),/Showing 40 of 803 findings/);
 });
+
+test('model retry status explicitly pauses analysis and never completes pending stages',async()=>{
+ const app=boot({'/console/api/config':{data:config},'/console/api/analyze':{data:{run_id:'retryrun'}}});await settle();
+ await app.elements['analysis-form'].listeners.submit({preventDefault(){}});
+ app.streams[0].emit('model_status',{state:'waiting_on_model_endpoint',phase:'preflight',http_status:502,retry_in_seconds:2},'1');
+ assert.equal(app.elements['active-task'].textContent,'Waiting on model endpoint');
+ assert.match(app.elements.connection.textContent,/retry in 2s/);
+ assert.match(collect(app.elements.stepper),/Final report Pending/);
+ app.streams[0].emit('model_status',{state:'model_endpoint_ready',phase:'preflight'},'2');
+ assert.equal(app.elements['active-task'].textContent,'Model endpoint ready');
+});
+
+test('partial endpoint-failure report visibly lists failed and skipped sections',async()=>{
+ const report={transaction_hash:'0x123',analysis_status:'partial',classification:{rule_verdict:'INCONCLUSIVE'},sections:{deterministic_checks:'completed',function_analysis:'failed',scoring:'skipped'},model_endpoint:{failure:{kind:'upstream_http',http_status:502,message:'Model endpoint returned an upstream HTTP error.'}}};
+ const app=boot({'/console/api/config':{data:config},'/console/api/analyze':{data:{run_id:'lossrun'}},'/console/api/result/lossrun':{data:report}});await settle();
+ await app.elements['analysis-form'].listeners.submit({preventDefault(){}});app.streams[0].emit('error','Model endpoint returned HTTP 502','1');app.streams[0].emit('end',{},'2');await settle();
+ const content=collect(app.elements.results);assert.match(content,/Investigation .* partial/);assert.match(content,/Analysis coverage/);assert.match(content,/function analysis.*failed/);assert.match(content,/scoring.*skipped/);assert.match(content,/INCONCLUSIVE/);assert.doesNotMatch(content,/Investigation report/);
+});
