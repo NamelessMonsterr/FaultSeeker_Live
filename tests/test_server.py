@@ -19,6 +19,36 @@ def test_separate_rpc_key_requires_explicit_placeholder(client):
     assert "{key}" in response.json()["error"]
 
 
+def test_worker_preflight_failure_prevents_pipeline_execution(server, monkeypatch):
+    import queue
+    from app.model_endpoint import ModelEndpointFailure
+    called = []
+    class Runtime:
+        def preflight(self, *args, **kwargs):
+            raise ModelEndpointFailure("upstream_http", 502, "preflight")
+        def failure_report(self, error):
+            return {"transaction_hash": TX, "analysis_status": "failed", "sections": {"function_analysis": "skipped"},
+                    "classification": {"rule_verdict": "INCONCLUSIVE"}}
+        def close(self):
+            pass
+    def main(**kwargs):
+        called.append(kwargs)
+        return {"transaction_hash": TX}
+    monkeypatch.setitem(sys.modules, "faultseeker.main", types.SimpleNamespace(main=main))
+    monkeypatch.setattr(server, "_prepare_pipeline", lambda *args: Runtime(), raising=False)
+    events = queue.Queue()
+    server.worker("preflight", {"txn_hash": TX, "chain": "eth", "mode": "gpt-6.1-sol-low", "model_key": "test-only-key"}, events)
+    assert not called
+    output = []
+    while not events.empty():
+        output.append(events.get_nowait())
+    assert not any(ev == "done" for ev, _ in output)
+    assert any(ev == "error" for ev, _ in output)
+    report = json.loads((Path(server.RUNS_DIR) / "preflight.json").read_text())
+    assert report["analysis_status"] == "failed"
+    assert report["sections"]["function_analysis"] == "skipped"
+
+
 def test_live_configuration_exposes_no_credentials(client, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "never-expose-this-key")
     response = client.get("/api/config")
@@ -268,6 +298,9 @@ def test_worker_preserves_incomplete_or_failed_upstream_result(server, monkeypat
     import queue
     import signal
     monkeypatch.setattr(signal, "signal", lambda *args: None)
+    # This test isolates worker publication; actual pipeline hooks have their own
+    # verified-trace and mocked-HTTP integration tests.
+    monkeypatch.setattr(server, "_prepare_pipeline", lambda *args: None)
     paths = []
     def pipeline(**kwargs):
         path = Path(kwargs["output_path"])
@@ -319,6 +352,54 @@ def test_windows_run_id_traversal_is_rejected(client, route):
     path = "/api/" + route + "/..%5C..%5Cprivate"
     response = client.post(path) if route == "cancel" else client.get(path)
     assert response.status_code == 400
+
+
+@pytest.mark.parametrize("report_status", ["partial", "failed"])
+def test_endpoint_failure_report_keeps_explicit_coverage(client, server, report_status):
+    payload = {"transaction": {"hash": TX}, "analysis_status": report_status,
+               "classification": {"rule_verdict": "INCONCLUSIVE"},
+               "sections": {"function_analysis": "failed", "scoring": "skipped"}}
+    server.runs["endpointfailure"] = {"q": server.RunBus(), "result": payload, "status": "error", "proc": None}
+    response = client.get("/api/result/endpointfailure")
+    assert response.json()["analysis_status"] == report_status
+    assert response.json()["sections"] == payload["sections"]
+
+
+def test_worker_mid_run_model_loss_persists_partial_report(server, monkeypatch):
+    import queue
+    import httpx
+    from openai import OpenAI
+    from app.model_endpoint import ModelEndpointSession
+    from app.pipeline_guards import PipelineRuntime
+    calls = []
+    events = queue.Queue()
+    def respond(request):
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx.Response(200, json={"id": "offline", "object": "chat.completion", "created": 0,
+                "model": "gpt-6.1-sol-low", "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "OK"}}]})
+        return httpx.Response(502, text="<html>PRIVATE_PROVIDER_BODY</html>")
+    def factory():
+        return OpenAI(api_key="test-only-key", base_url="https://model.invalid/v1",
+                      http_client=httpx.Client(transport=httpx.MockTransport(respond)))
+    session = ModelEndpointSession(retry_limit=0, emit=lambda value: events.put(("model_status", value)))
+    runtime = PipelineRuntime(TX, "eth", session=session)
+    runtime.preflight = lambda *args, **kwargs: session.preflight(factory, "gpt-6.1-sol-low")
+    def main(**kwargs):
+        runtime.partial = {"transaction": {"hash": TX}, "classification": {"rule_verdict": "EXPLOIT"}}
+        session.call(factory, {"model": "gpt-6.1-sol-low", "messages": []}, "gpt-6.1-sol-low")
+    monkeypatch.setitem(sys.modules, "faultseeker.main", types.SimpleNamespace(main=main))
+    monkeypatch.setattr(server, "_prepare_pipeline", lambda *args: runtime)
+    server.worker("midrun", {"txn_hash": TX, "chain": "eth", "mode": "gpt-6.1-sol-low", "model_key": "test-only-key"}, events)
+    report = json.loads((Path(server.RUNS_DIR) / "midrun.json").read_text())
+    assert len(calls) == 2
+    assert report["analysis_status"] == "partial"
+    assert report["sections"]["function_analysis"] == "failed"
+    assert report["sections"]["scoring"] == "skipped"
+    assert report["classification"]["rule_verdict"] == "INCONCLUSIVE"
+    emitted = list(events.queue)
+    assert not any(kind == "done" for kind, _ in emitted)
+    assert "PRIVATE_PROVIDER_BODY" not in json.dumps(emitted) + json.dumps(report)
 
 
 def test_cancel_before_process_registration_is_honored(client, server, monkeypatch):
