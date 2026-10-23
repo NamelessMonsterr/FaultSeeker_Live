@@ -148,3 +148,32 @@ def test_retry_after_cannot_sleep_past_shared_budget():
         session.call(factory, {"model": MODEL, "messages": []}, MODEL)
     assert failure.value.kind == "budget_exhausted"
     assert clock.now == 0 and len(calls) == 1
+
+
+@pytest.mark.parametrize("elapsed,accepted", [(59.9, True), (60.0, True), (60.1, False)])
+def test_valid_completion_at_shared_time_boundary(elapsed, accepted):
+    m, session, factory, calls, events, clock = setup([httpx.Response(200, json=OK)])
+    # Charge actual mocked HTTP response time, rather than client creation time.
+    def timed_factory():
+        client = factory()
+        transport = client._client._transport
+        original = transport.handler
+        def respond(request):
+            clock.now += elapsed
+            return original(request)
+        transport.handler = respond
+        return client
+    if accepted:
+        value = session.call(timed_factory, {"model": MODEL, "messages": []}, MODEL)
+        assert value.choices[0].message.content == "OK"
+        assert session.failure is None
+        assert events[-1]["state"] == "model_endpoint_ready"
+        if elapsed == 60:
+            with pytest.raises(m.ModelEndpointFailure) as failure:
+                session.call(factory, {"model": MODEL, "messages": []}, MODEL)
+            assert failure.value.kind == "budget_exhausted"
+    else:
+        with pytest.raises(m.ModelEndpointFailure) as failure:
+            session.call(timed_factory, {"model": MODEL, "messages": []}, MODEL)
+        assert failure.value.kind == "budget_exhausted"
+    assert len(calls) == 1

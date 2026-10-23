@@ -204,9 +204,10 @@ class PipelineRuntime:
             keys = self.source._parse_api_keys(os.getenv(env_name, ""))
             if not keys:
                 raise ValueError("The configured model requires an API key.")
+            self.session.register_keys(base_url, keys)
             self.session.preflight(lambda: self.source.OpenAI(api_key=keys[0], base_url=base_url,
                                       max_retries=0, timeout=min(timeout, self.session.call_timeout)),
-                                   model, timeout=max(0.01, deadline - self.session.clock()))
+                                   model, timeout=timeout, deadline=deadline)
 
     def annotate_result(self, value):
         self.assert_healthy()

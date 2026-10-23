@@ -29,7 +29,8 @@ class ModelEndpointFailure(RuntimeError):
 
     def as_dict(self):
         return {"kind": self.kind, "http_status": self.status_code,
-                "phase": self.phase, "message": str(self)}
+                "phase": self.phase, "message": str(self),
+                "scope": "credential" if self.kind in ("authentication", "rate_limited") else "endpoint"}
 
 
 def classify(error, phase):
@@ -72,6 +73,22 @@ class ModelEndpointSession:
         self.attempts = 0
         self.failure = None
         self.lock = threading.RLock()
+        self.key_pools = {}
+
+    def register_keys(self, base_url, keys):
+        """Keep credential state per endpoint, private to this run's memory.
+
+        Registration never resets rejections, retries or elapsed time. A key
+        rotation consumes the same retry allowance as any other extra attempt.
+        """
+        with self.lock:
+            endpoint = str(base_url).rstrip("/")
+            pool = self.key_pools.setdefault(endpoint, {"keys": [], "rejected": set(), "active": None})
+            for key in keys:
+                if key not in pool["keys"]:
+                    pool["keys"].append(key)
+            if pool["active"] is None and pool["keys"]:
+                pool["active"] = pool["keys"][0]
 
     def assert_healthy(self):
         if self.failure:
@@ -83,7 +100,7 @@ class ModelEndpointSession:
                    "attempts": self.attempts})
         raise error from None
 
-    def preflight(self, factory, model, timeout=20):
+    def preflight(self, factory, model, timeout=20, deadline=None):
         """A minimal authenticated completion on the SAME configured model.
 
         Called only when a user starts live model analysis, never as a keep-warm
@@ -93,7 +110,7 @@ class ModelEndpointSession:
         return self.call(factory, {"model": model, "messages": [
             {"role": "user", "content": "Reply OK."}], "max_tokens": 8,
             "temperature": 0}, model, phase="preflight",
-            deadline=self.clock() + max(0.1, float(timeout)))
+            deadline=deadline if deadline is not None else self.clock() + max(0.1, float(timeout)))
 
     def call(self, factory, kwargs, model, phase="analysis", deadline=None):
         with self.lock:
@@ -107,13 +124,20 @@ class ModelEndpointSession:
                     self._fail(ModelEndpointFailure("budget_exhausted", phase=phase))
                 started = self.clock()
                 client = None
+                pool = None
                 error = None
                 try:
                     client = factory()
                     remaining -= self.clock() - started
                     if remaining <= 0:
                         raise ModelEndpointFailure("budget_exhausted", phase=phase)
-                    bounded = client.with_options(max_retries=0, timeout=min(self.call_timeout, remaining))
+                    pool = self.key_pools.get(str(client.base_url).rstrip("/"))
+                    options = {"max_retries": 0, "timeout": min(self.call_timeout, remaining)}
+                    if pool:
+                        # Upstream agents round-robin their own keys. Override
+                        # that choice so rejected keys cannot reappear later.
+                        options["api_key"] = pool["active"]
+                    bounded = client.with_options(**options)
                     self.attempts += 1
                     self.emit({"state": "waiting_on_model_endpoint", "phase": phase,
                                "attempt": self.attempts, "model": model,
@@ -130,17 +154,34 @@ class ModelEndpointSession:
                     self.spent += max(0.0, self.clock() - started)
                     if client is not None:
                         client.close()
-                if self.spent >= self.time_budget:
+                if self.spent > self.time_budget:
                     self._fail(ModelEndpointFailure("budget_exhausted", phase=phase))
-                if deadline is not None and self.clock() >= deadline:
+                if deadline is not None and self.clock() > deadline:
                     self._fail(ModelEndpointFailure("budget_exhausted", phase=phase))
                 if error is None:
                     self.emit({"state": "model_endpoint_ready", "phase": phase,
                                "model": model, "attempts": self.attempts})
                     return completion
+                # Valid completions at the boundary are useful. Errors at the
+                # boundary cannot start another attempt, nor can a later query.
+                if self.spent >= self.time_budget or (deadline is not None and self.clock() >= deadline):
+                    self._fail(ModelEndpointFailure("budget_exhausted", phase=phase))
+                next_key = None
+                if pool and len(pool["keys"]) > 1 and error.kind in ("authentication", "rate_limited"):
+                    pool["rejected"].add(pool["active"])
+                    next_key = next((key for key in pool["keys"] if key not in pool["rejected"]), None)
+                    if next_key is None:
+                        self._fail(error)  # All configured credentials rejected.
+                    retryable = True
                 if not retryable or self.retries_left <= 0:
                     self._fail(error)
                 self.retries_left -= 1
+                if next_key is not None:
+                    pool["active"] = next_key
+                    self.emit({"state": "waiting_on_model_endpoint", **error.as_dict(),
+                               "attempt": self.attempts, "model": model, "key_rotation": True,
+                               "retry_in_seconds": 0, "retries_remaining": self.retries_left})
+                    continue
                 retry_number += 1
                 delay = min(2 ** (retry_number - 1), 4)
                 try:

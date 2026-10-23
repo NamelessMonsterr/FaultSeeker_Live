@@ -402,6 +402,30 @@ def test_worker_mid_run_model_loss_persists_partial_report(server, monkeypatch):
     assert "PRIVATE_PROVIDER_BODY" not in json.dumps(emitted) + json.dumps(report)
 
 
+@pytest.mark.parametrize("kind,status", [("authentication", 401), ("rate_limited", 429)])
+def test_worker_does_not_restart_pipeline_after_shared_credential_exhaustion(server, monkeypatch, kind, status):
+    import queue
+    from app.model_endpoint import ModelEndpointFailure
+    calls = []
+    class Runtime:
+        def preflight(self, *args, **kwargs):
+            pass
+        def failure_report(self, error):
+            return {"transaction_hash": TX, "analysis_status": "partial", "classification": {"rule_verdict": "INCONCLUSIVE"}}
+        def close(self):
+            pass
+    def pipeline(**kwargs):
+        calls.append(kwargs)
+        raise ModelEndpointFailure(kind, status)
+    monkeypatch.setattr(server, "_prepare_pipeline", lambda *args: Runtime())
+    monkeypatch.setitem(sys.modules, "faultseeker.main", types.SimpleNamespace(main=pipeline))
+    events = queue.Queue()
+    server.worker("exhausted", {"txn_hash": TX, "chain": "eth", "mode": "gpt-6.1-sol-low", "model_key": "test-first,test-second"}, events)
+    assert len(calls) == 1
+    report = json.loads((Path(server.RUNS_DIR)/"exhausted.json").read_text())
+    assert report["analysis_status"] == "partial"
+
+
 def test_cancel_before_process_registration_is_honored(client, server, monkeypatch):
     captured = []
     class InlineThread:

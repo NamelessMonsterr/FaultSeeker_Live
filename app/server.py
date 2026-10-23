@@ -732,35 +732,17 @@ def worker(run_id, req, q):
                     env_prior[f_entry["keyEnv"]] = os.environ.get(f_entry["keyEnv"])
                     env_set.append(f_entry["keyEnv"])
                 os.environ[f_entry["keyEnv"]] = "\n".join(f_keys)
-            if len(keys) > 1:
-                os.environ[entry["keyEnv"]] = "\n".join(keys)
-            else:
-                os.environ[entry["keyEnv"]] = keys[0]
+            os.environ[entry["keyEnv"]] = "\n".join(keys)
             runtime = _prepare_pipeline(req, mode, q)
             runtime.preflight([mode, forensics], timeout=float(os.environ.get("FAULTSEEKER_MODEL_PREFLIGHT_SECS", "20")))
             from faultseeker.main import main as fs_main
-            for ki, one_key in enumerate(keys):
-                if len(keys) == 1:
-                    os.environ[entry["keyEnv"]] = one_key
-                which = f" (key {ki + 1}/{len(keys)})" if len(keys) > 1 else ""
-                split_note = f", Stage 1 on {forensics}" if forensics != mode else ""
-                q.put(("log", f"mode: full pipeline Stage 1-3 with {mode}{which}{split_note} (cost tracking on)"))
-                try:
-                    result = fs_main(txn_hash=req["txn_hash"], chain=req["chain"],
-                                     forensics_model=forensics, function_analysis_model=mode,
-                                     track_cost=True, output_path=pipeline_path)
-                    break
-                except Exception as key_err:  # noqa: BLE001 - rotate fallback keys on auth/quota failures
-                    low = f"{type(key_err).__name__} {key_err}".lower()
-                    retryable = any(t in low for t in (
-                        "rate limit", "ratelimit", "429", "quota", "resource exhausted",
-                        "resource_exhausted", "401", "403", "unauthorized",
-                        "unauthenticated", "invalid api key", "api key not valid",
-                        "permission denied"))
-                    if ki < len(keys) - 1 and retryable:
-                        q.put(("log", f"{entry['keyEnv']} key {ki + 1} failed ({type(key_err).__name__}); rotating to fallback key {ki + 2}"))
-                        continue
-                    raise
+            # Credential rotation belongs to the shared transport session. Never
+            # rerun expensive transaction analysis after its circuit has opened.
+            split_note = f", Stage 1 on {forensics}" if forensics != mode else ""
+            q.put(("log", f"mode: full pipeline Stage 1-3 with {mode}{split_note} (cost tracking on)"))
+            result = fs_main(txn_hash=req["txn_hash"], chain=req["chain"],
+                             forensics_model=forensics, function_analysis_model=mode,
+                             track_cost=True, output_path=pipeline_path)
         if not isinstance(result, dict):
             raise ValueError("pipeline returned an invalid result")
         if runtime:

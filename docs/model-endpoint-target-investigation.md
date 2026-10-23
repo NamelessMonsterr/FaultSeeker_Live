@@ -3,7 +3,8 @@
 ## Review scope
 
 Base: `main1` at `60a7c989843b775520b939a97dedbc2ab92c5c05`.
-Fix branch: `fix/model-endpoint-target-integrity`. No merge, push or deployment.
+Fix branch: `fix/model-endpoint-target-integrity`, published for review in PR #1
+targeting `main1`. No merge or deployment.
 External pipeline: Docker-pinned `NamelessMonsterr/FaultSeeker-` revision
 `bc98bfd8cc6903363955da72792db112757172c0`, inspected and tested in an isolated checkout.
 The external checkout, model selection (`gpt-6.1-sol-low`) and provider configuration are unchanged.
@@ -44,7 +45,7 @@ configured endpoint. It runs only when a user requests live model analysis;
 there is no background keep-warm process. An explicit split-stage model, if
 requested, shares the same preflight allowance. Automatic provider/model fallback
 is disabled. SDK retries are forcibly zero, all model threads share a serialized
-session, and the first exhausted/permanent failure opens a sticky run-wide circuit.
+session, and terminal endpoint/credential exhaustion opens a sticky run-wide circuit.
 No subsequent query starts another retry ladder. Timeout accounting includes
 preflight, successful requests and backoff; CPU/RPC work is outside that budget.
 HTTP timeouts are transport operation limits, not an OS-level hard kill of a
@@ -128,7 +129,7 @@ node --check assets/console.js
 git diff --check
 ```
 
-Results: 84 Python tests passed (including 3 exact-pinned-pipeline integrations),
+Initial verification at `fba9a6f`: 84 Python tests passed (including 3 exact-pinned-pipeline integrations),
 10 frontend tests passed, both JavaScript syntax checks and whitespace check passed.
 Without the optional pipeline checkout, those 3 integration tests skip explicitly.
 Mocked HTTP covers HTML502, JSON500, 401/403, 404/400, timeout, transient recovery,
@@ -153,3 +154,68 @@ not evidence of a successful live Hedgey model run. The preview server is stoppe
 after verification. No production preview URL was created. Docker engine access
 was unavailable, so no complete container build is claimed. Kluster tools were
 not exposed in this session; no Kluster verification is claimed.
+
+## PR #1 review correction: credentials and budget boundary
+
+The initial implementation opened the sticky circuit on the first rejected key
+during preflight, before the console's old rotation loop could run. The outer
+loop could also restart transaction analysis after shared credential exhaustion.
+Both behaviors were reproduced with failing regression tests before correction.
+
+Credential rotation now happens inside the shared transport session, for both
+preflight and later GPT/Universal agent requests. HTTP 401/403 and 429 are
+credential/authentication or quota candidates. Another configured key may be
+tried; rejected keys do not return via the upstream agents' round-robin factories.
+All rejected credentials, exhausted retries or elapsed time fail explicitly with
+the existing partial/INCONCLUSIVE report handling. A 429 can represent an
+account-wide quota: another key is not assumed to fix it, and no allowance is
+reset. Single-key transient 429 behavior retains bounded backoff.
+
+HTTP 5xx, connection errors and timeouts remain endpoint-wide failures. Those
+retries keep the current key, and changing keys cannot restart their ladder.
+Each rotation costs one retry from the SAME run-wide allowance; all attempts
+charge the same cumulative transport-time counter. Key state is in run memory,
+not serialized in status or reports. Failure metadata distinguishes credential
+scope from endpoint scope without exposing credential values or provider bodies.
+The worker invokes transaction analysis once; it no longer retries the whole
+pipeline after transport-session exhaustion.
+
+Boundary policy: a valid response whose accounted transport time is exactly the
+shared limit is accepted. A response beyond the limit is rejected; an error at
+the limit cannot retry, and the next query cannot start at zero remaining time.
+The same inclusive-success policy applies to the absolute preflight deadline;
+a second explicitly configured model cannot gain additional preflight time by
+starting at that deadline. The absolute deadline is shared across keys/models.
+
+Correction verification commands (PowerShell, installed dependencies, mocked HTTP):
+
+```powershell
+$env:PYTEST_DISABLE_PLUGIN_AUTOLOAD='1'
+$env:PYTHONDONTWRITEBYTECODE='1'
+Remove-Item Env:FAULTSEEKER_TEST_PIPELINE_REPO -ErrorAction SilentlyContinue
+python -m pytest tests -q
+# Collected 103; executed 96; passed 96; skipped 7; failed 0.
+
+$env:FAULTSEEKER_TEST_PIPELINE_REPO='C:\Users\91701\AppData\Local\Temp\faultseeker-pipeline-investigation'
+python -m pytest tests/test_pinned_pipeline.py -q
+# Collected/executed/passed 7; skipped 0; failed 0.
+
+node --test tests/frontend.test.cjs
+# Executed/passed 10; skipped 0; failed 0.
+node --check app/web/assets/console.js
+node --check assets/console.js
+git diff --check
+# All three checks passed.
+```
+
+The separate integration invocation actually executed all seven tests against
+the exact pinned source. Those seven skips in the default invocation are not
+counted as executed there. Four new pinned integrations exercise preflight
+401/403/429 rotation and mid-run quota rotation through the real GPT and
+Universal agents. Other new regressions cover all invalid keys, endpoint-wide
+outage, shared retry/time preservation, zero retry allowance, no worker restart,
+and responses below/at/above the time boundary. Source/trace provenance guards,
+safe partial states and the historical evidence remain intact. No live model
+calls, paid services, new dependencies or deployment were involved. Browser
+screenshots above belong to the original verification; browser QA was not rerun
+for this transport-only correction. Docker/Kluster limitations still apply.

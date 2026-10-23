@@ -110,3 +110,39 @@ def test_real_cache_identity_guard_rejects_wrong_chain(pinned, monkeypatch):
             replay().get_structured_trace(TX, "eth")
     finally:
         runtime.close()
+
+
+@pytest.mark.parametrize("statuses,expected", [
+    ([401, 200, 200, 200], ["first", "second", "second", "second"]),
+    ([403, 200, 200, 200], ["first", "second", "second", "second"]),
+    ([429, 200, 200, 200], ["first", "second", "second", "second"]),
+    ([200, 429, 200, 200], ["first", "first", "second", "second"]),
+])
+def test_real_agents_keep_preflight_rotation_and_rotate_mid_run(pinned, monkeypatch, statuses, expected):
+    agents = importlib.import_module("faultseeker.utils.agent")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-first,test-second")
+    calls, events = [], []
+    statuses = iter(statuses)
+    def factory(**kwargs):
+        def reply(request):
+            calls.append(request.headers["authorization"])
+            status = next(statuses)
+            if status != 200:
+                return httpx.Response(status, text="PRIVATE_PROVIDER_BODY")
+            return httpx.Response(200, json={"id": "offline", "object": "chat.completion", "created": 0,
+                "model": MODEL, "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "OK"}}]})
+        return OpenAI(**kwargs, http_client=httpx.Client(transport=httpx.MockTransport(reply)))
+    monkeypatch.setattr(agents, "OpenAI", factory)
+    session = ModelEndpointSession(retry_limit=2, emit=events.append)
+    runtime = PipelineRuntime(TX, "eth", session=session).install()
+    try:
+        runtime.preflight([MODEL])
+        for agent_class in (agents.GPTAgent, agents.UniversalAgent):
+            assert agent_class("offline", MODEL)._send_message("Mocked request") == "OK"
+        assert calls == ["Bearer test-"+key for key in expected]
+        assert session.retries_left == 1
+        assert session.failure is None
+        assert "test-first" not in json.dumps(events)
+        assert "PRIVATE_PROVIDER_BODY" not in json.dumps(events)
+    finally:
+        runtime.close()
