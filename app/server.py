@@ -221,6 +221,14 @@ PRESET_TXS = [
     {"hash": "0x35a73969f582872c25c96c48d8bb31c23eab8a49c19282c67509b96186734e60", "protocol": "ParaSwap", "date": "2024-03-19", "loss": "~$24k", "calls": 12},
 ]
 
+# Demo presets: documented BNB Smart Chain exploits, each verified on-chain via
+# the QuickNode BSC endpoint (eth_getTransactionReceipt status 0x1) on 2026-10-23.
+BSC_PRESET_TXS = [
+    {"hash": "0xebf83628ba893d35b496121fb8201666b8e09f3cbadf0e269162baa72efe3b8b", "protocol": "BSC Token Hub", "date": "2022-10-07", "loss": "~$100M+ drained", "calls": 0},
+    {"hash": "0x5a504fe72ef7fc76dfeb4d979e533af4e23fe37e90b5516186d5787893c37991", "protocol": "Uranium Finance", "date": "2021-04-28", "loss": "~$50M", "calls": 0},
+    {"hash": "0x897c2de73dd55d7701e1b69ffb3a17b0f4801ced88b0c75fe1551c5fcce6a979", "protocol": "PancakeBunny", "date": "2021-05-20", "loss": "~$45M", "calls": 0},
+]
+
 # --- saved demo replays: real completed runs, replayed through the live view ---
 # "demo:<name>" in the tx-hash field replays the saved event stream + result of a
 # REAL completed run (no RPC, no LLM, no keys) so the demo can never be blocked
@@ -1304,13 +1312,16 @@ async def capture():
 
 @app.get("/api/config")
 async def config():
-    replay_presets = [{"hash": k, "protocol": v["label"], "date": "", "loss": "", "calls": 0}
+    replay_presets = [{"hash": k, "protocol": v["label"], "date": "", "loss": "", "calls": 0,
+                       "chain": v.get("chain", "eth")}
                       for k, v in DEMO_REPLAYS.items()]
+    chain_presets = ([{**p, "chain": "eth"} for p in PRESET_TXS] +
+                     [{**p, "chain": "bsc"} for p in BSC_PRESET_TXS])
     return {"chains": CHAINS, "models": MODELS, "repo_present": os.path.isdir(REPO),
             "server_key_available": {m["keyEnv"]: bool(_key_list(m["keyEnv"])) for m in MODELS if m.get("keyEnv")},
             "capture_available": os.path.isfile(CAPTURE),
             "live_available": True,
-            "preset_txs": replay_presets + PRESET_TXS}
+            "preset_txs": replay_presets + chain_presets}
 
 
 web = os.path.normpath(os.path.join(HERE, "web"))

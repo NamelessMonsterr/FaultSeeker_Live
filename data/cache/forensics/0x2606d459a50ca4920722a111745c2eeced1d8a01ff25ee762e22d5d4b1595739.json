@@ -1,0 +1,407 @@
+{
+  "transaction": {
+    "hash": "0x2606d459a50ca4920722a111745c2eeced1d8a01ff25ee762e22d5d4b1595739",
+    "chain": "eth",
+    "analysis_duration": 22.114906072616577,
+    "timestamp": null
+  },
+  "summary": {
+    "total_functions_to_inspect": 6,
+    "repeated_patterns_detected": 0,
+    "addresses_to_inspect": 1,
+    "addresses_inspected": 2,
+    "created_contract_calls": 0,
+    "potential_attackers": 1,
+    "potential_victims": 0
+  },
+  "classification": {
+    "rule_verdict": "EXPLOIT",
+    "rule_confidence": 0.85,
+    "matched_rule": "closed_source_access_control",
+    "vuln_type_hint": "Improper Access Control Of Close-Source Contract",
+    "reentrancy": {
+      "score": 0.0,
+      "detected": false,
+      "tier": "NOT_REENTRANCY",
+      "signals": {
+        "same_function_reentry": false,
+        "cross_function_reentry": false,
+        "reentry_before_return": false,
+        "slot_rewrite": false,
+        "write_after_call": false,
+        "state_slot_reentry": false
+      },
+      "context": {
+        "fallback_mode": false,
+        "storage_trace_available": true
+      }
+    },
+    "priority": {
+      "total": 0.85,
+      "exploitability": 0.85,
+      "reentrancy": 0.0,
+      "flashloan": 0.0,
+      "price_manipulation": 0.0,
+      "liquidity_drain": 0.0,
+      "reentrancy_source": "storage"
+    },
+    "priority_score": 0.85,
+    "signals": {
+      "reentrancy": {
+        "score": 0.0,
+        "detected": false,
+        "tier": "NOT_REENTRANCY",
+        "signals": {
+          "same_function_reentry": false,
+          "cross_function_reentry": false,
+          "reentry_before_return": false,
+          "slot_rewrite": false,
+          "write_after_call": false,
+          "state_slot_reentry": false
+        },
+        "context": {
+          "fallback_mode": false,
+          "storage_trace_available": true
+        }
+      },
+      "reentrancy_score": 0.0,
+      "reentrancy_detected": false,
+      "reentrancy_paths_count": 0,
+      "reentrancy_fallback_mode": false,
+      "reentrancy_detection_threshold": 0.45,
+      "reentrancy_confidence_tier": "NOT_REENTRANCY",
+      "reentrancy_signals": {
+        "same_function_reentry": false,
+        "cross_function_reentry": false,
+        "reentry_before_return": false,
+        "slot_rewrite": false,
+        "write_after_call": false,
+        "state_slot_reentry": false
+      },
+      "reentrancy_context": {
+        "fallback_mode": false,
+        "storage_trace_available": true
+      },
+      "flash_loan_detected": false,
+      "flash_callback_detected": false,
+      "flash_profit_eth": 0.0,
+      "price_read_write_sequences": 0,
+      "price_delta_ratio": 0.0,
+      "price_manipulation_detected": false,
+      "hashed_fn_count": 5,
+      "closed_source_state_change": true,
+      "access_control_bypass": true,
+      "privileged_calls_count": 2,
+      "created_contract_in_privileged": false,
+      "arbitrary_external_call": false,
+      "inflation_attack": false,
+      "single_transfer_only": false,
+      "profit_extraction_eth": 0.0,
+      "large_transfer_to_eoa": false,
+      "top_vuln_hints": [
+        "Access Control"
+      ],
+      "debug": {
+        "same_contract_reentry": 0,
+        "ancestor_proximity_reentry": 0,
+        "same_selector_reentry": 0,
+        "delegatecall_proxy_reentry": 0,
+        "call_depth_max": 2,
+        "external_calls": 3,
+        "state_changes_after_call": false,
+        "state_reentry": false,
+        "write_before_and_after": false,
+        "same_function_reentered": false,
+        "same_contract_different_selector": false,
+        "nested_depth_reentry": false,
+        "external_call_chain": false,
+        "same_slot_rewritten": false,
+        "storage_events_total": 3,
+        "storage_trace_available": true,
+        "detection_threshold": 0.45,
+        "guard_slots_filtered": 0,
+        "reentrant_patterns_found": 2,
+        "score_components": {
+          "same_contract_reentry": 0,
+          "ancestor_proximity_reentry": 0,
+          "same_selector_reentry": 0,
+          "delegatecall_proxy_reentry": 0,
+          "call_depth_max": 2,
+          "external_calls": 3,
+          "state_changes_after_call": false,
+          "state_reentry": false,
+          "write_before_and_after": false,
+          "same_function_reentered": false,
+          "same_contract_different_selector": false,
+          "nested_depth_reentry": false,
+          "external_call_chain": false,
+          "same_slot_rewritten": false,
+          "storage_events_total": 3,
+          "storage_trace_available": true,
+          "detection_threshold": 0.45,
+          "guard_slots_filtered": 0,
+          "score": 0.0
+        }
+      },
+      "graph_reasoning": {
+        "node_count": 6,
+        "edge_count": 7,
+        "node_kinds": {
+          "contract_or_eoa": 3,
+          "storage_slot": 3
+        },
+        "edge_kinds": {
+          "staticcall": 1,
+          "call": 1,
+          "delegatecall": 2,
+          "sstore": 3
+        },
+        "cycle_count": 0,
+        "delegatecall_edges": 2,
+        "transfer_edges": 0,
+        "storage_slot_edges": 3,
+        "anomaly_score": 0.7,
+        "motifs": [
+          "proxy_delegatecall"
+        ]
+      },
+      "trace_entropy": 0.655459,
+      "call_depth_max": 6,
+      "token_flow_anomaly": 0.7,
+      "calibrated_confidence": null,
+      "ablation": {
+        "disable_faegl": false,
+        "disable_tig": false,
+        "disable_calibration": false,
+        "disable_llm_routing": false,
+        "disable_adversarial_hardening": false,
+        "variant": "full_system",
+        "disabled_components": []
+      }
+    }
+  },
+  "attack_analysis": {
+    "potential_attackers": [
+      ""
+    ],
+    "potential_victims": [],
+    "address_labels": {},
+    "balance_changes": {}
+  },
+  "function_analysis": {
+    "functions_to_inspect": {
+      "flashloan_callback": [],
+      "function_name_with_hash": [
+        {
+          "type": "call",
+          "gas": "0x141fb",
+          "address": "0xc793113f1548b97e37c409f39244ee44241bf2b3",
+          "function": "0xe32a9a37",
+          "params": "000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb480000000000000000000000000000000000000000000000000000000000000000",
+          "call_type": "call",
+          "value": "0x0",
+          "contract_type": null,
+          "depth": [
+            0
+          ]
+        },
+        {
+          "type": "call",
+          "gas": "0xca84",
+          "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+          "function": "0x70a08231",
+          "params": "000000000000000000000000bc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+          "call_type": "staticcall",
+          "value": "0x0",
+          "contract_type": null,
+          "depth": [
+            0,
+            0
+          ]
+        },
+        {
+          "type": "call",
+          "gas": "0xab82",
+          "address": "0x43506849d7c04f9138d1a2050bbf3a0c054402dd",
+          "function": "0x70a08231",
+          "params": "000000000000000000000000bc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+          "call_type": "delegatecall",
+          "value": "0x0",
+          "contract_type": null,
+          "depth": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "type": "call",
+          "gas": "0xa121",
+          "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+          "function": "0x23b872dd",
+          "params": "000000000000000000000000bc452fdc8f851d7c5b72e1fe74dfb63bb793d511000000000000000000000000ded2b1a426e1b7d415a40bcad44e98f47181dda20000000000000000000000000000000000000000000000000000012f97197a40",
+          "call_type": "call",
+          "value": "0x0",
+          "contract_type": null,
+          "depth": [
+            0,
+            1
+          ]
+        },
+        {
+          "type": "call",
+          "gas": "0x9bba",
+          "address": "0x43506849d7c04f9138d1a2050bbf3a0c054402dd",
+          "function": "0x23b872dd",
+          "params": "000000000000000000000000bc452fdc8f851d7c5b72e1fe74dfb63bb793d511000000000000000000000000ded2b1a426e1b7d415a40bcad44e98f47181dda20000000000000000000000000000000000000000000000000000012f97197a40",
+          "call_type": "delegatecall",
+          "value": "0x0",
+          "contract_type": null,
+          "depth": [
+            0,
+            1,
+            0
+          ]
+        }
+      ],
+      "function_name_with_hash_children": [
+        {
+          "type": "call",
+          "gas": "0x9bba",
+          "address": "0x43506849d7c04f9138d1a2050bbf3a0c054402dd",
+          "function": "0x23b872dd",
+          "params": "000000000000000000000000bc452fdc8f851d7c5b72e1fe74dfb63bb793d511000000000000000000000000ded2b1a426e1b7d415a40bcad44e98f47181dda20000000000000000000000000000000000000000000000000000012f97197a40",
+          "call_type": "delegatecall",
+          "value": "0x0",
+          "contract_type": null,
+          "depth": [
+            0,
+            1,
+            0
+          ]
+        }
+      ],
+      "call_with_created_contract": [],
+      "others": []
+    },
+    "repeated_patterns": {
+      "keys": [],
+      "keys_function_only": []
+    },
+    "calls_with_created_contracts": [],
+    "adaptive_fallback": {
+      "activated": false,
+      "trigger": "",
+      "modes": [],
+      "before_count": 6,
+      "after_count": 6,
+      "functions_added": 0,
+      "algorithm_decision": {
+        "algorithm": "FAEGL",
+        "version": "1.0",
+        "activated": false,
+        "trigger": "",
+        "failure_severity": 0.275455,
+        "features": {
+          "trace_entropy": 0.96023,
+          "call_depth": 0.0,
+          "state_delta": 0.25,
+          "token_flow_anomaly": 0.0,
+          "delegatecall_density": 0.4,
+          "graph_anomaly": 0.0,
+          "graph_cycles": 0.0
+        },
+        "fallback_utilities": {
+          "entropy_trace_analysis": 0.26943,
+          "state_delta_reasoning": 0.141171,
+          "graph_expansion": 0.110182,
+          "aggressive_call_depth_inspection": 0.096409,
+          "proxy_unwrapping": 0.168028
+        },
+        "selected_modes": [],
+        "candidate_count": 6
+      }
+    }
+  },
+  "address_classification": {
+    "addresses_to_inspect": {
+      "0xc793113f1548b97e37c409f39244ee44241bf2b3": {
+        "function_calls": {
+          "0xe32a9a37": [
+            {
+              "type": "call",
+              "gas": "0x141fb",
+              "address": "0xc793113f1548b97e37c409f39244ee44241bf2b3",
+              "function": "0xe32a9a37",
+              "params": "000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb480000000000000000000000000000000000000000000000000000000000000000",
+              "call_type": "call",
+              "value": "0x0",
+              "contract_type": null,
+              "depth": [
+                0
+              ]
+            }
+          ]
+        },
+        "label": "",
+        "role": [
+          "unknown"
+        ]
+      }
+    },
+    "inspected_addresses": {
+      "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": {
+        "function_calls": {
+          "0x70a08231": [
+            {
+              "type": "call",
+              "gas": "0xca84",
+              "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+              "function": "0x70a08231",
+              "params": "000000000000000000000000bc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+              "call_type": "staticcall",
+              "value": "0x0",
+              "contract_type": null,
+              "depth": [
+                0,
+                0
+              ]
+            }
+          ],
+          "0x23b872dd": [
+            {
+              "type": "call",
+              "gas": "0xa121",
+              "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+              "function": "0x23b872dd",
+              "params": "000000000000000000000000bc452fdc8f851d7c5b72e1fe74dfb63bb793d511000000000000000000000000ded2b1a426e1b7d415a40bcad44e98f47181dda20000000000000000000000000000000000000000000000000000012f97197a40",
+              "call_type": "call",
+              "value": "0x0",
+              "contract_type": null,
+              "depth": [
+                0,
+                1
+              ]
+            }
+          ]
+        },
+        "label": "",
+        "role": [
+          "common_address"
+        ]
+      },
+      "0x43506849d7c04f9138d1a2050bbf3a0c054402dd": {
+        "function_calls": [
+          "0x70a08231",
+          "0x23b872dd"
+        ],
+        "label": "",
+        "address": "0x43506849d7c04f9138d1a2050bbf3a0c054402dd",
+        "role": [
+          "token"
+        ]
+      }
+    },
+    "same_function_calls": {}
+  }
+}
