@@ -50,29 +50,33 @@ def setup(responses, **options):
                                               (401, {"error": {"message": "SECRET", "type": "auth_error"}}, "authentication")])
 def test_classifies_errors_without_leaking_bodies(status, body, kind):
     response = httpx.Response(status, text=body) if isinstance(body, str) else httpx.Response(status, json=body)
-    m, session, factory, calls, events, _ = setup([response] * 3)
+    m, session, factory, calls, events, _ = setup([response] * 8)
     with pytest.raises(m.ModelEndpointFailure) as failure:
         session.preflight(factory, MODEL, timeout=20)
     assert failure.value.kind == kind
     assert "SECRET" not in str(failure.value)
     assert "html" not in str(failure.value).lower()
-    assert len(calls) == (1 if status == 401 else 3)
+    # 401 fails fast; transient 5xx retries until the preflight deadline.
+    assert len(calls) == (1 if status == 401 else 7)
     assert "SECRET" not in json.dumps(events)
 
 
 def test_timeout_is_bounded_and_classified():
-    m, session, factory, calls, _, _ = setup([httpx.ReadTimeout("SECRET")] * 3)
+    m, session, factory, calls, _, clock = setup([httpx.ReadTimeout("SECRET")] * 8)
     with pytest.raises(m.ModelEndpointFailure) as failure:
         session.preflight(factory, MODEL, timeout=20)
     assert failure.value.kind == "timeout"
-    assert len(calls) == 3
+    assert len(calls) == 7 and clock.now < 20  # deadline-bounded, not count-bounded
     assert "SECRET" not in str(failure.value)
 
 
 def test_recovery_keeps_model_and_does_not_reset_shared_retry_allowance():
+    # Preflight retries are bounded by their deadline, not the shared allowance,
+    # so the analysis call below still has all of it (3 attempts, 3 failures).
     m, session, factory, calls, events, _ = setup([
         httpx.Response(502, text="<html>bad gateway</html>"), httpx.Response(200, json=OK),
-        httpx.Response(200, json=OK), httpx.Response(502, text="bad"), httpx.Response(502, text="bad")])
+        httpx.Response(200, json=OK), httpx.Response(502, text="bad"), httpx.Response(502, text="bad"),
+        httpx.Response(502, text="bad")])
     session.preflight(factory, MODEL, timeout=20)
     assert session.call(factory, {"model": MODEL, "messages": []}, MODEL).choices[0].message.content == "OK"
     with pytest.raises(m.ModelEndpointFailure):
@@ -80,7 +84,7 @@ def test_recovery_keeps_model_and_does_not_reset_shared_retry_allowance():
     count = len(calls)
     with pytest.raises(m.ModelEndpointFailure):
         session.call(factory, {"model": MODEL, "messages": []}, MODEL)
-    assert len(calls) == count == 5
+    assert len(calls) == count == 6
     assert all(c["model"] == MODEL for c in calls)
     assert any(e["state"] == "waiting_on_model_endpoint" for e in events)
     assert any(e["state"] == "model_endpoint_ready" for e in events)
@@ -177,3 +181,74 @@ def test_valid_completion_at_shared_time_boundary(elapsed, accepted):
             session.call(timed_factory, {"model": MODEL, "messages": []}, MODEL)
         assert failure.value.kind == "budget_exhausted"
     assert len(calls) == 1
+
+
+
+def test_preflight_cold_start_retries_past_retry_limit():
+    # A waking endpoint that 502s more often than the analysis retry allowance
+    # must still get its full preflight window to become ready.
+    responses = [httpx.Response(502, text="bad gateway")] * 5 + [httpx.Response(200, json=OK)]
+    m, session, factory, calls, events, _ = setup(responses)
+    value = session.preflight(factory, MODEL, timeout=30)
+    assert value.choices[0].message.content == "OK"
+    assert len(calls) == 6  # retry_limit is 2 in this harness
+    assert session.retries_left == 2  # preflight consumed no analysis retries
+    assert session.failure is None
+    waiting = [e for e in events if e["state"] == "waiting_on_model_endpoint" and e.get("phase") == "preflight"]
+    assert sum(1 for e in waiting if e.get("retry_in_seconds") == 0) == 6  # every attempt announces itself to the UI
+
+
+def test_preflight_persistent_failure_reports_last_error_at_deadline():
+    m, session, factory, calls, events, clock = setup([httpx.Response(502, text="bad gateway")] * 20)
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.preflight(factory, MODEL, timeout=20)
+    # Deadline expiry is attributed to the real cause, not the shared budget.
+    assert failure.value.kind == "upstream_http" and failure.value.status_code == 502
+    assert failure.value.phase == "preflight"
+    assert len(calls) == 7 and clock.now < 20
+
+
+def test_preflight_does_not_borrow_analysis_retries():
+    responses = ([httpx.Response(502, text="bad gateway")] * 4 + [httpx.Response(200, json=OK)]
+                 + [httpx.Response(502, text="bad")] * 2 + [httpx.Response(200, json=OK)]
+                 + [httpx.Response(502, text="bad")])
+    m, session, factory, calls, _, _ = setup(responses)
+    session.preflight(factory, MODEL, timeout=30)
+    # Analysis still has its full allowance: two retries, then success.
+    assert session.call(factory, {"model": MODEL, "messages": []}, MODEL).choices[0].message.content == "OK"
+    assert session.retries_left == 0
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.call(factory, {"model": MODEL, "messages": []}, MODEL)
+    assert failure.value.kind == "upstream_http"
+    assert len(calls) == 9
+
+
+def test_preflight_zero_shared_budget_fails_fast_without_attempts():
+    m, session, factory, calls, _, _ = setup([httpx.Response(200, json=OK)])
+    session.time_budget = 0.0
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.preflight(factory, MODEL, timeout=20)
+    assert failure.value.kind == "budget_exhausted"
+    assert len(calls) == 0
+
+
+def test_preflight_key_rotation_stays_bounded_by_key_count():
+    m, session, factory, calls, events, _ = setup(
+        [httpx.Response(401, json={"error": {"message": "SECRET"}})] * 4)
+    session.register_keys("https://model.invalid/v1", ["key-one", "key-two"])
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.preflight(factory, MODEL, timeout=30)
+    assert failure.value.kind == "authentication"
+    assert len(calls) == 2  # one attempt per configured key, then fail fast
+    assert session.retries_left == 2
+    assert "SECRET" not in json.dumps(events)
+
+
+def test_preflight_rate_limit_retry_after_beyond_deadline_stays_bounded():
+    m, session, factory, calls, _, clock = setup(
+        [httpx.Response(429, headers={"Retry-After": "99999"}, json={"error": "quota"})])
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.preflight(factory, MODEL, timeout=20)
+    # The deadline cannot fit the hinted wait: report the real cause, no sleep.
+    assert failure.value.kind == "rate_limited"
+    assert clock.now == 0 and len(calls) == 1
