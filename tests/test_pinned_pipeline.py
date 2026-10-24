@@ -30,7 +30,7 @@ PIN = next(line.split("=", 1)[1] for line in (ROOT / "Dockerfile").read_text().s
 def pinned(monkeypatch, tmp_path):
     location = os.getenv("FAULTSEEKER_TEST_PIPELINE_REPO")
     if not location:
-        pytest.skip("Set FAULTSEEKER_TEST_PIPELINE_REPO for pinned-pipeline integration")
+        pytest.skip(f"Exact pipeline {PIN} unavailable: set FAULTSEEKER_TEST_PIPELINE_REPO to an existing local checkout; no substitute revision is accepted")
     assert subprocess.check_output(["git", "-C", location, "rev-parse", "HEAD"], text=True).strip() == PIN
     monkeypatch.syspath_prepend(location)
     monkeypatch.chdir(tmp_path)  # The upstream logger opens ./logs with filemode=w.

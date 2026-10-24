@@ -76,6 +76,8 @@ class ModelEndpointSession:
         self.failure = None
         self.lock = threading.RLock()
         self.key_pools = {}
+        self.model_routes = {}
+        self.route_policy = None
 
     def register_keys(self, base_url, keys, model=None):
         """Keep credential state per endpoint/model, private to this run's memory.
@@ -84,7 +86,7 @@ class ModelEndpointSession:
         consume the shared retry allowance; preflight uses its shared deadline.
         """
         with self.lock:
-            endpoint = str(httpx.URL(base_url)).rstrip("/")
+            endpoint = str(httpx.URL(str(base_url))).rstrip("/")
             if model is not None:
                 endpoint = (endpoint, model)
             pool = self.key_pools.setdefault(endpoint, {"keys": [], "rejected": set(), "active": None})
@@ -142,13 +144,20 @@ class ModelEndpointSession:
                 pool = None
                 error = None
                 try:
+                    if model not in self.model_routes and self.route_policy is not None:
+                        route, keys = self.route_policy(model)
+                        self.model_routes[model] = route
+                        self.register_keys(route, keys, model=model)
                     client = factory()
                     remaining -= self.clock() - started
                     if remaining <= 0:
                         raise ModelEndpointFailure("budget_exhausted", phase=phase)
-                    endpoint = str(httpx.URL(client.base_url)).rstrip("/")
+                    route = self.model_routes.get(model)
+                    endpoint = str(httpx.URL(str(route or client.base_url))).rstrip("/")
                     pool = self.key_pools.get((endpoint, model)) or self.key_pools.get(endpoint)
                     options = {"max_retries": 0, "timeout": min(self.call_timeout, remaining)}
+                    if route:
+                        options["base_url"] = route
                     if pool:
                         # Upstream agents round-robin their own keys. Override
                         # that choice so rejected keys cannot reappear later.

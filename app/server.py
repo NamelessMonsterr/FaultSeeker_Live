@@ -12,7 +12,19 @@ import sys
 import threading
 import uuid
 import asyncio
+from contextlib import asynccontextmanager
 from urllib.parse import urlsplit, quote
+
+try:
+    from .model_routes import resolve_route
+    from .rpc_transport import PublicRPCRelay, parse_endpoint
+except ImportError:
+    try:
+        from app.model_routes import resolve_route
+        from app.rpc_transport import PublicRPCRelay, parse_endpoint
+    except ModuleNotFoundError:
+        from model_routes import resolve_route
+        from rpc_transport import PublicRPCRelay, parse_endpoint
 
 from datetime import datetime, timezone
 
@@ -34,7 +46,7 @@ def _hist_load():
     try:
         with open(HISTORY_PATH, encoding="utf-8") as f:
             entries = json.load(f)
-            return entries if isinstance(entries, list) else []
+            return [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
     except (OSError, json.JSONDecodeError):
         return []
 
@@ -81,6 +93,21 @@ GH_HISTORY_REPO = os.environ.get(
     "GITHUB_HISTORY_REPO", "NamelessMonsterr/faultseeker-run-history").strip()
 
 
+def _history_repo_private(timeout=10):
+    """Fail closed: shared workspace history may only be mirrored to a private repo."""
+    import urllib.request
+    if not GH_HISTORY_TOKEN:
+        return False
+    request = urllib.request.Request("https://api.github.com/repos/" + GH_HISTORY_REPO,
+        headers={"Authorization": "Bearer " + GH_HISTORY_TOKEN,
+                 "Accept": "application/vnd.github+json", "User-Agent": "faultseeker-console"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read()).get("private") is True
+    except Exception:
+        return False
+
+
 def _gh_hist_put(path, content_bytes, message):
     """Best-effort create/update of one file in the history repo (Contents API)."""
     import base64
@@ -115,6 +142,8 @@ def _gh_hist_sync(run_id, entry, res):
     """Mirror one finished run (result, event log, index) to GitHub."""
     def work():
         try:
+            if not _history_repo_private():
+                return
             _gh_hist_put("runs/%s.json" % run_id,
                          json.dumps({"entry": entry, "result": res}, indent=1).encode(),
                          "run %s: %s" % (run_id, entry.get("status")))
@@ -131,7 +160,7 @@ def _gh_hist_sync(run_id, entry, res):
     threading.Thread(target=work, daemon=True).start()
 
 
-def _gh_hist_get(path):
+def _gh_hist_get(path, timeout=20):
     """Fetch one file's raw bytes from the history repo; None on any miss."""
     import base64
     import urllib.request
@@ -143,46 +172,92 @@ def _gh_hist_get(path):
                "User-Agent": "faultseeker-demo-console"}
     try:
         req = urllib.request.Request(api, headers=headers)
-        with urllib.request.urlopen(req, timeout=20) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             return base64.b64decode(json.loads(r.read().decode())["content"])
     except Exception:
         return None
 
 
 def _gh_hist_seed():
-    """On a fresh ephemeral disk, pull the GitHub-mirrored history back down."""
+    """Bounded background restoration, merged without replacing newer local runs."""
     if os.path.exists(HISTORY_PATH) or not GH_HISTORY_TOKEN:
         return
-    raw = _gh_hist_get("index.json")
-    if not raw:
+    deadline = time.monotonic() + 30
+    if not _history_repo_private(timeout=10):
         return
+    def fetch(path):
+        remaining = deadline - time.monotonic()
+        return _gh_hist_get(path, timeout=min(20, remaining)) if remaining > 0 else None
+    raw = fetch("index.json")
     try:
-        entries = json.loads(raw.decode())
-        if isinstance(entries, list):
-            _hist_save(entries)
+        entries = json.loads(raw.decode()) if raw else None
     except (ValueError, UnicodeDecodeError):
         return
-    for e in entries[-30:]:
-        rid = e.get("run_id")
-        if not rid:
+    if not isinstance(entries, list):
+        return
+    restored = []
+    for entry in entries[-30:]:
+        if time.monotonic() >= deadline:
+            break
+        if not isinstance(entry, dict):
             continue
-        ev = _gh_hist_get("runs/%s.events.jsonl" % rid)
+        rid = entry.get("run_id")
+        if not isinstance(rid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", rid):
+            continue
+        if rid in runs:
+            continue
+        blob = fetch("runs/%s.json" % rid)
+        try:
+            payload = json.loads(blob.decode()) if blob else {}
+            result = payload.get("result") if isinstance(payload, dict) else None
+            if isinstance(result, dict):
+                path = os.path.join(RUNS_DIR, rid + ".json")
+                if not os.path.exists(path):
+                    with open(path + ".restore.tmp", "w", encoding="utf-8") as f:
+                        json.dump(_redact(result), f)
+                    os.replace(path + ".restore.tmp", path)
+        except (ValueError, UnicodeDecodeError, OSError):
+            continue
+        ev = fetch("runs/%s.events.jsonl" % rid)
         if ev:
             try:
-                with open(os.path.join(RUNS_DIR, rid + ".events.jsonl"), "wb") as f:
-                    f.write(ev)
-            except OSError:
-                pass
-        blob = _gh_hist_get("runs/%s.json" % rid)
-        if blob:
-            try:
-                payload = json.loads(blob.decode())
-                res = payload.get("result") if isinstance(payload, dict) else None
-                if isinstance(res, dict):
-                    with open(os.path.join(RUNS_DIR, rid + ".json"), "w", encoding="utf-8") as f:
-                        json.dump(res, f)
+                # Parse/redact restored events instead of trusting mirrored bytes.
+                cleaned = [json.dumps(_redact(json.loads(line))) for line in ev.decode().splitlines() if line]
+                path = os.path.join(RUNS_DIR, rid + ".events.jsonl")
+                if not os.path.exists(path):
+                    with open(path + ".restore.tmp", "w", encoding="utf-8") as f:
+                        f.write("\n".join(cleaned) + "\n")
+                    os.replace(path + ".restore.tmp", path)
             except (ValueError, UnicodeDecodeError, OSError):
                 pass
+        entry = dict(entry)
+        if entry.get("status") in ("running", "cancelling", "starting"):
+            entry.update(status="interrupted", detail="Server restarted before completion was recorded.")
+        restored.append(_redact(entry))
+    with history_lock:
+        current = _hist_load()
+        existing = {e.get("run_id") for e in current if isinstance(e, dict)}
+        _hist_save([e for e in restored if e["run_id"] not in existing] + current)
+
+
+def _reconcile_history():
+    with history_lock:
+        entries = _hist_load()
+        changed = False
+        for entry in entries:
+            if isinstance(entry, dict) and entry.get("status") in ("running", "cancelling", "starting") and entry.get("run_id") not in runs:
+                entry.update(status="interrupted", detail="Server restarted before completion was recorded.")
+                changed = True
+        if changed:
+            _hist_save(entries)
+
+
+@asynccontextmanager
+async def lifespan(application):
+    _reconcile_history()
+    if GH_HISTORY_TOKEN:
+        threading.Thread(target=_gh_hist_seed, daemon=True).start()
+    yield
 
 
 def _hist_log_event(run_id, ev, data):
@@ -196,7 +271,6 @@ def _hist_log_event(run_id, ev, data):
                                 "data": _redact(data)}) + "\n")
     except OSError:
         pass
-_gh_hist_seed()
 
 
 if os.path.isdir(REPO):
@@ -254,7 +328,7 @@ MODELS = [
     {"id": "gpt-6.1-sol-medium", "label": "GPT-6.1 Sol medium (Codex)", "keyEnv": "OPENAI_API_KEY"},
     {"id": "gpt-6.1-sol-high", "label": "GPT-6.1 Sol high (Codex)", "keyEnv": "OPENAI_API_KEY"},
     {"id": "z-ai/glm-5.3-flash", "label": "GLM 5.3 Flash (NVIDIA NIM)", "keyEnv": "NVIDIA_API_KEY"},
-    {"id": "gpt-4o-mini", "label": "GPT-4o Mini (OpenAI)", "keyEnv": "OPENAI_API_KEY"},
+    {"id": "gpt-4o-mini", "label": "GPT-4o Mini (OpenAI)", "keyEnv": "OPENAI_DIRECT_API_KEY"},
     {"id": "gemini-3.8-flash", "label": "Gemini 3.8 Flash (Google)", "keyEnv": "GOOGLE_API_KEY"},
     {"id": "grok-3-mini", "label": "Grok 3 Mini (xAI)", "keyEnv": "XAI_API_KEY"},
     {"id": "claude-3-haiku-20240307", "label": "Claude 3 Haiku (Anthropic)", "keyEnv": "ANTHROPIC_API_KEY"},
@@ -339,7 +413,7 @@ class RunBus:
 runs = {}
 run_lock = threading.Lock()
 
-app = FastAPI()
+app = FastAPI(lifespan=lifespan)
 
 
 # --- hosted-demo protection: access gate + per-IP run limits ----------------
@@ -357,6 +431,29 @@ RUN_LIMIT_PER_DAY = int(os.environ.get("DEMO_RUN_LIMIT_PER_DAY", "40"))
 RUN_TIMEOUT_SECS = int(os.environ.get("DEMO_RUN_TIMEOUT_SECS", "7200"))  # hard wall-clock cap per run
 _runs_by_ip = {}
 _diag_by_ip = {}
+_gate_by_ip = {}
+LIMIT_MAX_IPS = 4096
+_limit_lock = threading.Lock()
+
+
+def _consume_quota(store, ip, now, windows):
+    """Bound storage without evicting live quotas (which would enable bypass)."""
+    ttl = max(seconds for seconds, _ in windows)
+    with _limit_lock:
+        for key in list(store):
+            stamps = [t for t in store[key] if now - t < ttl]
+            if stamps:
+                store[key] = stamps
+            else:
+                del store[key]
+        stamps = store.get(ip, [])
+        if ip not in store and len(store) >= LIMIT_MAX_IPS:
+            return False
+        if any(sum(now - t < seconds for t in stamps) >= limit for seconds, limit in windows):
+            return False
+        store[ip] = stamps + [now]
+        return True
+
 
 
 def _gate_token():
@@ -382,28 +479,21 @@ async def gate_and_limit(request: Request, call_next):
     path = request.url.path
     if path in ("/healthz", "/gate"):
         return await call_next(request)
-    if GATE:
-        cookie = request.cookies.get("fs_gate", "")
-        if not hmac.compare_digest(cookie, _gate_token()):
-            if path.startswith("/api/"):
-                return JSONResponse({"error": "Session expired. Sign in again.", "login_url": "/gate"}, status_code=401)
-            return RedirectResponse(url="/gate", status_code=303)
+    if not GATE:
+        return JSONResponse({"error": "Access gate is not configured. The operator must set DEMO_GATE_PASSWORD."}, status_code=503)
+    cookie = request.cookies.get("fs_gate", "")
+    if not hmac.compare_digest(cookie.encode("utf-8"), _gate_token().encode("utf-8")):
+        if path.startswith("/api/"):
+            return JSONResponse({"error": "Session expired. Sign in again.", "login_url": "/gate"}, status_code=401)
+        return RedirectResponse(url="/gate", status_code=303)
+    ip = request.client.host if request.client else "unknown"
+    now = time.time()
     if path in ("/api/llm-selftest", "/api/rpc-selftest"):
-        ip = request.client.host if request.client else "unknown"
-        now = time.time()
-        stamps = [t for t in _diag_by_ip.get(ip, []) if now - t < 3600]
-        if len(stamps) >= 30:
+        if not _consume_quota(_diag_by_ip, ip, now, [(3600, 30)]):
             return JSONResponse({"error": "diagnostic limit reached for this network, try later"}, status_code=429)
-        stamps.append(now)
-        _diag_by_ip[ip] = stamps
     if path == "/api/analyze" and request.method == "POST":
-        ip = request.client.host if request.client else "unknown"
-        now = time.time()
-        stamps = [t for t in _runs_by_ip.get(ip, []) if now - t < 86400]
-        if len([t for t in stamps if now - t < 3600]) >= RUN_LIMIT_PER_HOUR or len(stamps) >= RUN_LIMIT_PER_DAY:
-            return JSONResponse({"error": "run limit reached for this network, try later"}, status_code=429)
-        stamps.append(now)
-        _runs_by_ip[ip] = stamps
+        if not _consume_quota(_runs_by_ip, ip, now, [(3600, RUN_LIMIT_PER_HOUR), (86400, RUN_LIMIT_PER_DAY)]):
+            return JSONResponse({"error": "analysis request limit reached for this network, try later"}, status_code=429)
     return await call_next(request)
 
 
@@ -414,8 +504,15 @@ async def gate_form():
 
 @app.post("/gate")
 async def gate_submit(request: Request):
+    if not GATE:
+        return HTMLResponse(GATE_PAGE.replace("__ERR__", '<div class=err>Access gate is not configured.</div>'), status_code=503)
+    ip = request.client.host if request.client else "unknown"
+    if not _consume_quota(_gate_by_ip, ip, time.time(), [(900, 10)]):
+        return HTMLResponse(GATE_PAGE.replace("__ERR__", '<div class=err>Too many sign-in attempts. Try again later.</div>'), status_code=429, headers={"Retry-After": "900"})
     form = await request.form()
     if GATE and hmac.compare_digest(str(form.get("password", "")).encode("utf-8"), GATE.encode("utf-8")):
+        with _limit_lock:
+            _gate_by_ip.pop(ip, None)
         resp = RedirectResponse(url="/", status_code=303)
         resp.set_cookie("fs_gate", _gate_token(), max_age=7 * 24 * 3600,
                         httponly=True, samesite="lax", secure=True)
@@ -516,14 +613,19 @@ def llm_selftest(model: str = "gemini-3.8-flash", max_keys: int = 1,
     out = []
     import openai as _oai
     from faultseeker.utils.agent import PROVIDER_CONFIG
-    base_url = None
+    base_url, provider_env = None, entry["keyEnv"]
     for prefix, cfg in PROVIDER_CONFIG.items():
         if model.startswith(prefix):
-            base_url = cfg[0]
+            base_url, provider_env = cfg[0], cfg[1]
             break
+    try:
+        base_url, _ = resolve_route(model, base_url, provider_env)
+    except ValueError as exc:
+        return {"model": model, "error": str(exc), "keys": []}
     for i, k in enumerate(keys[:min(max(1, max_keys), 3)]):
+        client = None
         try:
-            client = _oai.OpenAI(api_key=k, base_url=base_url, timeout=30)
+            client = _oai.OpenAI(api_key=k, base_url=base_url, timeout=30, max_retries=0)
             r = client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": "Reply with the single word: ok"}],
@@ -534,35 +636,13 @@ def llm_selftest(model: str = "gemini-3.8-flash", max_keys: int = 1,
         except Exception as e:  # noqa: BLE001 - diagnostic reports every failure type
             out.append({"key_index": i + 1, "ok": False,
                          "err": _redact(f"{type(e).__name__}: {str(e)[:160]}", keys)})
-    result = {"model": model, "base_url": base_url, "keys": out, "key_count": len(keys),
+        finally:
+            if client is not None and hasattr(client, "close"):
+                client.close()
+    result = {"model": model, "endpoint_host": urlsplit(base_url).hostname, "keys": out, "key_count": len(keys),
               "openai_version": getattr(_oai_ver, "__version__", "?"), "env_overrides_set": env_report}
-    if replay == "stage2" and req_keys:
-        result["stage2_replay"] = {"ok": False, "err": "Use a live analysis to test Stage 2 with request-supplied keys."}
-    elif replay == "stage2" and keys:
-        try:
-            import json as _json
-            from faultseeker.utils.agent import UniversalAgent
-            from faultseeker.prompts.function_analysis.orchestration_session_prompts import OrchestrationSessionPrompts
-            from faultseeker.prompts.function_analysis.worker_prompts import WorkerPrompts
-            summary = {"function": "earned", "appearance_count": 50,
-                       "pattern": [{"type": "call", "gas": 18506,
-                                    "address": "0x4a866fE20A442Dff55FAA010684A5C1379151458",
-                                    "function": "earned",
-                                    "params": "0x19f0a60f4635d3E2c48647822Eda5332BA094fd3",
-                                    "call_type": "staticcall", "value": None}] * 50,
-                       "note": "synthetic replay payload"}
-            prompt = WorkerPrompts().function_call_task_selection.format(
-                task_tree="1. Basic Function Call Info Gathering - [completed]",
-                function_call_info_summary=summary,
-                current_understanding="replay probe")
-            agent = UniversalAgent(OrchestrationSessionPrompts().function_call_task_generation_init,
-                                   model)
-            reply = agent.query(prompt)
-            result["stage2_replay"] = {"ok": bool(reply), "reply_type": type(reply).__name__,
-                                       "reply": _json.dumps(reply)[:200]}
-        except Exception as e:  # noqa: BLE001 - this endpoint exists to surface it
-            result["stage2_replay"] = {"ok": False,
-                                       "err": f"{type(e).__name__}: {str(e)[:300]}"}
+    if replay == "stage2":
+        result["stage2_replay"] = {"ok": False, "err": "Use a live analysis to test Stage 2 with the shared transport and routing policy."}
     return _redact(result, keys)
 
 
@@ -585,17 +665,23 @@ for _v in ("OPENAI_API_KEY", "GOOGLE_API_KEY", "XAI_API_KEY", "GROQ_API_KEY",
             _SECRET_VALUES.append(_seg)
 
 
+def _credential_field(key):
+    name = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(key)).lower()
+    name = re.sub(r"[^a-z0-9]+", "_", name).strip("_")
+    return bool(re.fullmatch(r"(?:.*_)?(?:api_?keys?|passwords?|password_hash|authorization|authorization_header|rpc_keys?|model_keys?|secrets?|secret_key|secret_token|client_secret|private_keys?|access_tokens?|refresh_tokens?)", name))
+
+
 def _redact(s, secrets=()):
     """Preserve JSON structure while stripping request and server credentials."""
     if isinstance(s, dict):
-        return {k: ("***" if re.search(r"(?i)(api.?key|password|authorization|rpc_key|model_key|secret|access_token)", str(k)) else _redact(v, secrets)) for k, v in s.items()}
+        return {k: ("***" if _credential_field(k) else _redact(v, secrets)) for k, v in s.items()}
     if isinstance(s, (list, tuple)):
         return [_redact(v, secrets) for v in s]
     if not isinstance(s, str):
         return s
     known = list(_SECRET_VALUES) + list(secrets)
     for name, value in os.environ.items():
-        if any(part in name for part in ("API_KEY", "RPC_URL", "HISTORY_TOKEN", "GATE_PASSWORD")):
+        if any(part in name for part in ("API_KEY", "RPC_URL", "BASE_URL", "HISTORY_TOKEN", "GATE_PASSWORD")):
             known.extend(re.split(r"[\s,;]+", value))
     for v in sorted({v for v in known if isinstance(v, str) and len(v) >= 6}, key=len, reverse=True):
         if v in s:
@@ -637,6 +723,7 @@ def worker(run_id, req, q):
     env_set = []
     env_prior = {}
     runtime = None
+    rpc_relay = None
     request_secrets = []
     for name in ("model_key", "rpc_key", "rpc_url", "forensics_model_key"):
         value = req.get(name) or ""
@@ -681,7 +768,13 @@ def worker(run_id, req, q):
             # dRPC/BlockPI style endpoints). Request value wins over server env.
             var = f"{req['chain'].upper()}_RPC_URL"
             env_prior[var] = os.environ.get(var)
-            os.environ[var] = rpc_url
+            rpc_relay = PublicRPCRelay(rpc_url)
+            os.environ[var] = rpc_relay.start()
+            request_secrets.extend([os.environ[var], urlsplit(os.environ[var]).path.lstrip("/")])
+            relay_flag = "FAULTSEEKER_VISITOR_RPC_RELAY"
+            env_prior[relay_flag] = os.environ.get(relay_flag)
+            env_set.append(relay_flag)
+            os.environ[relay_flag] = "1"
             env_set.append(var)
 
         mode = req.get("mode", "no-llm")
@@ -734,6 +827,14 @@ def worker(run_id, req, q):
                     env_set.append(f_entry["keyEnv"])
                 os.environ[f_entry["keyEnv"]] = "\n".join(f_keys)
             os.environ[entry["keyEnv"]] = "\n".join(keys)
+            # Legacy agent constructors require OPENAI_API_KEY even for the direct
+            # route. Only the shared transport sends requests, using per-model keys.
+            if entry["keyEnv"] == "OPENAI_DIRECT_API_KEY" or f_entry["keyEnv"] == "OPENAI_DIRECT_API_KEY":
+                if "OPENAI_API_KEY" not in env_set:
+                    env_prior["OPENAI_API_KEY"] = os.environ.get("OPENAI_API_KEY")
+                    env_set.append("OPENAI_API_KEY")
+                if not os.environ.get("OPENAI_API_KEY"):
+                    os.environ["OPENAI_API_KEY"] = keys[0]
             runtime = _prepare_pipeline(req, mode, q)
             runtime.model_keys = {mode: keys}
             if forensics != mode:
@@ -775,8 +876,12 @@ def worker(run_id, req, q):
                 q.put(("log", "A failure report could not be persisted."))
         q.put(("error", _redact(f"{type(e).__name__}: {str(e)[:400]}")))
     finally:
-        if runtime is not None:
-            runtime.close()
+        for resource in (runtime, rpc_relay):
+            if resource is not None:
+                try:
+                    resource.close()
+                except Exception:
+                    q.put(("log", "Worker resource cleanup failed."))
         sys.stdout = old_out
         sys.stderr = old_err
         try:
@@ -803,8 +908,10 @@ async def analyze(request: Request):
     if any(k in req and (not isinstance(req[k], str) or len(req[k]) > 8192) for k in fields):
         return JSONResponse({"error": "Analysis fields must be strings of at most 8192 characters."}, status_code=400)
     req = {k: v for k, v in req.items() if k in fields or k == "stage2_workers"}
-    if "stage2_workers" in req and (type(req["stage2_workers"]) is not int or not 1 <= req["stage2_workers"] <= 5):
-        return JSONResponse({"error": "stage2_workers must be an integer from 1 to 5."}, status_code=400)
+    if req.get("fallback_model"):
+        return JSONResponse({"error": "fallback_model is unsupported; configure the requested model explicitly."}, status_code=400)
+    if "stage2_workers" in req and (type(req["stage2_workers"]) is not int or not 1 <= req["stage2_workers"] <= 4):
+        return JSONResponse({"error": "stage2_workers must be an integer from 1 to 4."}, status_code=400)
     tx = (req.get("txn_hash") or "").strip()
     chain = (req.get("chain") or "eth").strip().lower()
     demo = DEMO_REPLAYS.get(tx.lower())
@@ -846,6 +953,10 @@ async def analyze(request: Request):
                         prev = t
                         q.put((ev, data))
                         _hist_log_event(run_id, ev, data)
+                with q.cond:
+                    if runs[run_id]["cancel"].is_set():
+                        raise RuntimeError("Replay cancelled")
+                    runs[run_id]["finishing"] = True
                 with open(demo["result"], encoding="utf-8") as f:
                     res = json.load(f)
                 res["analysis_mode"] = "saved-replay"
@@ -885,11 +996,9 @@ async def analyze(request: Request):
         return JSONResponse({"error": "unknown model"}, status_code=400)
     if req.get("rpc_url"):
         try:
-            parsed = urlsplit(req["rpc_url"])
-            if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
-                raise ValueError()
-        except ValueError:
-            return JSONResponse({"error": "RPC URL must be an HTTP(S) endpoint without userinfo."}, status_code=400)
+            parse_endpoint(req["rpc_url"])
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
     if req.get("rpc_key") and "{key}" not in req.get("rpc_url", ""):
         return JSONResponse({"error": "Use {key} in the RPC URL when supplying a separate RPC key, or paste the complete endpoint URL and leave RPC key blank."}, status_code=400)
     # Keep recent stream buffers bounded; older completed reports remain on disk.
@@ -945,6 +1054,9 @@ async def analyze(request: Request):
                     break
                 try:
                     ev, data = mp_q.get(timeout=2)
+                    if ev in ("done", "end"):
+                        with q.cond:
+                            runs[run_id]["finishing"] = True
                     if ev != "end":
                         q.put((ev, data))
                     _hist_log_event(run_id, ev, data)
@@ -960,6 +1072,9 @@ async def analyze(request: Request):
                     while True:
                         try:
                             ev, data = mp_q.get(timeout=0.2)
+                            if ev in ("done", "end"):
+                                with q.cond:
+                                    runs[run_id]["finishing"] = True
                             if ev != "end":
                                 q.put((ev, data))
                             _hist_log_event(run_id, ev, data)
@@ -1064,7 +1179,7 @@ async def stream(run_id: str, request: Request):
                     yield sse("end", {})
                     return
                 if time.monotonic() - last_heartbeat >= 15:
-                    yield ": hb\n\n"
+                    yield sse("heartbeat", {})
                     last_heartbeat = time.monotonic()
                 await asyncio.sleep(0.1)
                 continue
@@ -1086,17 +1201,19 @@ async def cancel(run_id: str):
     r = runs.get(run_id)
     if not r:
         return JSONResponse({"error": "unknown run"}, status_code=404)
-    proc = r.get("proc")
-    if r.get("status") == "running":
+    with r["q"].cond:
+        proc = r.get("proc")
+        if r.get("status") not in ("running", "cancelling") or r.get("finishing") or r["q"].closed:
+            return {"cancelled": False, "reason": "run is already finishing or finished"}
+        if proc is not None and not proc.is_alive():
+            return {"cancelled": False, "reason": "worker already exited; finalization is in progress"}
         r.setdefault("cancel", threading.Event()).set()
         r["status"] = "cancelling"
-        if proc is None:
-            return {"cancelled": True, "status": "cancelling"}
-    if proc and proc.is_alive():
-        proc.terminate()  # the watchdog notices and releases the lock
-        r["q"].put(("log", "cancel requested - terminating the run process"))
-        return {"cancelled": True}
-    return {"cancelled": False, "reason": "no live process for this run"}
+        if proc is not None:
+            proc.terminate()
+        r["q"].put(("log", "Cancellation requested; waiting for finalization."))
+        return {"cancelled": True, "status": "cancelling"}
+
 
 
 @app.get("/api/status/{run_id}")
@@ -1239,7 +1356,8 @@ async def result(run_id: str):
 
 @app.get("/api/runs")
 async def list_runs():
-    """Persistent run history (survives restarts; NOT redeploys on free tier)."""
+    """Persistent run history for the admitted shared workspace."""
+    _reconcile_history()
     return {"runs": _redact(list(reversed(_hist_load())))}
 
 

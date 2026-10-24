@@ -88,3 +88,22 @@ test('unknown measurements do not appear as zero scores or a successful verdict'
  await app.elements['analysis-form'].listeners.submit({preventDefault(){}});app.streams[0].emit('end',{},'1');await settle();
  const content=collect(app.elements.results);assert.match(content,/INCONCLUSIVE/);assert.doesNotMatch(content,/Reported scores/);
 });
+
+
+test('terminal event with inherited duplicate ID still retrieves report',async()=>{
+ const report={transaction_hash:'0x123',analysis_status:'partial',classification:{rule_verdict:'INCONCLUSIVE'}};
+ const app=boot({'/console/api/config':{data:config},'/console/api/analyze':{data:{run_id:'endgap'}},'/console/api/result/endgap':{data:report}});await settle();
+ await app.elements['analysis-form'].listeners.submit({preventDefault(){}});
+ app.streams[0].emit('log','last log','5');
+ app.streams[0].emit('end',{},'5'); // EventSource inherits the last id when the server omits it.
+ await settle();assert.match(collect(app.elements.results),/INCONCLUSIVE/);
+});
+
+test('replay gaps remain visible even when EventSource inherits an old ID',async()=>{
+ const app=boot({'/console/api/config':{data:config},'/console/api/analyze':{data:{run_id:'loggap'}}});await settle();
+ await app.elements['analysis-form'].listeners.submit({preventDefault(){}});
+ app.streams[0].emit('log','recent','5');
+ app.streams[0].emit('replay-gap',{message:'Older technical logs expired'},'5');
+ assert.match(collect(app.elements.activity),/Older technical logs expired/);
+ app.streams[0].emit('heartbeat',{},'5');assert.match(app.elements.connection.textContent,/Connected/);
+});

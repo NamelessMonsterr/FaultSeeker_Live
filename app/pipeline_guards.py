@@ -9,9 +9,11 @@ import os
 
 try:
     from .model_endpoint import ModelEndpointSession
+    from .model_routes import resolve_route
     from .trace_identity import TraceIdentityError, canonical_to_legacy, check_structured, validate_trace_root
 except ImportError:  # app/server.py invoked directly
     from model_endpoint import ModelEndpointSession
+    from model_routes import resolve_route
     from trace_identity import TraceIdentityError, canonical_to_legacy, check_structured, validate_trace_root
 
 
@@ -54,6 +56,8 @@ class PipelineRuntime:
     def install_model_hooks(self, agent_module):
         if not self.session:
             return
+        if self.source is not None:
+            self.session.route_policy = self._model_config
         if hasattr(agent_module, "_llm_call_with_retry"):
             self.replace(agent_module, "_llm_call_with_retry", self.session.call)
         for agent_class in {agent_module.GPTAgent, agent_module.UniversalAgent}:
@@ -76,10 +80,17 @@ class PipelineRuntime:
         from faultseeker.data_collection.trace_visualizer import TransactionTraceVisualizer
         from faultseeker.data_collection.txn_replayer import TransactionReplayer
         from faultseeker.utils.rpc_provider import rpc_call
+        from faultseeker.utils import rpc_provider
         from faultseeker.forensics.orchestrator import ForensicsOrchestrator
         from faultseeker.function_analysis.function_analyzer import FunctionAnalyzer
         from faultseeker.function_analysis.function_ranker import FunctionRanker
         self.source = agents
+        if os.getenv("FAULTSEEKER_VISITOR_RPC_RELAY"):
+            # Forked workers may inherit a registry populated by a prior diagnostic.
+            # Rebuild it after the visitor URL was replaced with the checked relay.
+            if not hasattr(rpc_provider, "_ChainRegistry") or not hasattr(rpc_provider, "_registry"):
+                raise RuntimeError("Pipeline cannot isolate the visitor RPC registry.")
+            self.replace(rpc_provider, "_registry", rpc_provider._ChainRegistry())
         self.install_model_hooks(agents)
 
         original_structured = TransactionReplayer.get_structured_trace
@@ -190,20 +201,23 @@ class PipelineRuntime:
         self.replace(FunctionAnalyzer, "run", checked_analysis)
         return self
 
+    def _model_config(self, model):
+        base_url, env_name = self.source.UniversalAgent._detect_provider(model)
+        base_url, env_name = resolve_route(model, base_url, env_name)
+        keys = self.model_keys.get(model) or self.source._parse_api_keys(os.getenv(env_name, ""))
+        if not keys:
+            raise ValueError("The configured model requires an API key.")
+        return base_url, keys
+
     def preflight(self, models, timeout=20):
         if not self.session:
             return
+        self.session.route_policy = self._model_config
         # One overall preflight deadline, including any explicitly split stages.
         deadline = self.session.clock() + timeout
-        for model in dict.fromkeys(models):
-            base_url, env_name = self.source.UniversalAgent._detect_provider(model)
-            override = {"OPENAI_API_KEY": "OPENAI_BASE_URL", "GROQ_API_KEY": "GROQ_BASE_URL",
-                        "NARAROUTER_API_KEY": "NARAROUTER_BASE_URL"}.get(env_name)
-            if override:
-                base_url = os.getenv(override) or base_url
-            keys = self.model_keys.get(model) or self.source._parse_api_keys(os.getenv(env_name, ""))
-            if not keys:
-                raise ValueError("The configured model requires an API key.")
+        configured = [(model, *self._model_config(model)) for model in dict.fromkeys(models)]
+        for model, base_url, keys in configured:
+            self.session.model_routes[model] = base_url
             self.session.register_keys(base_url, keys, model=model)
             self.session.preflight(lambda: self.source.OpenAI(api_key=keys[0], base_url=base_url,
                                       max_retries=0, timeout=min(timeout, self.session.call_timeout)),

@@ -3,21 +3,24 @@
 # Serves the web console at http://127.0.0.1:8420 and drives YOUR FaultSeeker
 # fork (NamelessMonsterr/FaultSeeker-) for live runs. No code from any other
 # FaultSeeker repo is bundled here.
+set -euo pipefail
 cd "$(dirname "$0")"
-
+PY=python3.11
+command -v "$PY" >/dev/null || PY=python3
+PIPELINE_SHA=$("$PY" tools/pipeline_pin.py)
 if [ ! -d FaultSeeker- ]; then
-  echo "Cloning your FaultSeeker fork..."
-  git clone https://github.com/NamelessMonsterr/FaultSeeker-.git
+  git clone --no-checkout https://github.com/NamelessMonsterr/FaultSeeker-.git
 fi
-# Until the console-compat PR is merged into main, use its branch.
-if ! grep -q "no_llm" FaultSeeker-/faultseeker/main.py; then
-  echo "Using the console-demo-compat branch of your fork (PR pending)..."
-  git -C FaultSeeker- fetch -q origin console-demo-compat
-  git -C FaultSeeker- checkout -q console-demo-compat
+if ! git -C FaultSeeker- diff --quiet || ! git -C FaultSeeker- diff --cached --quiet; then
+  echo "Pipeline checkout has local changes; preserve them before bootstrapping." >&2
+  exit 1
 fi
+git -C FaultSeeker- cat-file -e "${PIPELINE_SHA}^{commit}" 2>/dev/null || git -C FaultSeeker- fetch --depth 1 origin "$PIPELINE_SHA"
+git -C FaultSeeker- checkout --detach "$PIPELINE_SHA"
+test "$(git -C FaultSeeker- rev-parse HEAD)" = "$PIPELINE_SHA"
 # Seed the offline replay cache so `--offline` and the console fallback work.
-mkdir -p "FaultSeeker-/data/cache/forensics"
-cp -n api/capture "FaultSeeker-/data/cache/forensics/0x0788ba222970c7c68a738b0e08fb197e669e61f9b226ceec4cab9b85abe8cceb.json" 2>/dev/null
+mkdir -p "data/cache/forensics"
+cp -n api/capture "data/cache/forensics/0x0788ba222970c7c68a738b0e08fb197e669e61f9b226ceec4cab9b85abe8cceb.json" 2>/dev/null
 
 PY=python3.11
 command -v $PY >/dev/null || PY=python3

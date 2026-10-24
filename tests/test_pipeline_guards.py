@@ -203,7 +203,7 @@ def test_second_model_cannot_start_after_shared_preflight_deadline(monkeypatch):
     from app.model_endpoint import ModelEndpointFailure
     runtime, calls, events, query = rotation_runtime(monkeypatch, [200, 200], seconds=20)
     with pytest.raises(ModelEndpointFailure) as failure:
-        runtime.preflight(["gpt-6.1-sol-low", "gpt-6.1-sol"], timeout=20)
+        runtime.preflight(["gpt-6.1-sol-low", "gpt-6.1-sol-medium"], timeout=20)
     assert failure.value.kind == "budget_exhausted"
     assert len(calls) == 1 and runtime.session.spent == 20
 
@@ -288,3 +288,49 @@ def test_split_stage_keys_reach_actual_mocked_transport(monkeypatch):
     runtime.model_keys = {"gpt-6.1-sol-low": ["function-key"], "gpt-6.1-sol-medium": ["forensics-key"]}
     runtime.preflight(list(runtime.model_keys))
     assert calls == ["Bearer function-key", "Bearer forensics-key"]
+
+
+
+def test_model_routes_never_send_direct_credentials_to_codex_proxy(monkeypatch):
+    import httpx
+    from openai import OpenAI
+    from app.model_endpoint import ModelEndpointSession
+    from app.pipeline_guards import PipelineRuntime
+    monkeypatch.setenv("CODEX_PROXY_BASE_URL", "https://proxy.invalid/v1")
+    monkeypatch.setenv("OPENAI_DIRECT_BASE_URL", "https://direct.invalid/v1")
+    observed = []
+    def reply(request):
+        observed.append((request.url.host, request.headers["authorization"]))
+        return httpx.Response(200, json={"id":"offline","object":"chat.completion","created":0,"model":"test",
+            "choices":[{"index":0,"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}]})
+    def factory(**kwargs):
+        return OpenAI(**kwargs, http_client=httpx.Client(transport=httpx.MockTransport(reply)))
+    runtime = PipelineRuntime(TX, "eth", session=ModelEndpointSession())
+    runtime.source = types.SimpleNamespace(OpenAI=factory, _parse_api_keys=lambda v: v.split(','),
+        UniversalAgent=types.SimpleNamespace(_detect_provider=lambda m: (None, "OPENAI_API_KEY")))
+    runtime.model_keys = {"gpt-6.1-sol-low": ["proxy-key"], "gpt-4o-mini": ["direct-key"]}
+    runtime.preflight(list(runtime.model_keys))
+    # Simulate a legacy agent constructing its client with the wrong default route/key.
+    runtime.session.call(lambda: factory(api_key="proxy-key", base_url="https://proxy.invalid/v1"),
+        {"model":"gpt-4o-mini", "messages":[]}, "gpt-4o-mini")
+    assert observed == [("proxy.invalid", "Bearer proxy-key"), ("direct.invalid", "Bearer direct-key"), ("direct.invalid", "Bearer direct-key")]
+
+
+def test_unconfigured_direct_route_fails_without_using_proxy(monkeypatch):
+    from app.model_routes import resolve_route
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://proxy.invalid/v1")
+    monkeypatch.delenv("OPENAI_DIRECT_BASE_URL", raising=False)
+    with pytest.raises(ValueError, match="OPENAI_DIRECT_BASE_URL"):
+        resolve_route("gpt-4o-mini")
+
+
+
+def test_implicit_openai_model_cannot_escape_routing_policy(monkeypatch):
+    from app.model_endpoint import ModelEndpointFailure
+    runtime, calls, _, _ = rotation_runtime(monkeypatch, [200])
+    runtime.preflight(["gpt-6.1-sol-low"])
+    monkeypatch.delenv("OPENAI_DIRECT_BASE_URL", raising=False)
+    with pytest.raises(ModelEndpointFailure):
+        runtime.session.call(lambda: (_ for _ in ()).throw(AssertionError("Factory must not be used")),
+            {"model":"gpt-4o-mini","messages":[]}, "gpt-4o-mini")
+    assert len(calls) == 1

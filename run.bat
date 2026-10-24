@@ -5,18 +5,25 @@ rem fork (NamelessMonsterr/FaultSeeker-) for live runs.
 cd /d %~dp0
 echo === FaultSeeker forensic console ===
 
+set "PIPELINE_SHA="
+for /f %%s in ('python tools\pipeline_pin.py') do set "PIPELINE_SHA=%%s"
+if not defined PIPELINE_SHA exit /b 1
 if not exist FaultSeeker- (
-  echo Cloning your FaultSeeker fork...
-  git clone https://github.com/NamelessMonsterr/FaultSeeker-.git
+  git clone --no-checkout https://github.com/NamelessMonsterr/FaultSeeker-.git
+  if errorlevel 1 exit /b 1
 )
-findstr /c:"no_llm" FaultSeeker-\faultseeker\main.py >nul
-if errorlevel 1 (
-  echo Using the console-demo-compat branch of your fork (PR pending)...
-  git -C FaultSeeker- fetch -q origin console-demo-compat
-  git -C FaultSeeker- checkout -q console-demo-compat
-)
-if not exist FaultSeeker-\data\cache\forensics mkdir FaultSeeker-\data\cache\forensics
-if not exist FaultSeeker-\data\cache\forensics\0x0788ba222970c7c68a738b0e08fb197e669e61f9b226ceec4cab9b85abe8cceb.json copy /y api\capture FaultSeeker-\data\cache\forensics\0x0788ba222970c7c68a738b0e08fb197e669e61f9b226ceec4cab9b85abe8cceb.json >nul
+git -C FaultSeeker- diff --quiet
+if errorlevel 1 exit /b 1
+git -C FaultSeeker- diff --cached --quiet
+if errorlevel 1 exit /b 1
+git -C FaultSeeker- cat-file -e %PIPELINE_SHA%^{commit} 2>nul
+if errorlevel 1 git -C FaultSeeker- fetch --depth 1 origin %PIPELINE_SHA%
+if errorlevel 1 exit /b 1
+git -C FaultSeeker- checkout --detach %PIPELINE_SHA%
+if errorlevel 1 exit /b 1
+for /f %%s in ('git -C FaultSeeker- rev-parse HEAD') do if not "%%s"=="%PIPELINE_SHA%" exit /b 1
+if not exist data\cache\forensics mkdir data\cache\forensics
+if not exist data\cache\forensics\0x0788ba222970c7c68a738b0e08fb197e669e61f9b226ceec4cab9b85abe8cceb.json copy /y api\capture data\cache\forensics\0x0788ba222970c7c68a738b0e08fb197e669e61f9b226ceec4cab9b85abe8cceb.json >nul
 
 if not exist .venv (
   echo Creating virtual environment (Python 3.11 required)...

@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+from urllib.parse import urlsplit
 from playwright.sync_api import sync_playwright, expect
 
 TX = "0x" + "a" * 64
@@ -23,15 +24,39 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", default="http://127.0.0.1:8421")
     parser.add_argument("--artifacts", default=os.path.join(os.environ.get("TEMP", "/tmp"), "faultseeker-browser-qa"))
+    parser.add_argument("--offline", action="store_true", help="Serve all resources from local files and fixtures; block network")
+    parser.add_argument("--headed", action="store_true")
     args = parser.parse_args()
+    if args.offline:
+        args.url = "https://console.invalid/"
     artifacts = Path(args.artifacts)
     artifacts.mkdir(parents=True, exist_ok=True)
     passed = []
     errors = []
     with sync_playwright() as p:
         chrome = Path("C:/Program Files/Google/Chrome/Application/chrome.exe")
-        browser = p.chromium.launch(headless=True, **({"executable_path": str(chrome)} if chrome.exists() else {}))
+        launch = {"headless": not args.headed}
+        if chrome.exists():
+            launch["executable_path"] = str(chrome)
+        if args.offline:
+            launch.update(proxy={"server":"http://127.0.0.1:9"}, args=["--disable-background-networking", "--disable-component-update", "--disable-sync", "--no-first-run", "--host-resolver-rules=MAP * ~NOTFOUND"])
+        browser = p.chromium.launch(**launch)
         context = browser.new_context(viewport={"width": 1440, "height": 1000})
+        root = Path(__file__).resolve().parents[1]
+        def local_resource(route):
+            parsed = urlsplit(route.request.url)
+            if parsed.hostname != "console.invalid":
+                return route.abort()
+            files = {"/":("app/web/index.html","text/html"), "/assets/console.js":("app/web/assets/console.js","application/javascript"),
+                     "/assets/console.css":("app/web/assets/console.css","text/css"), "/api/capture":("api/capture","application/json")}
+            if parsed.path == "/api/config":
+                return route.fulfill(json={**CONFIG,"live_available":False,"repo_present":False})
+            if parsed.path in files:
+                file, content_type = files[parsed.path]
+                return route.fulfill(body=(root / file).read_bytes(),content_type=content_type)
+            return route.fulfill(status=404,body="Offline fixture not found")
+        if args.offline:
+            context.route("**/*", local_resource)
         page = context.new_page()
         page.on("pageerror", lambda error: errors.append(str(error)))
         state = {"complete": False, "cancelled": False, "submitted": 0, "model_wait": True, "partial": False}
@@ -65,7 +90,7 @@ def main():
                 return route.fulfill(json={"cancelled": True})
             if path == "runs":
                 return route.fulfill(json={"runs": [{"run_id": "browserqa", "status": "completed", "model": "no-llm", "txn_hash": TX}]})
-            return route.continue_()
+            return route.abort() if args.offline else route.continue_()
         page.route("**/api/**", fixture)
         page.goto(args.url)
         expect(page.locator("#analyze")).to_be_enabled()
@@ -146,6 +171,8 @@ def main():
         context.close()
         # Exercise the real server and its bundled capture, without fixture routes.
         actual = browser.new_page(viewport={"width": 1440, "height": 1000})
+        if args.offline:
+            actual.route("**/*", local_resource)
         actual.goto(args.url)
         actual.locator("#capture-button").click()
         expect(actual.locator("#results")).to_be_visible()
@@ -153,7 +180,7 @@ def main():
         assert actual.locator(".finding").count() == 20
         actual.get_by_role("button", name="Show 20 more findings", exact=True).click()
         assert actual.locator(".finding").count() == 40
-        passed.append("real server saved capture remains explicit and paginates 803 functions")
+        passed.append(("offline bundled capture" if args.offline else "real server saved capture") + " remains explicit and paginates 803 functions")
         browser.close()
     print(json.dumps({"passed": len(passed), "checks": passed, "artifacts": str(artifacts)}, indent=2))
 

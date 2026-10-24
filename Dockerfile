@@ -4,8 +4,8 @@ ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 # Free-tier LLM rate limits (Groq OTPM 1000) can stretch a full run past 25 min.
 ENV DEMO_RUN_TIMEOUT_SECS=7200
 ENV FAULTSEEKER_MAX_FUNCTIONS=5
-# Codex OAuth proxy: route gpt-* models here; medium reasoning calls can exceed 2 min
-ENV OPENAI_BASE_URL=https://codex-proxy-render.onrender.com/v1
+# Codex proxy route for gpt-6.1-sol-* only; other OpenAI models require a separate endpoint
+ENV CODEX_PROXY_BASE_URL=https://codex-proxy-render.onrender.com/v1
 ENV FAULTSEEKER_MODEL_CALL_TIMEOUT_SECS=300
 ENV FAULTSEEKER_MODEL_TIME_BUDGET_SECS=600
 ENV FAULTSEEKER_SKIP_STRUCTLOGS=1
@@ -41,11 +41,15 @@ RUN pip install -r app/requirements-app.txt
 COPY app app
 COPY api api
 # Seed the offline replay cache (same as run.sh does locally)
-RUN mkdir -p /srv/FaultSeeker-/data/cache/forensics \
- && cp api/capture /srv/FaultSeeker-/data/cache/forensics/0x0788ba222970c7c68a738b0e08fb197e669e61f9b226ceec4cab9b85abe8cceb.json
+RUN mkdir -p /srv/data/cache/forensics \
+ && cp api/capture /srv/data/cache/forensics/0x0788ba222970c7c68a738b0e08fb197e669e61f9b226ceec4cab9b85abe8cceb.json
 
 ENV FAULTSEEKER_REPO=/srv/FaultSeeker- \
     FAULTSEEKER_CAPTURE=/srv/api/capture \
     HOST=0.0.0.0
 # Render injects PORT at runtime; server.py reads it (default 8420).
+RUN useradd --uid 10001 --create-home faultseeker \
+    && mkdir -p /srv/app/runs /srv/logs /srv/data \
+    && chown -R faultseeker:faultseeker /srv
+USER faultseeker
 CMD ["python", "app/server.py"]

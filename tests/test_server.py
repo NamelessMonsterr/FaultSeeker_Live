@@ -76,6 +76,8 @@ def server(monkeypatch, tmp_path):
     spec = importlib.util.spec_from_file_location("regression_server", ROOT / "app/server.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "GATE", "test-only-gate")
+    monkeypatch.setenv("OPENAI_DIRECT_BASE_URL", "https://direct.invalid/v1")
     monkeypatch.setattr(module, "RUNS_DIR", str(tmp_path))
     monkeypatch.setattr(module, "HISTORY_PATH", str(tmp_path / "index.json"))
     return module
@@ -85,6 +87,7 @@ def server(monkeypatch, tmp_path):
 def client(server):
     class Client:
         def request(self, method, path, **kwargs):
+            kwargs.setdefault("headers", {}).setdefault("cookie", "fs_gate=" + server._gate_token())
             async def invoke():
                 transport = httpx.ASGITransport(app=server.app, raise_app_exceptions=False, client=("testclient", 50000))
                 async with httpx.AsyncClient(transport=transport, base_url="http://test") as value:
@@ -563,3 +566,231 @@ def test_adapter_preserves_explicit_classification_without_transaction_object(se
     assert value["classification"] == classification
     value = server._adapt_result_for_view({"transaction_hash": TX, "analysis_status": "partial", "classification": classification})
     assert value["classification"]["rule_verdict"] == "INCONCLUSIVE"
+
+
+
+def test_gate_is_required_even_when_not_configured(client, server, monkeypatch):
+    monkeypatch.setattr(server, "GATE", "")
+    assert client.get("/api/config").status_code == 503
+    assert client.post("/api/analyze", json={"txn_hash": TX}).status_code == 503
+    assert client.get("/healthz").status_code == 200
+
+
+def test_gate_rejects_unauthenticated_and_throttles_guesses(client, server):
+    assert client.get("/api/runs", headers={"cookie": ""}).status_code == 401
+    for _ in range(10):
+        assert client.post("/gate", data={"password": "wrong"}).status_code == 401
+    assert client.post("/gate", data={"password": "wrong"}).status_code == 429
+
+
+def test_quota_tracking_expires_and_never_evicts_live_limits(server, monkeypatch):
+    monkeypatch.setattr(server, "LIMIT_MAX_IPS", 2)
+    store = {}
+    assert server._consume_quota(store, "one", 0, [(10, 1)])
+    assert server._consume_quota(store, "two", 0, [(10, 1)])
+    assert not server._consume_quota(store, "three", 1, [(10, 1)])
+    assert not server._consume_quota(store, "one", 1, [(10, 1)])
+    assert len(store) == 2
+    assert server._consume_quota(store, "three", 11, [(10, 1)])
+    assert list(store) == ["three"]
+
+
+def test_invalid_requests_still_count_as_requests_by_existing_policy(client):
+    for _ in range(10):
+        assert client.post("/api/analyze", json={"txn_hash": "invalid"}).status_code == 400
+    assert client.post("/api/analyze", json={"txn_hash": TX}).status_code == 429
+
+
+def test_redaction_preserves_descriptive_keys_and_nested_secrets(server):
+    value = {"authorization_checks": "missing", "secret_extraction_evidence": "observed",
+             "password_reset_event": "seen", "providerApiKey": "dummy-hidden",
+             "headers": {"Authorization": "short-token"}, "client_secret": "dummy-hidden",
+             "evidence": "contains known-dummy-key"}
+    redacted = server._redact(value, ["known-dummy-key"])
+    for key in ("authorization_checks", "secret_extraction_evidence", "password_reset_event"):
+        assert redacted[key] == value[key]
+    assert redacted["providerApiKey"] == "***"
+    assert redacted["headers"]["Authorization"] == "***"
+    assert "dummy-hidden" not in json.dumps(redacted)
+    assert "known-dummy-key" not in json.dumps(redacted)
+
+
+def test_dead_worker_cannot_be_changed_to_cancelled(client, server):
+    import threading
+    server.runs["finished"] = {"status": "running", "proc": types.SimpleNamespace(is_alive=lambda: False),
+        "q": server.RunBus(), "cancel": threading.Event()}
+    result = client.post("/api/cancel/finished").json()
+    assert result["cancelled"] is False
+    assert server.runs["finished"]["status"] == "running"
+    assert not server.runs["finished"]["cancel"].is_set()
+
+
+def test_completion_event_wins_over_late_cancel(client, server):
+    import threading
+    server.runs["finishing"] = {"status": "running", "finishing": True,
+        "proc": types.SimpleNamespace(is_alive=lambda: True), "q": server.RunBus(), "cancel": threading.Event()}
+    assert client.post("/api/cancel/finishing").json()["cancelled"] is False
+    assert not server.runs["finishing"]["cancel"].is_set()
+
+
+def test_history_restart_reconciles_persisted_running_entries(client, server):
+    server._hist_save([{"run_id": "old", "status": "running"}])
+    server._reconcile_history()
+    assert server._hist_load()[0]["status"] == "interrupted"
+    assert client.get("/api/runs").json()["runs"][0]["status"] == "interrupted"
+
+
+def test_import_never_fetches_remote_history(monkeypatch, tmp_path):
+    import urllib.request
+    calls = []
+    def denied(*a, **k):
+        calls.append(True)
+        raise AssertionError("Unexpected network")
+    monkeypatch.setattr(urllib.request, "urlopen", denied)
+    monkeypatch.setenv("GITHUB_HISTORY_TOKEN", "dummy-token")
+    monkeypatch.setenv("FAULTSEEKER_RUNS_DIR", str(tmp_path / "new"))
+    spec = importlib.util.spec_from_file_location("history_import_probe", ROOT / "app/server.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert calls == []
+
+
+def test_startup_schedules_history_without_waiting(server, monkeypatch):
+    scheduled = []
+    class Thread:
+        def __init__(self, target, **kwargs): scheduled.append(target)
+        def start(self): pass
+    monkeypatch.setattr(server, "GH_HISTORY_TOKEN", "dummy-token")
+    monkeypatch.setattr(server, "_history_repo_private", lambda **kwargs: True)
+    monkeypatch.setattr(server.threading, "Thread", Thread)
+    async def start():
+        async with server.lifespan(server.app):
+            assert scheduled == [server._gh_hist_seed]
+    asyncio.run(start())
+
+
+def test_history_restore_has_overall_budget(server, monkeypatch):
+    clock, calls = [0.0], []
+    monkeypatch.setattr(server, "GH_HISTORY_TOKEN", "dummy-token")
+    monkeypatch.setattr(server, "_history_repo_private", lambda **kwargs: True)
+    monkeypatch.setattr(server.time, "monotonic", lambda: clock[0])
+    def fetch(path, timeout):
+        calls.append((path, timeout))
+        clock[0] += 15
+        if path == "index.json":
+            return json.dumps([{"run_id": "one"}, {"run_id": "two"}]).encode()
+        return b'{"result":{"transaction_hash":"dummy"}}'
+    monkeypatch.setattr(server, "_gh_hist_get", fetch)
+    server._gh_hist_seed()
+    assert len(calls) == 2
+    assert calls[1][1] == 15
+    assert clock[0] == 30
+
+
+def test_history_restore_validates_ids_redacts_and_preserves_newer_local_entries(server, monkeypatch):
+    monkeypatch.setattr(server, "GH_HISTORY_TOKEN", "dummy-token")
+    monkeypatch.setattr(server, "_history_repo_private", lambda **kwargs: True)
+    calls = []
+    def fetch(path, timeout):
+        calls.append(path)
+        if path == "index.json":
+            server._hist_save([{"run_id": "live", "status": "completed"}])
+            return json.dumps([{"run_id": "../escape", "status": "running"}, {"run_id": "restored", "status": "running"}]).encode()
+        if path.endswith(".events.jsonl"): return b'{"ev":"log","data":{"api_key":"dummy-hidden"}}'
+        return b'{"result":{"api_key":"dummy-hidden"}}'
+    monkeypatch.setattr(server, "_gh_hist_get", fetch)
+    server._gh_hist_seed()
+    assert all(".." not in path for path in calls)
+    states = {e["run_id"]:e["status"] for e in server._hist_load()}
+    assert states == {"live":"completed", "restored":"interrupted"}
+    assert "dummy-hidden" not in (Path(server.RUNS_DIR) / "restored.json").read_text()
+
+
+def test_unsupported_fallback_is_not_silently_ignored(client):
+    assert client.post("/api/analyze", json={"txn_hash": TX, "fallback_model": "another-model"}).status_code == 400
+    assert client.post("/api/analyze", json={"txn_hash": TX, "stage2_workers": 5}).status_code == 400
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1/", "http://169.254.169.254/", "http://[::1]/", "http://10.1.1.1/"])
+def test_private_literal_rpc_rejected_before_worker_start(client, url):
+    assert client.post("/api/analyze", json={"txn_hash": TX, "rpc_url": url}).status_code == 400
+
+
+def test_direct_model_diagnostic_requires_separate_endpoint(server, monkeypatch):
+    monkeypatch.delenv("OPENAI_DIRECT_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://proxy.invalid/v1")
+    monkeypatch.setitem(sys.modules, "faultseeker.utils.agent", types.SimpleNamespace(PROVIDER_CONFIG={}))
+    result = server.llm_selftest(model="gpt-4o-mini", keys="dummy-key")
+    assert "OPENAI_DIRECT_BASE_URL" in result["error"]
+
+
+
+def test_worker_routes_visitor_rpc_through_guarded_relay(server, monkeypatch):
+    import os, queue
+    from app.pipeline_guards import PipelineRuntime
+    observed, closed = [], []
+    class Relay:
+        def __init__(self, endpoint): observed.append(endpoint)
+        def start(self): return "http://127.0.0.1:12345/private-relay-route"
+        def close(self): closed.append(True)
+    def main(**kwargs):
+        observed.append(os.environ["ETH_RPC_URL"])
+        return {"transaction_hash": TX}
+    monkeypatch.setattr(server, "PublicRPCRelay", Relay)
+    monkeypatch.setattr(server, "_prepare_pipeline", lambda *a: PipelineRuntime(TX,"eth"))
+    monkeypatch.setitem(sys.modules, "faultseeker.main", types.SimpleNamespace(main=main))
+    server.worker("relay", {"txn_hash":TX,"chain":"eth","mode":"no-llm","rpc_url":"https://rpc.invalid/v1"}, queue.Queue())
+    assert observed == ["https://rpc.invalid/v1", "http://127.0.0.1:12345/private-relay-route"]
+    assert closed == [True]
+
+
+
+@pytest.mark.parametrize("visibility", [True, False, None])
+def test_history_mirror_requires_verified_private_repository(server, monkeypatch, visibility):
+    import io, urllib.request
+    monkeypatch.setattr(server, "GH_HISTORY_TOKEN", "dummy-token")
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: io.BytesIO(json.dumps({"private":visibility}).encode()))
+    assert server._history_repo_private() is (visibility is True)
+
+
+def test_history_visibility_check_fails_closed(server, monkeypatch):
+    import urllib.request
+    monkeypatch.setattr(server, "GH_HISTORY_TOKEN", "dummy-token")
+    def unavailable(*args, **kwargs): raise OSError("offline")
+    monkeypatch.setattr(urllib.request, "urlopen", unavailable)
+    assert server._history_repo_private() is False
+
+
+@pytest.mark.parametrize("failed_resource", ["runtime", "relay"])
+def test_worker_restores_environment_and_ends_when_cleanup_fails(server, monkeypatch, failed_resource):
+    import os, queue
+    from app.pipeline_guards import PipelineRuntime
+    closed = []
+    class Runtime(PipelineRuntime):
+        def close(self):
+            closed.append("runtime")
+            if failed_resource == "runtime": raise RuntimeError("dummy cleanup failure")
+    class Relay:
+        def __init__(self, endpoint): pass
+        def start(self): return "http://127.0.0.1:12345/dummy-route"
+        def close(self):
+            closed.append("relay")
+            if failed_resource == "relay": raise RuntimeError("dummy cleanup failure")
+    monkeypatch.setenv("ETH_RPC_URL", "https://original.invalid")
+    monkeypatch.setattr(server, "PublicRPCRelay", Relay)
+    monkeypatch.setattr(server, "_prepare_pipeline", lambda *a: Runtime(TX, "eth"))
+    monkeypatch.setitem(sys.modules, "faultseeker.main", types.SimpleNamespace(main=lambda **kw: {"transaction_hash": TX}))
+    before = (sys.stdout, sys.stderr)
+    events = queue.Queue()
+    server.worker("cleanup", {"txn_hash": TX, "chain": "eth", "mode": "no-llm", "rpc_url": "https://rpc.invalid"}, events)
+    assert closed == ["runtime", "relay"]
+    assert os.environ["ETH_RPC_URL"] == "https://original.invalid"
+    assert (sys.stdout, sys.stderr) == before
+    emitted = list(events.queue)
+    assert ("log", "Worker resource cleanup failed.") in emitted
+    assert emitted[-1] == ("end", None)
+
+
+@pytest.mark.parametrize("field", ["api_keys", "providerApiKeys", "model_keys", "rpc_keys", "secrets", "passwords", "secretKey", "secret_token", "authorization_header", "private_keys", "access_tokens", "refresh_tokens"])
+def test_redaction_masks_credential_collections_and_common_forms(server, field):
+    assert server._redact({field: ["unknown-dummy-credential"]}) == {field: "***"}

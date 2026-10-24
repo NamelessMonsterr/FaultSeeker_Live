@@ -10,3 +10,9 @@ app/runs/*.events.jsonl
 app/runs/*.pipeline.json
 app/runs/*.tmp
 .playwright-mcp/
+
+# Runtime data stays local; verified regression fixtures live under tests/fixtures.
+app/runs/*.json
+app/runs/*.restore.tmp
+data/cache/
+logs/

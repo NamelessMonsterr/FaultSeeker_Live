@@ -287,3 +287,27 @@ def test_model_specific_credentials_share_budget_without_crossing_pools():
         session.call(factory, {"model": "stage2", "messages": []}, "stage2")
     assert calls == [("stage1", "Bearer bad"), ("stage1", "Bearer stage-one"), ("stage2", "Bearer bad")]
     assert session.retries_left == 0
+
+
+
+def test_foreign_url_object_compatibility_contract_simulated():
+    """Simulates httpx2.URL; this is not an installed OpenAI 3.x integration."""
+    from app.model_endpoint import ModelEndpointSession
+    class ForeignURL:
+        def __str__(self): return "https://MODEL.invalid:443/v1/"
+    calls = []
+    def reply(request):
+        calls.append(request.headers["authorization"])
+        return httpx.Response(401, json={"error": {"message": "invalid"}}) if len(calls) == 1 else httpx.Response(200, json=OK)
+    class ForeignClient:
+        base_url = ForeignURL()
+        def __init__(self):
+            self.client = OpenAI(api_key="invalid-key", base_url=str(self.base_url),
+                http_client=httpx.Client(transport=httpx.MockTransport(reply)))
+        def with_options(self, **kwargs): return self.client.with_options(**kwargs)
+        def close(self): self.client.close()
+    session = ModelEndpointSession()
+    session.register_keys(ForeignURL(), ["invalid-key", "valid-key"], model=MODEL)
+    assert session.preflight(ForeignClient, MODEL).choices[0].message.content == "OK"
+    assert calls == ["Bearer invalid-key", "Bearer valid-key"]
+    assert session.failure is None
