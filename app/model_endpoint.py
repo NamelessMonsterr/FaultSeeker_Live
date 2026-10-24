@@ -61,6 +61,8 @@ class ModelEndpointSession:
     All agent instances and function-analysis threads share this object. Successful
     calls never reset the retry allowance. SDK automatic retries are always disabled.
     Analysis/RPC/CPU time outside model transport is not charged to this budget.
+    Preflight retries are bounded by the preflight deadline, not the shared retry
+    allowance, so a cold-starting endpoint gets its whole window to wake up.
     """
     def __init__(self, emit=lambda event: None, retry_limit=3, time_budget=600,
                  call_timeout=60, clock=time.monotonic, sleep=time.sleep):
@@ -100,6 +102,16 @@ class ModelEndpointSession:
                    "attempts": self.attempts})
         raise error from None
 
+    def _out_of_time(self, phase, deadline, last_error):
+        # A preflight that retried transient failures until its deadline reports
+        # that failure. The shared budget is named only when it actually ran out.
+        budget_left = self.time_budget - self.spent
+        deadline_left = (deadline - self.clock()) if deadline is not None else None
+        if (phase == "preflight" and last_error is not None
+                and deadline_left is not None and deadline_left <= budget_left):
+            return last_error
+        return ModelEndpointFailure("budget_exhausted", phase=phase)
+
     def preflight(self, factory, model, timeout=20, deadline=None):
         """A minimal authenticated completion on the SAME configured model.
 
@@ -116,12 +128,13 @@ class ModelEndpointSession:
         with self.lock:
             self.assert_healthy()
             retry_number = 0
+            last_error = None
             while True:
                 remaining = self.time_budget - self.spent
                 if deadline is not None:
                     remaining = min(remaining, deadline - self.clock())
                 if remaining <= 0:
-                    self._fail(ModelEndpointFailure("budget_exhausted", phase=phase))
+                    self._fail(self._out_of_time(phase, deadline, last_error))
                 started = self.clock()
                 client = None
                 pool = None
@@ -154,18 +167,22 @@ class ModelEndpointSession:
                     self.spent += max(0.0, self.clock() - started)
                     if client is not None:
                         client.close()
+                if error is not None:
+                    last_error = error
                 if self.spent > self.time_budget:
                     self._fail(ModelEndpointFailure("budget_exhausted", phase=phase))
                 if deadline is not None and self.clock() > deadline:
-                    self._fail(ModelEndpointFailure("budget_exhausted", phase=phase))
+                    self._fail(self._out_of_time(phase, deadline, last_error))
                 if error is None:
                     self.emit({"state": "model_endpoint_ready", "phase": phase,
                                "model": model, "attempts": self.attempts})
                     return completion
                 # Valid completions at the boundary are useful. Errors at the
                 # boundary cannot start another attempt, nor can a later query.
-                if self.spent >= self.time_budget or (deadline is not None and self.clock() >= deadline):
+                if self.spent >= self.time_budget:
                     self._fail(ModelEndpointFailure("budget_exhausted", phase=phase))
+                if deadline is not None and self.clock() >= deadline:
+                    self._fail(self._out_of_time(phase, deadline, last_error))
                 next_key = None
                 if pool and len(pool["keys"]) > 1 and error.kind in ("authentication", "rate_limited"):
                     pool["rejected"].add(pool["active"])
@@ -173,9 +190,15 @@ class ModelEndpointSession:
                     if next_key is None:
                         self._fail(error)  # All configured credentials rejected.
                     retryable = True
-                if not retryable or self.retries_left <= 0:
+                if not retryable:
                     self._fail(error)
-                self.retries_left -= 1
+                if phase != "preflight":
+                    # Only analysis retries consume the shared allowance. Preflight
+                    # retries are bounded by the preflight deadline instead, so a
+                    # cold-starting endpoint gets the whole window to wake up.
+                    if self.retries_left <= 0:
+                        self._fail(error)
+                    self.retries_left -= 1
                 if next_key is not None:
                     pool["active"] = next_key
                     self.emit({"state": "waiting_on_model_endpoint", **error.as_dict(),
@@ -192,7 +215,7 @@ class ModelEndpointSession:
                 if deadline is not None:
                     remaining = min(remaining, deadline - self.clock())
                 if delay >= remaining:
-                    self._fail(ModelEndpointFailure("budget_exhausted", phase=phase))
+                    self._fail(self._out_of_time(phase, deadline, last_error))
                 self.emit({"state": "waiting_on_model_endpoint", **error.as_dict(),
                            "attempt": self.attempts, "model": model,
                            "retry_in_seconds": delay, "retries_remaining": self.retries_left})
