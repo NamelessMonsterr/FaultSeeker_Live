@@ -229,6 +229,17 @@ class PipelineRuntime:
             result["analysis_status"] = "partial"
             result["classification"] = {"rule_verdict": "INCONCLUSIVE"}
             result["limitations"].append("Model output contained function labels that could not be linked to the observed canonical targets. Localization is unverified.")
+        rejected = [r for r in (result.get("rejected_findings") or []) if isinstance(r, dict)]
+        if rejected:
+            # Upstream refused to score model findings whose target could not be
+            # bound to an observed call id. Their existence means the model made
+            # claims this run could not verify - the run is never "complete".
+            result["analysis_status"] = "partial"
+            result["classification"] = {"rule_verdict": "INCONCLUSIVE"}
+            shown = ", ".join(str(r.get("key", "?"))[:80] for r in rejected[:5])
+            result["limitations"].append(
+                f"{len(rejected)} model finding(s) had no bindable observed target and were excluded from scoring: {shown}"
+                + (" ..." if len(rejected) > 5 else ""))
         if self.session:
             result["model_endpoint"] = self.session.summary()
         return result

@@ -189,3 +189,67 @@ def test_second_model_cannot_start_after_shared_preflight_deadline(monkeypatch):
         runtime.preflight(["gpt-6.1-sol-low", "gpt-6.1-sol"], timeout=20)
     assert failure.value.kind == "budget_exhausted"
     assert len(calls) == 1 and runtime.session.spent == 20
+
+
+def test_rejected_findings_force_partial_even_with_valid_scored():
+    m = importlib.import_module("app.pipeline_guards")
+    identity = importlib.import_module("app.trace_identity")
+    seq = identity.sequence_from_parity(FIXTURE["responses"]["trace_transaction"], TX, "eth")
+    runtime = m.PipelineRuntime(TX, "eth")
+    runtime.sequence = seq
+    root = seq["trace"]
+    valid = {"address": root["address"], "function": root["function"]}
+    rejected = [{"key": "uniswapV3SwapCallback_0x00000000fdac7708d0d360bddc1bc7d097f47439",
+                 "reason": "unbindable_target"},
+                {"key": "transfer_0xdead000000000000000000000000000000000000",
+                 "reason": "unbindable_target"}]
+    report = runtime.annotate_result({
+        "transaction_hash": TX, "chain": "eth", "analysis_status": "completed",
+        "scored_functions": [valid], "rejected_findings": rejected})
+    assert report["analysis_status"] == "partial"
+    assert report["classification"]["rule_verdict"] == "INCONCLUSIVE"
+    assert report["analysis_integrity"]["unverified_targets"] == []
+    joined = " ".join(report["limitations"])
+    assert "excluded from scoring" in joined
+    assert "uniswapV3SwapCallback_0x0000" in joined
+    # the valid finding stays scored; rejected keys never appear in scored output
+    assert report["scored_functions"] == [valid]
+    scored_text = json.dumps(report["scored_functions"])
+    assert "uniswapV3SwapCallback" not in scored_text
+    assert "0xdead" not in scored_text
+
+
+def test_rejected_findings_only_still_partial():
+    m = importlib.import_module("app.pipeline_guards")
+    identity = importlib.import_module("app.trace_identity")
+    seq = identity.sequence_from_parity(FIXTURE["responses"]["trace_transaction"], TX, "eth")
+    runtime = m.PipelineRuntime(TX, "eth")
+    runtime.sequence = seq
+    report = runtime.annotate_result({
+        "transaction_hash": TX, "chain": "eth", "analysis_status": "completed",
+        "scored_functions": [],
+        "rejected_findings": [{"key": "mint_0xbeef000000000000000000000000000000000000",
+                               "reason": "unbindable_target"}]})
+    assert report["analysis_status"] == "partial"
+    assert report["classification"]["rule_verdict"] == "INCONCLUSIVE"
+    assert any("excluded from scoring" in lim for lim in report["limitations"])
+
+
+def test_empty_rejected_findings_changes_nothing():
+    m = importlib.import_module("app.pipeline_guards")
+    identity = importlib.import_module("app.trace_identity")
+    seq = identity.sequence_from_parity(FIXTURE["responses"]["trace_transaction"], TX, "eth")
+    runtime = m.PipelineRuntime(TX, "eth")
+    runtime.sequence = seq
+    root = seq["trace"]
+    valid = {"address": root["address"], "function": root["function"]}
+    base = {"transaction_hash": TX, "chain": "eth", "analysis_status": "completed",
+            "scored_functions": [valid]}
+    report = runtime.annotate_result({**base, "rejected_findings": []})
+    assert "analysis_status" in report  # unchanged by the propagation path
+    assert report["analysis_status"] == "completed"
+    assert report["classification"] if "classification" in report else True
+    assert not any("excluded from scoring" in lim for lim in report["limitations"])
+    # non-dict entries are ignored too
+    report2 = runtime.annotate_result({**base, "rejected_findings": ["junk", None, 42]})
+    assert report2["analysis_status"] == "completed"
