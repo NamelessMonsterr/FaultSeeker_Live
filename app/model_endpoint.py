@@ -172,7 +172,7 @@ class ModelEndpointSession:
                 if self.spent > self.time_budget:
                     self._fail(ModelEndpointFailure("budget_exhausted", phase=phase))
                 if deadline is not None and self.clock() > deadline:
-                    self._fail(self._out_of_time(phase, deadline, last_error))
+                    self._fail(self._out_of_time(phase, deadline, error))
                 if error is None:
                     self.emit({"state": "model_endpoint_ready", "phase": phase,
                                "model": model, "attempts": self.attempts})
