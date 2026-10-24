@@ -734,7 +734,7 @@ def worker(run_id, req, q):
                 os.environ[f_entry["keyEnv"]] = "\n".join(f_keys)
             os.environ[entry["keyEnv"]] = "\n".join(keys)
             runtime = _prepare_pipeline(req, mode, q)
-            runtime.preflight([mode, forensics], timeout=float(os.environ.get("FAULTSEEKER_MODEL_PREFLIGHT_SECS", "20")))
+            runtime.preflight([mode, forensics], timeout=float(os.environ.get("FAULTSEEKER_MODEL_PREFLIGHT_SECS", "120")))
             from faultseeker.main import main as fs_main
             # Credential rotation belongs to the shared transport session. Never
             # rerun expensive transaction analysis after its circuit has opened.

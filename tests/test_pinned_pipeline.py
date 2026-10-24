@@ -122,6 +122,7 @@ def test_real_agents_keep_preflight_rotation_and_rotate_mid_run(pinned, monkeypa
     agents = importlib.import_module("faultseeker.utils.agent")
     monkeypatch.setenv("OPENAI_API_KEY", "test-first,test-second")
     calls, events = [], []
+    statuses_initial = statuses
     statuses = iter(statuses)
     def factory(**kwargs):
         def reply(request):
@@ -140,7 +141,7 @@ def test_real_agents_keep_preflight_rotation_and_rotate_mid_run(pinned, monkeypa
         for agent_class in (agents.GPTAgent, agents.UniversalAgent):
             assert agent_class("offline", MODEL)._send_message("Mocked request") == "OK"
         assert calls == ["Bearer test-"+key for key in expected]
-        assert session.retries_left == 1
+        assert session.retries_left == (1 if statuses_initial[0] == 200 else 2)
         assert session.failure is None
         assert "test-first" not in json.dumps(events)
         assert "PRIVATE_PROVIDER_BODY" not in json.dumps(events)
