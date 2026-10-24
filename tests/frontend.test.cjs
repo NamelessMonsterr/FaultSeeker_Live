@@ -80,3 +80,11 @@ test('partial endpoint-failure report visibly lists failed and skipped sections'
  await app.elements['analysis-form'].listeners.submit({preventDefault(){}});app.streams[0].emit('error','Model endpoint returned HTTP 502','1');app.streams[0].emit('end',{},'2');await settle();
  const content=collect(app.elements.results);assert.match(content,/Investigation .* partial/);assert.match(content,/Analysis coverage/);assert.match(content,/function analysis.*failed/);assert.match(content,/scoring.*skipped/);assert.match(content,/INCONCLUSIVE/);assert.doesNotMatch(content,/Investigation report/);
 });
+
+
+test('unknown measurements do not appear as zero scores or a successful verdict',async()=>{
+ const report={transaction_hash:'0x123',analysis_status:'completed',classification:{rule_verdict:'INCONCLUSIVE',priority_score:null,reentrancy:{score:null},signals:{profit_extraction_eth:null,large_transfer_to_eoa:null}}};
+ const app=boot({'/console/api/config':{data:config},'/console/api/analyze':{data:{run_id:'unknowns'}},'/console/api/result/unknowns':{data:report}});await settle();
+ await app.elements['analysis-form'].listeners.submit({preventDefault(){}});app.streams[0].emit('end',{},'1');await settle();
+ const content=collect(app.elements.results);assert.match(content,/INCONCLUSIVE/);assert.doesNotMatch(content,/Reported scores/);
+});

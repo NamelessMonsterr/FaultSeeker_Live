@@ -77,14 +77,16 @@ class ModelEndpointSession:
         self.lock = threading.RLock()
         self.key_pools = {}
 
-    def register_keys(self, base_url, keys):
-        """Keep credential state per endpoint, private to this run's memory.
+    def register_keys(self, base_url, keys, model=None):
+        """Keep credential state per endpoint/model, private to this run's memory.
 
-        Registration never resets rejections, retries or elapsed time. A key
-        rotation consumes the same retry allowance as any other extra attempt.
+        Registration never resets retries or elapsed time. Analysis rotations
+        consume the shared retry allowance; preflight uses its shared deadline.
         """
         with self.lock:
-            endpoint = str(base_url).rstrip("/")
+            endpoint = str(httpx.URL(base_url)).rstrip("/")
+            if model is not None:
+                endpoint = (endpoint, model)
             pool = self.key_pools.setdefault(endpoint, {"keys": [], "rejected": set(), "active": None})
             for key in keys:
                 if key not in pool["keys"]:
@@ -144,7 +146,8 @@ class ModelEndpointSession:
                     remaining -= self.clock() - started
                     if remaining <= 0:
                         raise ModelEndpointFailure("budget_exhausted", phase=phase)
-                    pool = self.key_pools.get(str(client.base_url).rstrip("/"))
+                    endpoint = str(httpx.URL(client.base_url)).rstrip("/")
+                    pool = self.key_pools.get((endpoint, model)) or self.key_pools.get(endpoint)
                     options = {"max_retries": 0, "timeout": min(self.call_timeout, remaining)}
                     if pool:
                         # Upstream agents round-robin their own keys. Override

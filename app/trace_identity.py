@@ -7,14 +7,46 @@ class TraceIdentityError(RuntimeError):
 
 
 def canonical_to_legacy(node):
-    calldata = node.get("input") or "0x"
-    selector = calldata[:10].lower() if re.fullmatch(r"0x[0-9a-fA-F]{8,}", calldata) else "0x"
-    return {"type": "call", "gas": node.get("gas"), "address": node.get("callee") or node.get("to"),
-            "function": selector, "params": calldata[10:],
-            "call_type": str(node.get("call_type") or node.get("type") or "call").lower(),
-            "value": node.get("value"), "contract_type": None,
-            "function_identity": "calldata_selector", "abi_verified": False,
-            "children": [canonical_to_legacy(child) for child in node.get("children", [])]}
+    def frame(source):
+        calldata = source.get("input") or "0x"
+        call_type = str(source.get("call_type") or source.get("type") or "call").lower()
+        creation = call_type in ("create", "create2")
+        selector = call_type if creation else (calldata[:10].lower() if re.fullmatch(r"0x[0-9a-fA-F]{8,}", calldata) else "0x")
+        return {"type": "call", "gas": source.get("gas"), "address": source.get("callee") or source.get("to"),
+                "function": selector, "params": calldata if creation else calldata[10:],
+                "call_type": call_type, "value": source.get("value"), "contract_type": None,
+                "function_identity": "contract_creation" if creation else ("calldata_selector" if selector != "0x" else "no_selector"),
+                "abi_verified": False, "children": []}
+    result = frame(node)
+    pending = [(node, result)]
+    while pending:
+        source, target = pending.pop()
+        for child in source.get("children", []):
+            converted = frame(child)
+            target["children"].append(converted)
+            pending.append((child, converted))
+    return result
+
+
+def validate_trace_root(tx, root, tx_hash, receipt=None):
+    """Bind a call to its transaction, or a creation to its matching receipt."""
+    if not isinstance(tx, dict) or str(tx.get("hash", "")).lower() != tx_hash.lower():
+        raise TraceIdentityError("Transaction identity could not be verified from the chain.")
+    fields = [(tx.get("from"), root.get("caller") or root.get("from")),
+              (tx.get("input"), root.get("input"))]
+    target = root.get("callee") or root.get("to")
+    if tx.get("to") is None:
+        if str(root.get("call_type") or root.get("type") or "").lower() not in ("create", "create2"):
+            raise TraceIdentityError("Contract creation requires a creation trace root.")
+        if not isinstance(receipt, dict) or str(receipt.get("transactionHash", "")).lower() != tx_hash.lower():
+            raise TraceIdentityError("Creation receipt identity could not be verified.")
+        if not receipt.get("contractAddress"):
+            raise TraceIdentityError("Creation receipt has no verified deployed address.")
+        fields.append((receipt["contractAddress"], target))
+    else:
+        fields.append((tx["to"], target))
+    if any(str(a or "").lower() != str(b or "").lower() for a, b in fields):
+        raise TraceIdentityError("Structured trace root differs from on-chain transaction calldata or addresses.")
 
 
 def check_structured(payload, tx_hash, chain):

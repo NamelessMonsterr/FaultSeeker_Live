@@ -49,3 +49,51 @@ def test_wrong_chain_or_hash_is_not_silently_accepted(chain, tx):
     m = importlib.import_module("app.trace_identity")
     with pytest.raises(m.TraceIdentityError):
         m.sequence_from_parity(FIXTURE["responses"]["trace_transaction"], tx, chain, verified_chain="eth")
+
+
+@pytest.mark.parametrize("kind", ["CREATE", "CREATE2"])
+def test_creation_initcode_is_not_a_function_selector(kind):
+    from app.trace_identity import canonical_to_legacy
+    frame = canonical_to_legacy({"type": kind, "input": "0x60806040526000", "children": []})
+    assert frame["function"] == kind.lower()
+    assert frame["function_identity"] == "contract_creation"
+    assert frame["params"] == "0x60806040526000"
+
+
+def test_deep_trace_conversion_and_walk_are_iterative():
+    from app.trace_identity import canonical_to_legacy
+    from app.pipeline_guards import walk
+    root = {"input": "0x", "children": []}
+    current = root
+    for _ in range(1023):
+        child = {"input": "0x12345678", "children": []}
+        current["children"] = [child]
+        current = child
+    result = canonical_to_legacy(root)
+    assert sum(1 for _ in walk(result)) == 1024
+    assert result["function_identity"] == "no_selector"
+
+
+@pytest.mark.parametrize("mismatch", [None, "receipt_hash", "created_address", "caller", "input", "call_type"])
+def test_creation_root_requires_receipt_and_transaction_provenance(mismatch):
+    from app.trace_identity import validate_trace_root, TraceIdentityError
+    tx_hash = "0x" + "a" * 64
+    tx = {"hash": tx_hash, "to": None, "from": "0xsender", "input": "0x60806040"}
+    root = {"type": "CREATE", "callee": "0xcreated", "caller": "0xsender", "input": "0x60806040"}
+    receipt = {"transactionHash": tx_hash, "contractAddress": "0xcreated"}
+    if mismatch == "receipt_hash": receipt["transactionHash"] = "0xother"
+    if mismatch == "created_address": receipt["contractAddress"] = "0xother"
+    if mismatch == "caller": root["caller"] = "0xother"
+    if mismatch == "input": root["input"] = "0x12345678"
+    if mismatch == "call_type": root["type"] = "CALL"
+    if mismatch:
+        with pytest.raises(TraceIdentityError): validate_trace_root(tx, root, tx_hash, receipt)
+    else:
+        validate_trace_root(tx, root, tx_hash, receipt)
+
+
+def test_call_root_still_checks_destination():
+    from app.trace_identity import validate_trace_root, TraceIdentityError
+    tx = {"hash": "0xtx", "to": "0xright", "from": "0xsender", "input": "0x12345678"}
+    root = {"type": "CALL", "callee": "0xwrong", "caller": "0xsender", "input": "0x12345678"}
+    with pytest.raises(TraceIdentityError): validate_trace_root(tx, root, "0xtx")

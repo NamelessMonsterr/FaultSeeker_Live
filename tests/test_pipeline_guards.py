@@ -270,3 +270,21 @@ def test_empty_rejected_findings_changes_nothing():
     # non-dict entries are ignored too
     report2 = runtime.annotate_result({**base, "rejected_findings": ["junk", None, 42]})
     assert report2["analysis_status"] == "completed"
+
+
+@pytest.mark.parametrize("modern,legacy,expected", [(None, "300", 300), ("90", "300", 90), (None, None, 60)])
+def test_timeout_configuration_precedence(monkeypatch, modern, legacy, expected):
+    from app.pipeline_guards import PipelineRuntime, make_runtime
+    for name, value in [("FAULTSEEKER_MODEL_CALL_TIMEOUT_SECS", modern), ("FAULTSEEKER_LLM_TIMEOUT_SECS", legacy)]:
+        monkeypatch.delenv(name, raising=False)
+        if value is not None:
+            monkeypatch.setenv(name, value)
+    monkeypatch.setattr(PipelineRuntime, "install", lambda self: self)
+    assert make_runtime(TX, "eth", True, lambda event: None).session.call_timeout == expected
+
+
+def test_split_stage_keys_reach_actual_mocked_transport(monkeypatch):
+    runtime, calls, _, _ = rotation_runtime(monkeypatch, [200, 200])
+    runtime.model_keys = {"gpt-6.1-sol-low": ["function-key"], "gpt-6.1-sol-medium": ["forensics-key"]}
+    runtime.preflight(list(runtime.model_keys))
+    assert calls == ["Bearer function-key", "Bearer forensics-key"]

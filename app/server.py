@@ -62,9 +62,9 @@ def _hist_brief(res):
     """Short human summary of a result dict for the history list."""
     if not isinstance(res, dict):
         return {}
-    scored = res.get("scored_functions") or []
-    cards = res.get("evidence_cards") or []
-    ranked = res.get("ranked_suspicious_functions") or []
+    scored = res.get("scored_functions") if isinstance(res.get("scored_functions"), list) else []
+    cards = res.get("evidence_cards") if isinstance(res.get("evidence_cards"), list) else []
+    ranked = res.get("ranked_suspicious_functions") if isinstance(res.get("ranked_suspicious_functions"), list) else []
     top = []
     for it in ranked[:3]:
         if isinstance(it, dict):
@@ -415,7 +415,7 @@ async def gate_form():
 @app.post("/gate")
 async def gate_submit(request: Request):
     form = await request.form()
-    if GATE and hmac.compare_digest(str(form.get("password", "")), GATE):
+    if GATE and hmac.compare_digest(str(form.get("password", "")).encode("utf-8"), GATE.encode("utf-8")):
         resp = RedirectResponse(url="/", status_code=303)
         resp.set_cookie("fs_gate", _gate_token(), max_age=7 * 24 * 3600,
                         httponly=True, samesite="lax", secure=True)
@@ -465,7 +465,7 @@ def rpc_selftest(chain: str = "eth", mode: str = "calltracer"):
         params = [probe_tx, {"tracer": "callTracer", "timeout": "60s"}]
     out = []
     for prov in rp._registry._providers(chain):
-        host = re.sub(r"(https?://[^/\s]+).*", r"\1", prov.url)
+        host = urlsplit(prov.url).hostname or "invalid-host"
         try:
             body = json.dumps({"jsonrpc": "2.0", "method": method,
                                "params": params, "id": 1}).encode()
@@ -601,7 +601,8 @@ def _redact(s, secrets=()):
         if v in s:
             s = s.replace(v, "***")
     s = re.sub(r"(?i)bearer\s+[A-Za-z0-9._\-]{12,}", "Bearer ***", s)
-    s = re.sub(r"(?i)((?:api[_-]?key|dkey|token|password)\s*[=:]\s*)[^\s,;&\"'<>]+", r"\1***", s)
+    s = re.sub(r"(?i)((?:api[_-]?key|dkey|access_token|password)\s*[=:]\s*)[^\s,;&\"'<>]+", r"\1***", s)
+    s = re.sub(r"(?i)([?&]token=)[^\s&#\"'<>]+", r"\1***", s)
     s = re.sub(r"(?i)(https?://)[^/\s:@]+:[^/\s@]+@", r"\1***@", s)
     return s
 
@@ -734,6 +735,9 @@ def worker(run_id, req, q):
                 os.environ[f_entry["keyEnv"]] = "\n".join(f_keys)
             os.environ[entry["keyEnv"]] = "\n".join(keys)
             runtime = _prepare_pipeline(req, mode, q)
+            runtime.model_keys = {mode: keys}
+            if forensics != mode:
+                runtime.model_keys[forensics] = f_keys
             runtime.preflight([mode, forensics], timeout=float(os.environ.get("FAULTSEEKER_MODEL_PREFLIGHT_SECS", "120")))
             from faultseeker.main import main as fs_main
             # Credential rotation belongs to the shared transport session. Never
@@ -984,36 +988,40 @@ async def analyze(request: Request):
                 outcome_msg = f"worker exit code {proc.exitcode} (-9 usually means OOM)"
                 q.put(("error", f"worker process died unexpectedly (exit code {proc.exitcode}; -9 usually means OOM)"))
         finally:
-            if runs[run_id]["cancel"].is_set():
-                outcome = "cancelled"
-            # finalize the history entry: status + brief from the result file
-            res = None
-            out_path = os.path.join(RUNS_DIR, run_id + ".json")
             try:
-                with open(out_path, encoding="utf-8") as f:
-                    res = json.load(f)
-            except (OSError, json.JSONDecodeError):
+                if runs[run_id]["cancel"].is_set():
+                    outcome = "cancelled"
+                # finalize the history entry: status + brief from the result file
                 res = None
-            if res is not None and outcome in ("stopped",):
-                outcome = "completed" if ended else outcome
-            if res is not None and ended and outcome not in ("error", "cancelled", "timeout", "died"):
-                outcome = "completed"
-            if outcome == "completed" and isinstance(res, dict) and res.get("analysis_status") in ("partial", "failed", "inconclusive"):
-                outcome = res["analysis_status"]
-            runs[run_id]["status"] = outcome
-            final_entry = {"run_id": run_id, "status": outcome,
-                           "detail": outcome_msg,
-                           "ended_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                           "duration_secs": round(time.time() - started, 1),
-                           "brief": _hist_brief(res) if res else {}}
-            try:
-                _hist_upsert(final_entry)
-                _gh_hist_sync(run_id, final_entry, res)
-            except Exception:
-                q.put(("log", "Run finished, but history persistence failed. The report remains available for this process."))
+                out_path = os.path.join(RUNS_DIR, run_id + ".json")
+                try:
+                    with open(out_path, encoding="utf-8") as f:
+                        res = json.load(f)
+                except (OSError, json.JSONDecodeError):
+                    res = None
+                if res is not None and outcome in ("stopped",):
+                    outcome = "completed" if ended else outcome
+                if res is not None and ended and outcome not in ("error", "cancelled", "timeout", "died"):
+                    outcome = "completed"
+                if outcome == "completed" and isinstance(res, dict) and res.get("analysis_status") in ("partial", "failed", "inconclusive"):
+                    outcome = res["analysis_status"]
+                runs[run_id]["status"] = outcome
+                final_entry = {"run_id": run_id, "status": outcome,
+                               "detail": outcome_msg,
+                               "ended_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                               "duration_secs": round(time.time() - started, 1),
+                               "brief": _hist_brief(res) if res else {}}
+                try:
+                    _hist_upsert(final_entry)
+                    _gh_hist_sync(run_id, final_entry, res)
+                except Exception:
+                    q.put(("log", "Run finished, but history persistence failed. The report remains available for this process."))
+
             finally:
-                q.put(("end", None))
-                run_lock.release()
+                try:
+                    q.put(("end", None))
+                finally:
+                    run_lock.release()
 
     try:
         threading.Thread(target=guarded, daemon=True).start()
@@ -1112,7 +1120,7 @@ def _adapt_result_for_view(res):
     """The results view was built for the Stage-1 capture shape; a live pipeline
     result lacks `transaction`/`classification`/... and the view crashes
     (black page) on `i.transaction.hash`. Reshape live results so they always
-    render. Every value comes from the real result - missing data stays 0/empty."""
+    render. Every value comes from the real result - missing measurements remain unknown."""
     if not isinstance(res, dict):
         return {"analysis_status": "inconclusive", "classification": {"rule_verdict": "INCONCLUSIVE"}}
     if isinstance(res.get("transaction"), dict) and isinstance(res.get("classification"), dict):
@@ -1133,21 +1141,15 @@ def _adapt_result_for_view(res):
         key = (str(it.get("address") or ""), str(it.get("function") or ""))
         seen.add(key)
         funcs.append({"address": key[0], "function": key[1],
-                      "depth": [number(it.get("depth")) or 1], "call_type": "", "gas": 0})
+                      "depth": [it["depth"]] if isinstance(it.get("depth"), (int, float)) else [], "call_type": "", "gas": None})
     for c in cards:
         sig = obj(c.get("function_signature"))
         key = (str(sig.get("address") or ""), str(sig.get("function") or ""))
         if key not in seen:
             seen.add(key)
             funcs.append({"address": key[0], "function": key[1],
-                          "depth": [number(sig.get("call_depth")) or 1], "call_type": "", "gas": 0})
-    ev_first = ""
-    for c in cards:
-        ev = items(c.get("evidence"))
-        if ev:
-            ev_first = str(ev[0])
-            break
-    hint = "access-control bypass" if "access-control" in ev_first.lower() else ("see evidence card" if ev_first else "none")
+                          "depth": [sig["call_depth"]] if isinstance(sig.get("call_depth"), (int, float)) else [], "call_type": "", "gas": None})
+    hint = res.get("vuln_type_hint") or "unknown"
     view = dict(res)
     view.update({
         "transaction": {"hash": res.get("transaction_hash", ""), "chain": res.get("chain", ""),
@@ -1155,39 +1157,43 @@ def _adapt_result_for_view(res):
         "analysis_mode": res.get("analysis_mode") or "live-pipeline",
         "analysis_status": res.get("analysis_status") or "inconclusive",
         "stage_completed": res.get("stage_completed") or "unknown",
-        "llm_cost": number(res.get("llm_cost")),
+        "llm_cost": res.get("llm_cost"),
         "limitations": items(res.get("limitations")),
         "rpc_source": res.get("rpc_source") or "unknown",
         "query_records": items(res.get("query_records")),
         "classification": {
-            "rule_verdict": "INCONCLUSIVE" if res.get("analysis_status") in ("cancelled", "cancelling", "error", "died", "timeout", "stopped", "inconclusive", "interrupted", "partial", "failed") else (res.get("rule_verdict") if res.get("rule_verdict") in ("CONFIRMED", "EXPLOIT", "CLEAN", "SUSPECT", "INCONCLUSIVE") else ("SUSPECT" if cards or scored else "INCONCLUSIVE")),
+            "rule_verdict": "INCONCLUSIVE" if res.get("analysis_status") in ("cancelled", "cancelling", "error", "died", "timeout", "stopped", "inconclusive", "interrupted", "partial", "failed") else (res.get("rule_verdict") if res.get("rule_verdict") in ("CONFIRMED", "EXPLOIT", "CLEAN", "SUSPECT", "INCONCLUSIVE") else "INCONCLUSIVE"),
             "rule_confidence": number(res["rule_confidence"]) if isinstance(res.get("rule_confidence"), (int, float)) and not isinstance(res.get("rule_confidence"), bool) else None,
             "matched_rule": ("evidence card: " + str(obj(cards[0].get("function_signature")).get("function", "?"))) if cards else "none",
             "vuln_type_hint": hint,
-            "priority_score": number(res.get("priority_score")),
+            "priority_score": res.get("priority_score"),
             "priority": prio,
-            "reentrancy": {"score": reen.get("score", 0) or 0, "tier": reen.get("tier", "NONE"),
+            "reentrancy": {"score": reen.get("score"), "tier": reen.get("tier"),
                            "signals": reen.get("signals") or {}},
             "signals": {
-                "reentrancy_score": reen.get("score", 0) or 0,
-                "call_depth_max": max([number(obj(c.get("function_signature")).get("call_depth")) for c in cards] or [0]),
-                "flash_loan_detected": bool(prio.get("flashloan", 0)),
-                "large_transfer_to_eoa": False,
-                "price_manipulation_detected": bool(prio.get("price_manipulation", 0)),
-                "reentrancy_confidence_tier": reen.get("tier", "NONE"),
-                "profit_extraction_eth": 0,
-                "token_flow_anomaly": 0,
-                "graph_reasoning": {"cycle_count": 0, "edge_count": 0},
+                "reentrancy_score": reen.get("score"),
+                "call_depth_max": max([obj(c.get("function_signature"))["call_depth"] for c in cards if isinstance(obj(c.get("function_signature")).get("call_depth"), (int, float))], default=None),
+                "flash_loan_detected": bool(prio["flashloan"]) if "flashloan" in prio else None,
+                "large_transfer_to_eoa": None,
+                "price_manipulation_detected": bool(prio["price_manipulation"]) if "price_manipulation" in prio else None,
+                "reentrancy_confidence_tier": reen.get("tier"),
+                "profit_extraction_eth": None,
+                "token_flow_anomaly": None,
+                "graph_reasoning": {"cycle_count": None, "edge_count": None},
             },
         },
         "function_analysis": {"functions_to_inspect": {"function_name_with_hash": funcs},
                               "repeated_patterns": {"keys": []}},
         "summary": {"total_functions_to_inspect": dbg.get("functions_to_inspect_count") or len(funcs),
                     "addresses_to_inspect": len({f["address"] for f in funcs if f["address"]}),
-                    "repeated_patterns_detected": 0},
+                    "repeated_patterns_detected": None},
         "attack_analysis": {"potential_attackers": [], "potential_victims": [], "balance_changes": {}},
         "address_classification": {},
     })
+    if isinstance(res.get("classification"), dict):
+        view["classification"] = dict(res["classification"])
+        if res.get("analysis_status") != "completed":
+            view["classification"]["rule_verdict"] = "INCONCLUSIVE"
     return view
 
 
@@ -1330,6 +1336,8 @@ async def history_page():
 
 @app.get("/api/capture")
 async def capture():
+    if not os.path.isfile(CAPTURE):
+        return JSONResponse({"error": "Saved capture is unavailable."}, status_code=404)
     return FileResponse(CAPTURE, media_type="application/json")
 
 

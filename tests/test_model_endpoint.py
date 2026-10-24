@@ -252,3 +252,38 @@ def test_preflight_rate_limit_retry_after_beyond_deadline_stays_bounded():
     # The deadline cannot fit the hinted wait: report the real cause, no sleep.
     assert failure.value.kind == "rate_limited"
     assert clock.now == 0 and len(calls) == 1
+
+
+@pytest.mark.parametrize("endpoint", ["https://MODEL.invalid:443/v1", "https://model.invalid/v1/"])
+def test_equivalent_endpoint_urls_preserve_rotation(endpoint):
+    calls = []
+    def reply(request):
+        calls.append(request.headers["authorization"])
+        return httpx.Response(200, json=OK) if calls[-1] == "Bearer valid-key" else httpx.Response(401, json={"error": {"message": "invalid"}})
+    def factory():
+        return OpenAI(api_key="invalid-key", base_url=endpoint,
+                      http_client=httpx.Client(transport=httpx.MockTransport(reply)))
+    from app.model_endpoint import ModelEndpointSession
+    session = ModelEndpointSession()
+    session.register_keys(endpoint, ["invalid-key", "valid-key"], model=MODEL)
+    session.preflight(factory, MODEL)
+    assert calls == ["Bearer invalid-key", "Bearer valid-key"]
+
+
+def test_model_specific_credentials_share_budget_without_crossing_pools():
+    from app.model_endpoint import ModelEndpointSession, ModelEndpointFailure
+    calls = []
+    def reply(request):
+        calls.append((json.loads(request.content)["model"], request.headers["authorization"]))
+        return httpx.Response(401, json={"error": {"message": "invalid"}}) if calls[-1][1] == "Bearer bad" else httpx.Response(200, json=OK)
+    def factory():
+        return OpenAI(api_key="upstream-default", base_url="https://model.invalid/v1",
+                      http_client=httpx.Client(transport=httpx.MockTransport(reply)))
+    session = ModelEndpointSession(retry_limit=1)
+    session.register_keys("https://model.invalid/v1", ["bad", "stage-one"], model="stage1")
+    session.register_keys("https://model.invalid/v1", ["bad", "stage-two"], model="stage2")
+    session.call(factory, {"model": "stage1", "messages": []}, "stage1")
+    with pytest.raises(ModelEndpointFailure):
+        session.call(factory, {"model": "stage2", "messages": []}, "stage2")
+    assert calls == [("stage1", "Bearer bad"), ("stage1", "Bearer stage-one"), ("stage2", "Bearer bad")]
+    assert session.retries_left == 0

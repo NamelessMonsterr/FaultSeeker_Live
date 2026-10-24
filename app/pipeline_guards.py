@@ -9,10 +9,10 @@ import os
 
 try:
     from .model_endpoint import ModelEndpointSession
-    from .trace_identity import TraceIdentityError, canonical_to_legacy, check_structured
+    from .trace_identity import TraceIdentityError, canonical_to_legacy, check_structured, validate_trace_root
 except ImportError:  # app/server.py invoked directly
     from model_endpoint import ModelEndpointSession
-    from trace_identity import TraceIdentityError, canonical_to_legacy, check_structured
+    from trace_identity import TraceIdentityError, canonical_to_legacy, check_structured, validate_trace_root
 
 
 CHAIN_IDS = {"eth": 1, "bsc": 56, "polygon": 137, "arbitrum": 42161,
@@ -22,9 +22,11 @@ CHAIN_IDS = {"eth": 1, "bsc": 56, "polygon": 137, "arbitrum": 42161,
 
 
 def walk(node):
-    yield node
-    for child in node.get("children", []):
-        yield from walk(child)
+    pending = [node]
+    while pending:
+        current = pending.pop()
+        yield current
+        pending.extend(reversed(current.get("children", [])))
 
 
 class PipelineRuntime:
@@ -37,6 +39,7 @@ class PipelineRuntime:
         self.ranked_targets = []
         self.restorers = []
         self.source = None
+        self.model_keys = {}
 
     def replace(self, owner, name, replacement):
         original = getattr(owner, name)
@@ -91,13 +94,10 @@ class PipelineRuntime:
             if actual_chain != CHAIN_IDS.get(chain):
                 raise TraceIdentityError("RPC network does not match the selected chain.")
             root = payload["trace"]
-            if not isinstance(tx, dict) or str(tx.get("hash", "")).lower() != tx_hash.lower():
-                raise TraceIdentityError("Transaction identity could not be verified from the chain.")
-            fields = [(tx.get("to"), root.get("callee") or root.get("to")),
-                      (tx.get("from"), root.get("caller") or root.get("from")),
-                      (tx.get("input"), root.get("input"))]
-            if any(str(a or "").lower() != str(b or "").lower() for a, b in fields):
-                raise TraceIdentityError("Structured trace root differs from on-chain transaction calldata or addresses.")
+            receipt = None
+            if isinstance(tx, dict) and tx.get("to") is None:
+                receipt = rpc_call(chain, "eth_getTransactionReceipt", [tx_hash], timeout=15)
+            validate_trace_root(tx, root, tx_hash, receipt)
             payload = deepcopy(payload)
             payload["trace_provenance"] = {
                 "source": "structured_rpc_or_cache", "identity_cross_check": "eth_getTransactionByHash + eth_chainId",
@@ -201,10 +201,10 @@ class PipelineRuntime:
                         "NARAROUTER_API_KEY": "NARAROUTER_BASE_URL"}.get(env_name)
             if override:
                 base_url = os.getenv(override) or base_url
-            keys = self.source._parse_api_keys(os.getenv(env_name, ""))
+            keys = self.model_keys.get(model) or self.source._parse_api_keys(os.getenv(env_name, ""))
             if not keys:
                 raise ValueError("The configured model requires an API key.")
-            self.session.register_keys(base_url, keys)
+            self.session.register_keys(base_url, keys, model=model)
             self.session.preflight(lambda: self.source.OpenAI(api_key=keys[0], base_url=base_url,
                                       max_retries=0, timeout=min(timeout, self.session.call_timeout)),
                                    model, timeout=timeout, deadline=deadline)
@@ -275,7 +275,7 @@ def make_runtime(tx_hash, chain, use_model, emit):
     session = ModelEndpointSession(emit=emit,
         retry_limit=int(os.getenv("FAULTSEEKER_MODEL_RETRY_LIMIT", "3")),
         time_budget=float(os.getenv("FAULTSEEKER_MODEL_TIME_BUDGET_SECS", "600")),
-        call_timeout=float(os.getenv("FAULTSEEKER_MODEL_CALL_TIMEOUT_SECS", "60"))) if use_model else None
+        call_timeout=float(os.getenv("FAULTSEEKER_MODEL_CALL_TIMEOUT_SECS", os.getenv("FAULTSEEKER_LLM_TIMEOUT_SECS", "60")))) if use_model else None
     runtime = PipelineRuntime(tx_hash, chain, session=session, emit=emit)
     try:
         return runtime.install()

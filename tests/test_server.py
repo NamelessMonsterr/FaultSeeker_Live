@@ -466,3 +466,100 @@ def test_cancel_before_process_registration_is_honored(client, server, monkeypat
     assert server.runs[run_id]["status"] == "cancelled"
     assert server.runs[run_id]["q"].closed
     assert not server.run_lock.locked()
+
+
+
+def test_rpc_diagnostic_never_returns_url_credentials(server, monkeypatch):
+    parent = types.ModuleType("faultseeker")
+    utils = types.ModuleType("faultseeker.utils")
+    rpc = types.ModuleType("faultseeker.utils.rpc_provider")
+    parent.utils, utils.rpc_provider = utils, rpc
+    rpc._registry = types.SimpleNamespace(_providers=lambda chain: [types.SimpleNamespace(url=url) for url in
+        ("https://dummy-user:dummy-password@rpc.invalid/v1", "https://rpc.invalid?token=dummy-query")])
+    rpc._http_post = lambda *a, **k: {"result": {"structLogs": []}}
+    rpc._check_rpc_error = lambda data: data["result"]
+    for name, module in [("faultseeker", parent), ("faultseeker.utils", utils), ("faultseeker.utils.rpc_provider", rpc)]:
+        monkeypatch.setitem(sys.modules, name, module)
+    result = server.rpc_selftest()
+    assert [p["host"] for p in result["providers"]] == ["rpc.invalid", "rpc.invalid"]
+    assert "dummy-" not in json.dumps(result)
+
+
+def test_redaction_preserves_forensic_token_names_but_masks_credentials(server):
+    assert server._redact("token: USDC transferred; token = WETH") == "token: USDC transferred; token = WETH"
+    assert "dummy-secret" not in server._redact("https://rpc.invalid?token=dummy-secret&x=1")
+    assert "dummy-secret" not in server._redact("access_token=dummy-secret")
+    assert server._redact({"authorization": "dummy-secret"}) == {"authorization": "***"}
+    assert server._redact("token: known-dummy-secret", ["known-dummy-secret"]) == "token: ***"
+
+
+def test_adapter_keeps_absent_measurements_unknown(server):
+    value = server._adapt_result_for_view({"transaction_hash": TX, "analysis_status": "completed",
+        "scored_functions": [{"function": "0x12345678", "address": "0xabc"}]})
+    assert value["classification"]["rule_verdict"] == "INCONCLUSIVE"
+    assert value["classification"]["signals"]["profit_extraction_eth"] is None
+    assert value["classification"]["signals"]["large_transfer_to_eoa"] is None
+    assert value["classification"]["reentrancy"]["score"] is None
+
+
+@pytest.mark.parametrize("broken_summary", [False, True])
+def test_finalization_always_closes_stream_and_releases_lock(client, server, monkeypatch, broken_summary):
+    import queue
+    callbacks = []
+    class Thread:
+        def __init__(self, target, **kwargs): self.target = target
+        def start(self): callbacks.append(self.target)
+    class Process:
+        exitcode = 0
+        def __init__(self, target, args, **kwargs): self.args = args
+        def start(self):
+            run_id, req, q = self.args
+            (Path(server.RUNS_DIR) / (run_id + ".json")).write_text(json.dumps({"transaction_hash": TX, "ranked_suspicious_functions": 1}))
+            q.put(("end", None))
+        def is_alive(self): return False
+        def join(self, **kwargs): pass
+    monkeypatch.setattr(server.threading, "Thread", Thread)
+    monkeypatch.setattr(server.mp, "Process", Process)
+    monkeypatch.setattr(server.mp, "Queue", queue.Queue)
+    if broken_summary:
+        monkeypatch.setattr(server, "_hist_brief", lambda res: (_ for _ in ()).throw(ValueError("summary failed")))
+    response = client.post("/api/analyze", json={"txn_hash": TX, "mode": "no-llm"})
+    run_id = response.json()["run_id"]
+    if broken_summary:
+        with pytest.raises(ValueError): callbacks.pop()()
+    else:
+        callbacks.pop()()
+    assert not server.run_lock.locked()
+    assert server.runs[run_id]["q"].closed
+
+
+def test_worker_preserves_explicit_same_provider_stage_keys(server, monkeypatch):
+    import queue
+    from app.pipeline_guards import PipelineRuntime
+    runtime = PipelineRuntime(TX, "eth")
+    observed = []
+    runtime.preflight = lambda *a, **k: observed.append(dict(runtime.model_keys))
+    monkeypatch.setattr(server, "_prepare_pipeline", lambda *a: runtime)
+    monkeypatch.setitem(sys.modules, "faultseeker.main", types.SimpleNamespace(main=lambda **k: {"transaction_hash": TX}))
+    server.worker("split-keys", {"txn_hash": TX, "chain": "eth", "mode": "gpt-6.1-sol-low", "model_key": "main-dummy",
+        "forensics_model": "gpt-6.1-sol-medium", "forensics_model_key": "stage-dummy"}, queue.Queue())
+    assert observed == [{"gpt-6.1-sol-low": ["main-dummy"], "gpt-6.1-sol-medium": ["stage-dummy"]}]
+
+
+def test_missing_capture_returns_not_found(client, server, monkeypatch, tmp_path):
+    monkeypatch.setattr(server, "CAPTURE", str(tmp_path / "missing.json"))
+    assert client.get("/api/capture").status_code == 404
+
+
+def test_unicode_gate_input_is_not_a_server_error(client, server, monkeypatch):
+    monkeypatch.setattr(server, "GATE", "dummy-access")
+    assert client.post("/gate", data={"password": "wrong-\u00e9"}).status_code == 401
+
+
+
+def test_adapter_preserves_explicit_classification_without_transaction_object(server):
+    classification = {"rule_verdict": "CLEAN", "signals": {"profit_extraction_eth": 7}}
+    value = server._adapt_result_for_view({"transaction_hash": TX, "analysis_status": "completed", "classification": classification})
+    assert value["classification"] == classification
+    value = server._adapt_result_for_view({"transaction_hash": TX, "analysis_status": "partial", "classification": classification})
+    assert value["classification"]["rule_verdict"] == "INCONCLUSIVE"

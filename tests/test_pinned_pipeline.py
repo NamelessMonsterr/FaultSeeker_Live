@@ -22,7 +22,8 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = json.loads((ROOT / "tests/fixtures/hedgey_verified_trace.json").read_text())
 TX = FIXTURE["provenance"]["transaction_hash"]
 MODEL = "gpt-6.1-sol-low"
-PIN = "bc98bfd8cc6903363955da72792db112757172c0"
+PIN = next(line.split("=", 1)[1] for line in (ROOT / "Dockerfile").read_text().splitlines()
+           if line.startswith("ARG FAULTSEEKER_SHA="))
 
 
 @pytest.fixture
