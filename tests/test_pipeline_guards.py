@@ -111,7 +111,9 @@ def test_preflight_rotates_key_specific_failures_and_keeps_valid_key(monkeypatch
     runtime.preflight(["gpt-6.1-sol-low"])
     query()  # Upstream factories may still seed the rejected first key.
     assert calls == ["Bearer test-first", "Bearer test-second", "Bearer test-second"]
-    assert runtime.session.retries_left == 2
+    # Preflight rotation is bounded by the configured key count and no longer
+    # consumes the shared analysis retry allowance.
+    assert runtime.session.retries_left == 3
     assert runtime.session.failure is None
     assert "test-first" not in json.dumps(events)
     assert "PRIVATE_PROVIDER_BODY" not in json.dumps(events)
@@ -132,26 +134,30 @@ def test_all_keys_invalid_fails_once_without_another_ladder(monkeypatch):
 
 def test_endpoint_outage_does_not_rotate_keys_or_reset_budget(monkeypatch):
     from app.model_endpoint import ModelEndpointFailure
-    runtime, calls, events, query = rotation_runtime(monkeypatch, [502]*3, retry_limit=2)
+    runtime, calls, events, query = rotation_runtime(monkeypatch, [502]*8, retry_limit=2)
     with pytest.raises(ModelEndpointFailure) as failure:
         runtime.preflight(["gpt-6.1-sol-low"])
-    assert calls == ["Bearer test-first"]*3
+    # Preflight retries a cold-starting endpoint until its 20s deadline
+    # (attempts at t=0,2,5,10,15 in this 1s-per-call harness), never rotates.
+    assert calls == ["Bearer test-first"]*5
+    assert failure.value.kind == "upstream_http"
     assert failure.value.as_dict()["scope"] == "endpoint"
     with pytest.raises(ModelEndpointFailure):
         query()
-    assert len(calls) == 3
+    assert len(calls) == 5
 
 
 def test_shared_retry_budget_survives_key_rotation_and_success(monkeypatch):
     from app.model_endpoint import ModelEndpointFailure
-    runtime, calls, events, query = rotation_runtime(monkeypatch, [401, 200, 502], retry_limit=1)
+    runtime, calls, events, query = rotation_runtime(monkeypatch, [401, 200, 502, 502], retry_limit=1)
     runtime.preflight(["gpt-6.1-sol-low"])
-    assert runtime.session.retries_left == 0
+    # Preflight rotation consumed nothing: analysis still has its full allowance.
+    assert runtime.session.retries_left == 1
     with pytest.raises(ModelEndpointFailure):
         query()
-    assert len(calls) == 3
+    assert len(calls) == 4
     assert runtime.session.retries_left == 0
-    assert runtime.session.spent == 3
+    assert runtime.session.spent == 5  # 4 one-second calls + 1s retry backoff
 
 
 def test_shared_time_budget_survives_rotation(monkeypatch):
@@ -165,12 +171,23 @@ def test_shared_time_budget_survives_rotation(monkeypatch):
     assert len(calls) == 3 and runtime.session.spent == 6
 
 
-def test_rotation_requires_remaining_shared_retry_allowance(monkeypatch):
+def test_preflight_rotation_is_bounded_by_key_count_not_allowance(monkeypatch):
     from app.model_endpoint import ModelEndpointFailure
-    runtime, calls, events, query = rotation_runtime(monkeypatch, [401], retry_limit=0)
+    # Even with a zero analysis retry allowance, preflight may rotate through
+    # the configured keys (bounded by key count) to find a working credential.
+    runtime, calls, events, query = rotation_runtime(monkeypatch, [401, 200], retry_limit=0)
+    runtime.preflight(["gpt-6.1-sol-low"])
+    assert calls == ["Bearer test-first", "Bearer test-second"]
+    assert runtime.session.retries_left == 0
+
+
+def test_analysis_rotation_still_requires_shared_retry_allowance(monkeypatch):
+    from app.model_endpoint import ModelEndpointFailure
+    runtime, calls, events, query = rotation_runtime(monkeypatch, [200, 401], retry_limit=0)
+    runtime.preflight(["gpt-6.1-sol-low"])
     with pytest.raises(ModelEndpointFailure):
-        runtime.preflight(["gpt-6.1-sol-low"])
-    assert len(calls) == 1 and runtime.session.retries_left == 0
+        query()
+    assert len(calls) == 2 and runtime.session.retries_left == 0
 
 
 def test_preflight_deadline_is_not_restarted_by_key_rotation(monkeypatch):
