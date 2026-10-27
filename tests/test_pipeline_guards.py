@@ -263,6 +263,7 @@ def test_second_model_cannot_start_after_shared_preflight_deadline(monkeypatch):
         runtime.preflight(["gpt-6.1-sol-low", "gpt-6.1-sol-medium"], timeout=20)
     assert failure.value.kind == "request_deadline_exceeded"
     assert len(calls) == 1 and runtime.session.spent == 20
+    assert runtime.session.failure is None
 
 
 def test_rejected_findings_force_partial_even_with_valid_scored():
