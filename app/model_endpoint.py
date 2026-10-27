@@ -467,9 +467,12 @@ class ModelEndpointSession:
                     break
             if should_fail:
                 if explicit_tighter and request_deadline > self.clock():
-                    # The retry delay cannot fit this caller's tighter deadline;
-                    # do not convert that local miss into a shared budget failure.
-                    raise self._local_deadline_failure(phase)
+                    # For a failed preflight, retain the sanitized upstream cause
+                    # when its retry delay cannot fit the caller's tighter deadline.
+                    # Analysis misses remain local; late SUCCESS paths pass no
+                    # last_error and therefore remain request_deadline_exceeded.
+                    self._deadline_or_budget_failure(
+                        phase, request_deadline, last_error, explicit_tighter)
                 if budget_exhausted:
                     self._fail(ModelEndpointFailure("budget_exhausted", phase=phase))
                 self._deadline_or_budget_failure(phase, request_deadline, last_error, explicit_tighter)
