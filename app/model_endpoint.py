@@ -85,6 +85,7 @@ class ModelEndpointSession:
         self.attempts = 0
         self.calls = {}  # phase -> {"ok": n, "failed": n}; real completions, not token counts
         self.failure = None
+        self.failure_lock = threading.Lock()
         self.lock = threading.RLock()
         self.key_pools = {}
         self.model_routes = {}
@@ -109,13 +110,23 @@ class ModelEndpointSession:
                 pool["active"] = pool["keys"][0]
 
     def assert_healthy(self):
-        if self.failure:
-            raise self.failure
+        with self.failure_lock:
+            failure = self.failure
+        if failure:
+            raise failure
 
     def _fail(self, error):
-        self.failure = error
-        self.emit({"state": "model_endpoint_failed", **error.as_dict(),
-                   "attempts": self.attempts})
+        # Admission can fail from a thread that does not own the serialized
+        # request lock. Preserve the first terminal failure across that race.
+        with self.failure_lock:
+            first_failure = self.failure is None
+            if first_failure:
+                self.failure = error
+            else:
+                error = self.failure
+        if first_failure:
+            self.emit({"state": "model_endpoint_failed", **error.as_dict(),
+                       "attempts": self.attempts})
         raise error from None
 
     def _out_of_time(self, phase, deadline, last_error):
@@ -223,10 +234,15 @@ class ModelEndpointSession:
                 if deadline is not None and self.clock() > deadline:
                     self._fail(self._out_of_time(phase, deadline, error))
                 if error is None:
-                    self._count_tokens(completion)
-                    self.emit({"state": "model_endpoint_ready", "phase": phase,
-                               "model": model, "attempts": self.attempts})
-                    return completion
+                    # Commit success atomically against a terminal failure that
+                    # may have been set by a concurrent admission timeout.
+                    with self.failure_lock:
+                        if self.failure is not None:
+                            raise self.failure
+                        self._count_tokens(completion)
+                        self.emit({"state": "model_endpoint_ready", "phase": phase,
+                                   "model": model, "attempts": self.attempts})
+                        return completion
                 # Valid completions at the boundary are useful. Errors at the
                 # boundary cannot start another attempt, nor can a later query.
                 if self.spent >= self.time_budget:
