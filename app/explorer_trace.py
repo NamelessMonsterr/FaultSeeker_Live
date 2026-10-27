@@ -24,6 +24,9 @@ def _check_tx(tx, tx_hash, chain_id=None):
     for key in ("from", "input", "blockHash", "blockNumber", "transactionIndex"):
         if tx.get(key) in (None, ""):
             raise TraceIdentityError(f"RPC transaction is missing {key}; block identity is unverified.")
+    if not re.fullmatch(r"0x[0-9a-fA-F]{64}", str(tx["blockHash"])) or not re.fullmatch(r"0x[0-9a-fA-F]+", str(tx["blockNumber"])) \
+            or not re.fullmatch(r"0x[0-9a-fA-F]+", str(tx["transactionIndex"])):
+        raise TraceIdentityError("RPC transaction block identity is malformed.")
     if tx.get("to") is None:
         raise TraceIdentityError("Contract creation traces are not supported by the explorer adapter.")
     if chain_id is not None and tx.get("chainId") not in (None, "") and int(str(tx["chainId"]), 16) != int(chain_id):
@@ -38,6 +41,25 @@ def _check_root(tx, root_from, root_to, root_input):
 def _identity(tx):
     return {"blockHash": tx["blockHash"], "blockNumber": int(tx["blockNumber"], 16),
             "transactionHash": tx["hash"], "transactionPosition": int(tx["transactionIndex"], 16)}
+
+
+def _check_parity_tree(rows):
+    """subtraces must equal the immediate children, child indexes contiguous 0..n-1, every parent present."""
+    by_loc = {tuple(r["traceAddress"]): r for r in rows}
+    children = {}
+    for loc in by_loc:
+        if loc:
+            if not all(isinstance(i, int) and i >= 0 for i in loc):
+                raise TraceIdentityError("Explorer trace has an invalid location.")
+            if loc[:-1] not in by_loc:
+                raise TraceIdentityError("Explorer trace has an orphan frame (missing parent).")
+            children.setdefault(loc[:-1], []).append(loc[-1])
+    for loc, row in by_loc.items():
+        kids = sorted(children.get(loc, []))
+        if kids != list(range(len(kids))):
+            raise TraceIdentityError("Explorer trace child locations are not contiguous (truncated tree).")
+        if row.get("subtraces") != len(kids):
+            raise TraceIdentityError("Explorer trace subtrace count differs from the returned children (truncated tree).")
 
 
 def rows_from_parity(raw_rows, tx, tx_hash, chain_id=None):
@@ -60,6 +82,7 @@ def rows_from_parity(raw_rows, tx, tx_hash, chain_id=None):
     root = next((r for r in rows if r["traceAddress"] == []), None)
     if root is None:
         raise TraceIdentityError("Explorer trace has no transaction root.")
+    _check_parity_tree(rows)
     a = root["action"]
     _check_root(tx, a.get("from"), a.get("to"), a.get("input"))
     return rows
@@ -121,7 +144,7 @@ def fetch_raw_trace(chain, tx_hash, opener=None):
         raise TraceIdentityError("Explorer trace is not valid JSON.") from None
 
 
-def payload_from_explorer(chain, tx_hash, tx, fetch=fetch_raw_trace):
+def payload_from_explorer(chain, tx_hash, tx, rpc_chain_id, fetch=fetch_raw_trace):
     """Structured-trace payload for the pipeline. `tx` must already be RPC-verified (hash and eth_chainId)."""
     try:
         from .trace_identity import sequence_from_parity
@@ -130,6 +153,8 @@ def payload_from_explorer(chain, tx_hash, tx, fetch=fetch_raw_trace):
     chain_id = EXPLORER_TRACE_INSTANCES[chain][1] if chain in EXPLORER_TRACE_INSTANCES else None
     if chain_id is None:
         raise TraceIdentityError("Explorer trace is not available for this chain.")
+    if not isinstance(rpc_chain_id, int) or isinstance(rpc_chain_id, bool) or rpc_chain_id != chain_id:
+        raise TraceIdentityError("RPC eth_chainId is missing or does not match the explorer instance chain.")
     raw = fetch(chain, tx_hash)
     if isinstance(raw, list):
         rows = rows_from_parity(raw, tx, tx_hash, chain_id)
@@ -138,7 +163,16 @@ def payload_from_explorer(chain, tx_hash, tx, fetch=fetch_raw_trace):
     else:
         raise TraceIdentityError("Explorer trace has an unrecognised shape.")
     seq = sequence_from_parity(rows, tx_hash, chain, verified_chain=chain)
+    errored = [r["traceAddress"] for r in rows if r.get("error")]
+    for loc in errored:                     # sequence_from_parity drops per-frame errors; keep them on the canonical tree
+        node = seq["canonical_trace"]
+        for i in loc:
+            node = node["children"][i]
+        node["error"] = next(r["error"] for r in rows if r["traceAddress"] == loc)
     provenance = {**seq["trace_provenance"], "source": "explorer_raw_trace", "explorer": EXPLORER_TRACE_INSTANCES[chain][0],
                   "identity_cross_check": "eth_getTransactionByHash + eth_chainId",
-                  "frame_errors": sum(1 for r in rows if r.get("error"))}
+                  "frame_errors": len(errored), "frame_error_locations": errored,
+                  "completeness": ("explorer-reported; parity subtrace counts and child indexes verified consistent" if isinstance(raw, list)
+                                   else "explorer-reported nested tree; omitted sub-calls cannot be detected from this shape"),
+                  "completeness_proven": False}
     return {"transaction_hash": tx_hash, "chain": chain, "trace": seq["canonical_trace"], "trace_provenance": provenance}

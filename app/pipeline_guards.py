@@ -130,7 +130,7 @@ class PipelineRuntime:
                 raise TraceIdentityError("RPC network does not match the selected chain.")
             if payload is None:
                 try:
-                    payload = payload_from_explorer(chain, tx_hash, tx)
+                    payload = payload_from_explorer(chain, tx_hash, tx, actual_chain)
                 except TraceIdentityError:
                     raise
                 except Exception:

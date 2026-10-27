@@ -110,15 +110,15 @@ def test_fetch_uses_one_verified_url_and_refuses_redirect_oversize_and_bad_input
 
 
 def test_payload_shapes_and_unknown_shape_refused():
-    p = et.payload_from_explorer("eth", TX, ETH_TX, fetch=lambda c, h: copy.deepcopy(BS_ETH))
+    p = et.payload_from_explorer("eth", TX, ETH_TX, 1, fetch=lambda c, h: copy.deepcopy(BS_ETH))
     assert p["trace"]["callee"].lower() == ETH_TX["to"].lower() and p["trace_provenance"]["source"] == "explorer_raw_trace"
-    q = et.payload_from_explorer("optimism", OP_HASH, OP["tx"], fetch=lambda c, h: copy.deepcopy(OP["raw_trace"]))
+    q = et.payload_from_explorer("optimism", OP_HASH, OP["tx"], 10, fetch=lambda c, h: copy.deepcopy(OP["raw_trace"]))
     assert q["trace_provenance"]["frame_count"] == 66 and q["trace_provenance"]["frame_errors"] >= 1
     for bad in ("x", {"foo": 1}, 5):
         with pytest.raises(ti.TraceIdentityError):
-            et.payload_from_explorer("eth", TX, ETH_TX, fetch=lambda c, h, b=bad: b)
+            et.payload_from_explorer("eth", TX, ETH_TX, 1, fetch=lambda c, h, b=bad: b)
     with pytest.raises(ti.TraceIdentityError):
-        et.payload_from_explorer("polygon", TX, ETH_TX, fetch=lambda c, h: BS_ETH)
+        et.payload_from_explorer("polygon", TX, ETH_TX, 137, fetch=lambda c, h: BS_ETH)
 
 
 def _install(monkeypatch, tmp_path, tx, chain_id_hex, raise_trace=True):
@@ -147,7 +147,7 @@ def _install(monkeypatch, tmp_path, tx, chain_id_hex, raise_trace=True):
 def test_runtime_uses_explorer_trace_only_when_opted_in_and_chain_id_matches(monkeypatch, tmp_path):
     m, runtime, rep, calls = _install(monkeypatch, tmp_path, copy.deepcopy(ETH_TX), "0x1")
     monkeypatch.setattr(et, "fetch_raw_trace", lambda c, h, opener=None: copy.deepcopy(BS_ETH))
-    monkeypatch.setattr(m, "payload_from_explorer", lambda c, h, tx: et.payload_from_explorer(c, h, tx, fetch=lambda *a: copy.deepcopy(BS_ETH)))
+    monkeypatch.setattr(m, "payload_from_explorer", lambda c, h, tx, cid: et.payload_from_explorer(c, h, tx, cid, fetch=lambda *a: copy.deepcopy(BS_ETH)))
     runtime.install()
     try:
         monkeypatch.delenv("FAULTSEEKER_EXPLORER_TRACE", raising=False)
@@ -164,7 +164,7 @@ def test_runtime_uses_explorer_trace_only_when_opted_in_and_chain_id_matches(mon
 
 def test_runtime_refuses_explorer_trace_when_rpc_chain_id_differs(monkeypatch, tmp_path):
     m, runtime, rep, calls = _install(monkeypatch, tmp_path, copy.deepcopy(ETH_TX), "0xa")
-    monkeypatch.setattr(m, "payload_from_explorer", lambda c, h, tx: et.payload_from_explorer(c, h, tx, fetch=lambda *a: copy.deepcopy(BS_ETH)))
+    monkeypatch.setattr(m, "payload_from_explorer", lambda c, h, tx, cid: et.payload_from_explorer(c, h, tx, cid, fetch=lambda *a: copy.deepcopy(BS_ETH)))
     monkeypatch.setenv("FAULTSEEKER_EXPLORER_TRACE", "1")
     runtime.install()
     try:
@@ -177,7 +177,7 @@ def test_runtime_refuses_explorer_trace_when_rpc_chain_id_differs(monkeypatch, t
 def test_runtime_refuses_explorer_trace_with_tampered_root(monkeypatch, tmp_path):
     m, runtime, rep, calls = _install(monkeypatch, tmp_path, copy.deepcopy(ETH_TX), "0x1")
     bad = copy.deepcopy(BS_ETH); bad[0]["action"]["input"] = "0xdeadbeef"
-    monkeypatch.setattr(m, "payload_from_explorer", lambda c, h, tx: et.payload_from_explorer(c, h, tx, fetch=lambda *a: bad))
+    monkeypatch.setattr(m, "payload_from_explorer", lambda c, h, tx, cid: et.payload_from_explorer(c, h, tx, cid, fetch=lambda *a: bad))
     monkeypatch.setenv("FAULTSEEKER_EXPLORER_TRACE", "1")
     runtime.install()
     try:
@@ -185,3 +185,60 @@ def test_runtime_refuses_explorer_trace_with_tampered_root(monkeypatch, tmp_path
             rep.TransactionReplayer.get_structured_trace(object(), TX, "eth")
     finally:
         runtime.close()
+
+
+def _gap(mutate):
+    raw = copy.deepcopy(BS_ETH)
+    mutate(raw)
+    return raw
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda raw: raw.pop(2),                                              # a middle child removed: non-contiguous or count mismatch
+    lambda raw: raw.__delitem__(len(raw) - 1),                           # last frame removed: parent subtraces too high
+    lambda raw: raw[1].__setitem__("traceAddress", [0, 0]),              # orphan (parent [0] missing after move)
+    lambda raw: raw[0].__setitem__("subtraces", 99),
+    lambda raw: raw[1].__setitem__("traceAddress", [-1]),
+])
+def test_parity_truncated_or_orphan_trees_are_refused(mutate):
+    with pytest.raises(ti.TraceIdentityError):
+        et.rows_from_parity(_gap(mutate), ETH_TX, TX, 1)
+
+
+def test_parity_per_frame_error_is_preserved_on_the_canonical_tree():
+    raw = copy.deepcopy(BS_ETH)
+    raw[1]["error"] = "Reverted"
+    p = et.payload_from_explorer("eth", TX, ETH_TX, 1, fetch=lambda c, h: raw)
+    loc = raw[1]["traceAddress"]
+    node = p["trace"]
+    for i in loc:
+        node = node["children"][i]
+    assert node["error"] == "Reverted" and p["trace_provenance"]["frame_error_locations"] == [loc]
+
+
+def test_calltracer_revert_with_missing_output_is_kept_not_normalised_away():
+    rows = et.rows_from_calltracer(copy.deepcopy(OP["raw_trace"]), OP["tx"], OP_HASH, 10)
+    reverted = [r for r in rows if r.get("error")]
+    assert reverted and all(r["result"]["output"] in (None, "0x") or isinstance(r["result"]["output"], str) for r in reverted)
+    assert all("error" in r for r in reverted)
+
+
+def test_provenance_states_completeness_boundary():
+    p = et.payload_from_explorer("optimism", OP_HASH, OP["tx"], 10, fetch=lambda c, h: copy.deepcopy(OP["raw_trace"]))
+    assert p["trace_provenance"]["completeness_proven"] is False
+    assert "omitted sub-calls cannot be detected" in p["trace_provenance"]["completeness"]
+    e = et.payload_from_explorer("eth", TX, ETH_TX, 1, fetch=lambda c, h: copy.deepcopy(BS_ETH))
+    assert e["trace_provenance"]["completeness_proven"] is False and "verified consistent" in e["trace_provenance"]["completeness"]
+
+
+@pytest.mark.parametrize("rpc_chain_id", [None, 10, "0x1", True, 0])
+def test_rpc_chain_id_is_mandatory_and_must_equal_instance_chain(rpc_chain_id):
+    with pytest.raises(ti.TraceIdentityError):
+        et.payload_from_explorer("eth", TX, ETH_TX, rpc_chain_id, fetch=lambda c, h: copy.deepcopy(BS_ETH))
+
+
+@pytest.mark.parametrize("field,value", [("blockHash", "0x12"), ("blockNumber", "19687890"), ("transactionIndex", "x")])
+def test_malformed_rpc_block_identity_refused(field, value):
+    tx = copy.deepcopy(ETH_TX); tx[field] = value
+    with pytest.raises(ti.TraceIdentityError):
+        et.rows_from_parity(copy.deepcopy(BS_ETH), tx, TX, 1)
