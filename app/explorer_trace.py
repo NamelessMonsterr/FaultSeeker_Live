@@ -86,3 +86,59 @@ def rows_from_calltracer(tree, tx, tx_hash, chain_id=None):
             walk(kid, address + [i])
     walk(tree, [])
     return rows
+
+
+# ---- keyless fetch + pipeline payload -------------------------------------------------------
+import json as _json
+import urllib.request as _urlreq
+
+EXPLORER_TRACE_INSTANCES = {"eth": ("https://eth.blockscout.com", 1), "optimism": ("https://explorer.optimism.io", 10)}
+_MAX_BYTES = 2_000_000
+_TX = re.compile(r"0x[0-9a-fA-F]{64}")
+
+
+def fetch_raw_trace(chain, tx_hash, opener=None):
+    """One keyless GET against the verified instance; no retry, no redirect to other hosts, size capped."""
+    if chain not in EXPLORER_TRACE_INSTANCES or not _TX.fullmatch(str(tx_hash)):
+        raise TraceIdentityError("Explorer trace is not available for this chain or hash.")
+    base = EXPLORER_TRACE_INSTANCES[chain][0]
+    url = f"{base}/api/v2/transactions/{tx_hash.lower()}/raw-trace"
+    request = _urlreq.Request(url, headers={"User-Agent": "faultseeker-console/1", "Accept": "application/json"})
+    try:
+        with (opener or _urlreq.urlopen)(request, timeout=20) as response:
+            if not str(response.geturl()).startswith(base + "/"):
+                raise TraceIdentityError("Explorer redirected to an unverified host.")
+            data = response.read(_MAX_BYTES + 1)
+    except TraceIdentityError:
+        raise
+    except Exception as exc:
+        raise TraceIdentityError(f"Explorer trace request failed: {type(exc).__name__}") from None
+    if len(data) > _MAX_BYTES:
+        raise TraceIdentityError("Explorer trace is larger than the accepted size.")
+    try:
+        return _json.loads(data)
+    except ValueError:
+        raise TraceIdentityError("Explorer trace is not valid JSON.") from None
+
+
+def payload_from_explorer(chain, tx_hash, tx, fetch=fetch_raw_trace):
+    """Structured-trace payload for the pipeline. `tx` must already be RPC-verified (hash and eth_chainId)."""
+    try:
+        from .trace_identity import sequence_from_parity
+    except ImportError:
+        from trace_identity import sequence_from_parity
+    chain_id = EXPLORER_TRACE_INSTANCES[chain][1] if chain in EXPLORER_TRACE_INSTANCES else None
+    if chain_id is None:
+        raise TraceIdentityError("Explorer trace is not available for this chain.")
+    raw = fetch(chain, tx_hash)
+    if isinstance(raw, list):
+        rows = rows_from_parity(raw, tx, tx_hash, chain_id)
+    elif isinstance(raw, dict) and "calls" in raw or isinstance(raw, dict) and "type" in raw:
+        rows = rows_from_calltracer(raw, tx, tx_hash, chain_id)
+    else:
+        raise TraceIdentityError("Explorer trace has an unrecognised shape.")
+    seq = sequence_from_parity(rows, tx_hash, chain, verified_chain=chain)
+    provenance = {**seq["trace_provenance"], "source": "explorer_raw_trace", "explorer": EXPLORER_TRACE_INSTANCES[chain][0],
+                  "identity_cross_check": "eth_getTransactionByHash + eth_chainId",
+                  "frame_errors": sum(1 for r in rows if r.get("error"))}
+    return {"transaction_hash": tx_hash, "chain": chain, "trace": seq["canonical_trace"], "trace_provenance": provenance}

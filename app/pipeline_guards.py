@@ -17,6 +17,10 @@ except ImportError:  # app/server.py invoked directly
     from trace_identity import TraceIdentityError, canonical_to_legacy, check_structured, validate_trace_root
 
 
+try:
+    from .explorer_trace import payload_from_explorer, EXPLORER_TRACE_INSTANCES as EXPLORER_CHAINS
+except ImportError:
+    from explorer_trace import payload_from_explorer, EXPLORER_TRACE_INSTANCES as EXPLORER_CHAINS
 CHAIN_IDS = {"eth": 1, "bsc": 56, "polygon": 137, "arbitrum": 42161,
              "optimism": 10, "avalanche": 43114, "base": 8453, "fantom": 250,
              "zksync": 324, "linea": 59144, "scroll": 534352, "gnosis": 100,
@@ -108,7 +112,14 @@ class PipelineRuntime:
 
         original_structured = TransactionReplayer.get_structured_trace
         def checked_structured(replayer, tx_hash, chain):
-            payload = check_structured(original_structured(replayer, tx_hash, chain), tx_hash, chain)
+            payload, trace_error = None, None
+            try:
+                payload = check_structured(original_structured(replayer, tx_hash, chain), tx_hash, chain)
+            except Exception as exc:
+                # Opt-in keyless explorer trace for chains where the RPC trace is unavailable; default is off.
+                if os.getenv("FAULTSEEKER_EXPLORER_TRACE") != "1" or chain not in EXPLORER_CHAINS:
+                    raise
+                trace_error = exc
             tx = rpc_call(chain, "eth_getTransactionByHash", [tx_hash], timeout=15)
             network = rpc_call(chain, "eth_chainId", [], timeout=15)
             try:
@@ -117,6 +128,13 @@ class PipelineRuntime:
                 raise TraceIdentityError("RPC chain identity could not be established.") from None
             if actual_chain != CHAIN_IDS.get(chain):
                 raise TraceIdentityError("RPC network does not match the selected chain.")
+            if payload is None:
+                try:
+                    payload = payload_from_explorer(chain, tx_hash, tx)
+                except TraceIdentityError:
+                    raise
+                except Exception:
+                    raise trace_error
             root = payload["trace"]
             receipt = None
             if isinstance(tx, dict) and tx.get("to") is None:
@@ -124,7 +142,8 @@ class PipelineRuntime:
             validate_trace_root(tx, root, tx_hash, receipt)
             payload = deepcopy(payload)
             payload["trace_provenance"] = {
-                "source": "structured_rpc_or_cache", "identity_cross_check": "eth_getTransactionByHash + eth_chainId",
+                "source": payload.get("trace_provenance", {}).get("source", "structured_rpc_or_cache") if trace_error else "structured_rpc_or_cache",
+                "identity_cross_check": "eth_getTransactionByHash + eth_chainId",
                 "transaction_hash": tx_hash.lower(), "chain": chain,
                 "block_hash": tx.get("blockHash"), "block_number": tx.get("blockNumber"),
                 "function_identity": "calldata_selector", "abi_verified": False}
