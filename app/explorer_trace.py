@@ -1,0 +1,88 @@
+"""Turn a keyless explorer trace into verified trace_transaction rows.
+
+The explorer supplies only the call tree. Transaction and block identity must come from a
+separate standard JSON-RPC eth_getTransactionByHash result, and the trace root has to match it
+(from, to, input). No trace row is produced if any of that fails.
+"""
+import re
+
+try:
+    from .trace_identity import TraceIdentityError
+except ImportError:  # flat import
+    from trace_identity import TraceIdentityError
+
+_HEX = re.compile(r"0x[0-9a-fA-F]*")
+
+
+def _same(a, b):
+    return str(a or "").lower() == str(b or "").lower()
+
+
+def _check_tx(tx, tx_hash, chain_id=None):
+    if not isinstance(tx, dict) or not _same(tx.get("hash"), tx_hash):
+        raise TraceIdentityError("RPC transaction identity does not match the requested hash.")
+    for key in ("from", "input", "blockHash", "blockNumber", "transactionIndex"):
+        if tx.get(key) in (None, ""):
+            raise TraceIdentityError(f"RPC transaction is missing {key}; block identity is unverified.")
+    if tx.get("to") is None:
+        raise TraceIdentityError("Contract creation traces are not supported by the explorer adapter.")
+    if chain_id is not None and tx.get("chainId") not in (None, "") and int(str(tx["chainId"]), 16) != int(chain_id):
+        raise TraceIdentityError("RPC transaction chain id does not match the requested chain.")
+
+
+def _check_root(tx, root_from, root_to, root_input):
+    if not (_same(tx["from"], root_from) and _same(tx["to"], root_to) and _same(tx["input"], root_input)):
+        raise TraceIdentityError("Explorer trace root differs from the RPC transaction (from/to/input).")
+
+
+def _identity(tx):
+    return {"blockHash": tx["blockHash"], "blockNumber": int(tx["blockNumber"], 16),
+            "transactionHash": tx["hash"], "transactionPosition": int(tx["transactionIndex"], 16)}
+
+
+def rows_from_parity(raw_rows, tx, tx_hash, chain_id=None):
+    """Blockscout raw-trace in Parity shape (list of action/result frames)."""
+    _check_tx(tx, tx_hash, chain_id)
+    if not isinstance(raw_rows, list) or not raw_rows:
+        raise TraceIdentityError("Explorer returned no parity trace rows.")
+    ident = _identity(tx)
+    rows, seen = [], set()
+    for row in raw_rows:
+        if not isinstance(row, dict) or not isinstance(row.get("action"), dict) or not isinstance(row.get("traceAddress"), list):
+            raise TraceIdentityError("Explorer trace row is not a parity call frame.")
+        if row.get("type") != "call":
+            raise TraceIdentityError("Explorer trace contains a non-call frame; whole-trace identity is unverified.")
+        key = tuple(row["traceAddress"])
+        if key in seen:
+            raise TraceIdentityError("Explorer trace has a duplicate frame location.")
+        seen.add(key)
+        rows.append({**row, **ident})
+    root = next((r for r in rows if r["traceAddress"] == []), None)
+    if root is None:
+        raise TraceIdentityError("Explorer trace has no transaction root.")
+    a = root["action"]
+    _check_root(tx, a.get("from"), a.get("to"), a.get("input"))
+    return rows
+
+
+def rows_from_calltracer(tree, tx, tx_hash, chain_id=None):
+    """Blockscout raw-trace in geth callTracer shape (nested calls) -> parity-like rows."""
+    _check_tx(tx, tx_hash, chain_id)
+    if not isinstance(tree, dict) or "from" not in tree or "to" not in tree:
+        raise TraceIdentityError("Explorer returned no callTracer tree.")
+    _check_root(tx, tree.get("from"), tree.get("to"), tree.get("input"))
+    ident = _identity(tx)
+    rows = []
+    def walk(node, address):
+        if not isinstance(node, dict) or str(node.get("type", "")).upper() not in ("CALL", "STATICCALL", "DELEGATECALL", "CALLCODE"):
+            raise TraceIdentityError("Explorer trace contains a non-call frame (e.g. create); whole-trace identity is unverified.")
+        kids = node.get("calls") or []
+        rows.append({"action": {"from": node.get("from"), "to": node.get("to"), "input": node.get("input", "0x"), "gas": node.get("gas"),
+                                "value": node.get("value", "0x0"), "callType": str(node["type"]).lower()},
+                     "result": {"gasUsed": node.get("gasUsed"), "output": node.get("output")},
+                     "subtraces": len(kids), "traceAddress": list(address), "type": "call", **ident}
+                    | ({"error": node["error"]} if node.get("error") else {}))  # a reverted sub-call is real behaviour; keep it labelled
+        for i, kid in enumerate(kids):
+            walk(kid, address + [i])
+    walk(tree, [])
+    return rows
