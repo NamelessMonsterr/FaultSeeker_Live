@@ -133,13 +133,14 @@ class ModelEndpointSession:
         # shared circuit or misreport a transport-budget exhaustion.
         return ModelEndpointFailure("request_deadline_exceeded", phase=phase)
 
-    def _deadline_or_budget_failure(self, phase, deadline=None, last_error=None):
+    def _deadline_or_budget_failure(self, phase, deadline=None, last_error=None,
+                                    explicit_tighter=False):
         with self.state_lock:
             exhausted = self.spent >= self.time_budget
-        if exhausted:
+        if exhausted or not explicit_tighter:
             self._fail(ModelEndpointFailure("budget_exhausted", phase=phase))
         if phase == "preflight":
-            self._fail(self._out_of_time(phase, deadline, last_error))
+            self._fail(self._local_deadline_failure(phase))
         raise self._local_deadline_failure(phase)
 
     def _out_of_time(self, phase, deadline, last_error):
@@ -181,10 +182,15 @@ class ModelEndpointSession:
         with self.state_lock:
             if self.failure is not None:
                 raise self.failure
-            # An ordinary call receives an entry-time deadline based on the
-            # shared budget visible at entry. Explicit preflight deadlines win.
+            # Bind a per-request deadline at entry, including time spent waiting
+            # for a reservation. An explicit caller deadline may tighten it, but
+            # cannot extend the shared-budget-derived deadline.
             entry_budget = max(0.0, self.time_budget - self.spent)
-        request_deadline = deadline if deadline is not None else queued_at + entry_budget
+            shared_deadline = queued_at + entry_budget
+            explicit_tighter = deadline is not None and deadline < shared_deadline
+            if entry_budget <= 0:
+                self._fail(ModelEndpointFailure("budget_exhausted", phase=phase))
+        request_deadline = min(deadline, shared_deadline) if deadline is not None else shared_deadline
         retry_number = 0
         last_error = None
 
@@ -208,7 +214,7 @@ class ModelEndpointSession:
                         raise self.failure
                     now = self.clock()
                     if now >= request_deadline:
-                        self._deadline_or_budget_failure(phase, request_deadline, last_error)
+                        self._deadline_or_budget_failure(phase, request_deadline, last_error, explicit_tighter)
                     available = self.time_budget - self.spent - self.reserved
                     if available > 0:
                         break
@@ -315,10 +321,17 @@ class ModelEndpointSession:
                     phase_calls = self.calls.setdefault(phase, {"ok": 0, "failed": 0})
                     phase_calls["failed" if error is not None else "ok"] += 1
                     if error is not None and error.kind == "rate_limited":
-                        # 429 is sticky as soon as observed; any in-flight success
-                        # committing afterward must see this circuit state.
+                        # Provider rate limits outrank accounting failures and are
+                        # terminal as soon as any in-flight request observes one.
                         if self.failure is None:
                             self.failure = error
+                    elif self.failure is None and (
+                            self.spent > self.time_budget
+                            or (error is not None and self.spent >= self.time_budget)):
+                        # A successful completion at exactly the budget boundary
+                        # remains valid; any overrun is sticky before waiters wake.
+                        # A failed attempt at the boundary cannot be retried.
+                        self.failure = ModelEndpointFailure("budget_exhausted", phase=phase)
                     self.condition.notify_all()
                     current_failure = self.failure
                     attempts = self.attempts
@@ -441,7 +454,7 @@ class ModelEndpointSession:
                     available = self.time_budget - self.spent - self.reserved
                     if until_deadline <= 0:
                         should_fail = True
-                        budget_exhausted = False
+                        budget_exhausted = not explicit_tighter
                         break
                     if delay < available and delay < until_deadline:
                         self.reserved += delay
@@ -451,8 +464,7 @@ class ModelEndpointSession:
                     if self.reserved > 0:
                         self.condition.wait(timeout=max(0.0, until_deadline))
                         continue
-                    should_fail = True
-                    budget_exhausted = delay >= available
+                    should_fail = available <= 0 or (delay >= available and not explicit_tighter)
                     break
             if should_fail:
                 if phase == "preflight":
