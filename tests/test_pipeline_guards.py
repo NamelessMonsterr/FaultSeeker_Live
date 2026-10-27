@@ -354,6 +354,7 @@ def test_no_analysis_completion_is_partial_and_score_labelled_heuristic():
     assert r["analysis_status"] == "partial"
     assert r["priority_basis"] == "heuristic_preanalysis_estimate"
     assert r["sections"]["function_analysis"] == "no_model_analysis"
+    assert r["stage_completed"] == "deterministic-checks"
 
 
 def test_legitimate_empty_model_result_is_preserved():
@@ -375,3 +376,22 @@ def test_itera_alias_routes_to_openai_compatible_agent_not_ollama(monkeypatch):
         assert isinstance(agent.build_provider_agent("t", "itera/qwen3.8-27b"), agent.UniversalAgent)
     finally:
         runtime.close()
+
+
+def test_provider_config_restored_even_when_run_raises(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setenv("ITERA_API_KEY", "test-key-not-real")
+    agent = importlib.import_module("faultseeker.utils.agent")
+    m = importlib.import_module("app.pipeline_guards")
+    before = agent.PROVIDER_CONFIG
+    runtime = m.PipelineRuntime(TX, "eth")
+    runtime.session = SimpleNamespace(call=lambda *a, **k: "", route_policy=None, summary=lambda: {})
+    try:
+        runtime.install_model_hooks(agent)
+        assert "itera/" in agent.PROVIDER_CONFIG
+        raise RuntimeError("run failed")
+    except RuntimeError:
+        pass
+    finally:
+        runtime.close()
+    assert agent.PROVIDER_CONFIG is before and "itera/" not in agent.PROVIDER_CONFIG

@@ -275,6 +275,7 @@ class PipelineRuntime:
                 # No model completion was received for analysis: nothing was analysed,
                 # so scores come from deterministic pre-analysis heuristics only.
                 result["analysis_status"] = "partial"
+                result["stage_completed"] = "deterministic-checks"  # server.py only setdefaults this to stage-3
                 result["sections"] = {**(result.get("sections") or {}), "function_analysis": "no_model_analysis", "scoring": "skipped"}
                 result["priority_basis"] = "heuristic_preanalysis_estimate"
                 result["limitations"].append(
