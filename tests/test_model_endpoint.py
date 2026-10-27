@@ -161,7 +161,8 @@ def test_permanent_rejection_has_no_retry(status, kind):
 
 
 def test_retry_after_cannot_sleep_past_shared_budget():
-    m, session, factory, calls, events, clock = setup([httpx.Response(429, headers={"Retry-After": "99999"}, json={"error": "quota"})])
+    # 503 is retryable; the long Retry-After must still respect the shared budget.
+    m, session, factory, calls, events, clock = setup([httpx.Response(503, headers={"Retry-After": "99999"}, json={"error": "temporary"})])
     with pytest.raises(m.ModelEndpointFailure) as failure:
         session.call(factory, {"model": MODEL, "messages": []}, MODEL)
     assert failure.value.kind == "budget_exhausted"
@@ -258,32 +259,35 @@ def test_preflight_key_rotation_stays_bounded_by_key_count():
     assert "SECRET" not in json.dumps(events)
 
 
-def test_analysis_rate_limit_stops_without_retry_or_key_rotation():
+@pytest.mark.parametrize("phase,retry_after", [
+    ("analysis", "1"),
+    ("analysis", "99999"),
+    ("preflight", "1"),
+    ("preflight", "99999"),
+])
+def test_rate_limit_is_terminal_in_both_phases_with_multiple_keys(phase, retry_after):
     m, session, factory, calls, events, clock = setup([
-        httpx.Response(429, headers={"Retry-After": "1"}, json={"error": {"message": "quota"}}),
+        httpx.Response(429, headers={"Retry-After": retry_after}, json={"error": {"message": "quota"}}),
         httpx.Response(200, json=OK),
     ])
     session.register_keys("https://model.invalid/v1", ["first-key", "second-key"], model=MODEL)
     with pytest.raises(m.ModelEndpointFailure) as failure:
-        session.call(factory, {"model": MODEL, "messages": []}, MODEL)
+        if phase == "preflight":
+            session.preflight(factory, MODEL, timeout=20)
+        else:
+            session.call(factory, {"model": MODEL, "messages": []}, MODEL)
     assert failure.value.kind == "rate_limited"
+    assert failure.value.phase == phase
     assert failure.value.as_dict()["scope"] == "provider_limit"
     assert len(calls) == 1
     assert session.retries_left == 2
+    assert session.spent == 0
+    assert clock.now == 0
     assert not any(e.get("key_rotation") for e in events)
+    assert not any(e.get("retry_in_seconds", 0) > 0 for e in events)
     assert "quota" not in json.dumps(events)
     assert "first-key" not in json.dumps(events)
     assert "second-key" not in json.dumps(events)
-
-
-def test_preflight_rate_limit_retry_after_beyond_deadline_stays_bounded():
-    m, session, factory, calls, _, clock = setup(
-        [httpx.Response(429, headers={"Retry-After": "99999"}, json={"error": "quota"})])
-    with pytest.raises(m.ModelEndpointFailure) as failure:
-        session.preflight(factory, MODEL, timeout=20)
-    # The deadline cannot fit the hinted wait: report the real cause, no sleep.
-    assert failure.value.kind == "rate_limited"
-    assert clock.now == 0 and len(calls) == 1
 
 
 @pytest.mark.parametrize("endpoint", ["https://MODEL.invalid:443/v1", "https://model.invalid/v1/"])
