@@ -378,10 +378,35 @@ class PipelineRuntime:
                               "function_analysis": "failed" if self.partial and not failed_during_classification else "skipped", "scoring": "skipped"}
         result["limitations"] = list(result.get("limitations") or []) + [
             "Model-dependent analysis did not complete. Deterministic observations are not a verified vulnerability report."]
-        if self.session:
-            result["model_endpoint"] = self.session.summary()
+        endpoint_summary = self.session.summary() if self.session else None
+        if endpoint_summary is not None:
+            result["model_endpoint"] = endpoint_summary
+        wall = self.wall_cap.summary()
+        endpoint_calls = (endpoint_summary or {}).get("calls", {})
+        result["analysis_integrity"] = {
+            "function_identity": "calldata_selector",
+            "abi_verified": False,
+            "trace_identity_checked": self.sequence is not None,
+            "ranked_targets": list(self.ranked_targets),
+            "unverified_targets": [],
+            "failure_path": True,
+            "function_analysis_runs_observed": dict(self.function_analysis),
+            "function_wall_cap": wall,
+            "model_analysis": {
+                "analysis_calls_ok": endpoint_calls.get("analysis", {}).get("ok", 0),
+                "analysis_calls_failed": endpoint_calls.get("analysis", {}).get("failed", 0),
+                "preflight_calls_ok": endpoint_calls.get("preflight", {}).get("ok", 0),
+                "function_analysis_runs_observed": dict(self.function_analysis),
+            },
+        }
+        if wall["likely_forced"] or wall["unknown_exit"] or wall["error"]:
+            result["analysis_integrity"]["function_analysis_complete"] = False
+        else:
+            result["analysis_integrity"]["function_analysis_complete"] = self.function_analysis["completed"] > 0
         if isinstance(error, TraceIdentityError):
             result["failure"] = {"kind": "trace_identity", "message": str(error)}
+        elif error is not None:
+            result["failure"] = {"kind": type(error).__name__}
         result["trace_provenance"] = deepcopy((self.sequence or {}).get("trace_provenance", {}))
         return result
 
