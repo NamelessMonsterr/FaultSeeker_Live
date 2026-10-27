@@ -42,6 +42,26 @@ def test_mid_run_failure_produces_explicit_sections_and_no_successful_verdict():
     assert report["deterministic_rule_observation"]["rule_verdict"] == "EXPLOIT"
 
 
+def test_failure_report_always_includes_analysis_integrity_and_wall_cap():
+    m = importlib.import_module("app.pipeline_guards")
+    endpoint = importlib.import_module("app.model_endpoint")
+    runtime = m.PipelineRuntime(TX, "eth", session=endpoint.ModelEndpointSession())
+    runtime.partial = {"transaction": {"hash": TX, "chain": "eth"},
+                       "classification": {"rule_verdict": "EXPLOIT"}}
+    runtime.wall_cap.add({"kind": "function", "function": "transfer@0xabc",
+                          "outcome": "likely_forced", "detail": None,
+                          "elapsed_wall_secs": 480.1, "elapsed_mono_secs": 480.1,
+                          "completed_cycles": 0, "ceiling": 3})
+    report = runtime.failure_report(RuntimeError("model failure"))
+    assert report["analysis_integrity"]["failure_path"] is True
+    assert report["analysis_integrity"]["trace_identity_checked"] is False
+    assert report["analysis_integrity"]["function_analysis_complete"] is False
+    assert report["analysis_integrity"]["function_wall_cap"]["likely_forced"] == 1
+    assert report["analysis_integrity"]["model_analysis"]["analysis_calls_ok"] == 0
+    assert report["failure"] == {"kind": "RuntimeError"}
+    assert "model failure" not in json.dumps(report)
+
+
 def test_successful_model_run_cannot_validate_an_unobserved_function_label():
     m = importlib.import_module("app.pipeline_guards")
     identity = importlib.import_module("app.trace_identity")
