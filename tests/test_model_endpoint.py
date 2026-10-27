@@ -158,6 +158,44 @@ def test_two_mocked_requests_overlap_without_holding_state_lock():
     assert session.summary()["calls"]["analysis"] == {"ok": 2, "failed": 0}
 
 
+def test_concurrent_retry_reservations_are_atomic_and_bounded():
+    m = importlib.import_module("app.model_endpoint")
+    rendezvous = threading.Barrier(2)
+    requests, outcomes, reservations = [], [], []
+    guard = threading.Lock()
+    session = m.ModelEndpointSession(retry_limit=2, time_budget=20, call_timeout=5)
+    def handle(request):
+        with guard:
+            requests.append(request)
+            number = len(requests)
+            reservations.append(session.reserved)
+        if number <= 2:
+            rendezvous.wait(timeout=3)
+            return httpx.Response(502, text="private upstream failure")
+        return httpx.Response(200, json=OK)
+    def factory():
+        return OpenAI(api_key="test-secret-never-output", base_url="https://model.invalid/v1",
+                      http_client=httpx.Client(transport=httpx.MockTransport(handle)))
+    def invoke(index):
+        try:
+            result = session.call(factory, {"model": MODEL, "messages": [
+                {"role": "user", "content": f"retry-{index}"}]}, MODEL)
+            outcomes.append(("ok", result.choices[0].message.content))
+        except Exception as exc:
+            outcomes.append(("error", exc))
+    workers = [threading.Thread(target=invoke, args=(i,)) for i in range(2)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=6)
+    assert all(not worker.is_alive() for worker in workers), "concurrent retries did not finish"
+    assert len(requests) == 4
+    assert outcomes == [("ok", "OK"), ("ok", "OK")] or outcomes == [("ok", "OK"), ("ok", "OK")]
+    assert session.retries_left == 0
+    assert session.failure is None
+    assert reservations and max(reservations) <= session.time_budget
+
+
 def test_stale_auth_failure_does_not_reject_new_active_key():
     m = importlib.import_module("app.model_endpoint")
     rendezvous = threading.Barrier(2)
