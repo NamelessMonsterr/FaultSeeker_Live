@@ -224,7 +224,7 @@ class ModelEndpointSession:
             started = self.clock()
             try:
                 client, route, pool, attempt_key = self._route_and_pool(factory, model)
-                remaining = min(reservation, request_deadline - self.clock())
+                remaining = min(reservation - (self.clock() - started), request_deadline - self.clock())
                 if remaining <= 0:
                     raise self._local_deadline_failure(phase)
                 options = {"max_retries": 0, "timeout": remaining}
