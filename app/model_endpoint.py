@@ -300,6 +300,10 @@ class ModelEndpointSession:
                 self._fail(error)
             if current_failure is not None:
                 raise current_failure
+            with self.state_lock:
+                terminal_now = self.failure
+            if terminal_now is not None:
+                raise terminal_now
             last_error = error
             now = self.clock()
             if now >= request_deadline:
@@ -325,19 +329,24 @@ class ModelEndpointSession:
             next_key = None
             if pool and len(pool["keys"]) > 1 and error.kind == "authentication":
                 with self.state_lock:
+                    # A terminal failure observed concurrently wins before any
+                    # further credential mutation or retry reservation.
+                    terminal_now = self.failure
                     # Do not let a stale 401 from key A reject/overwrite key B
                     # after another in-flight request has already rotated it.
-                    if pool["active"] == attempt_key:
-                        pool["rejected"].add(attempt_key)
-                        next_key = next((key for key in pool["keys"] if key not in pool["rejected"]), None)
-                        if next_key is not None:
-                            pool["active"] = next_key
-                    elif pool["active"] not in pool["rejected"]:
-                        next_key = pool["active"]
-                    if next_key is None:
-                        all_rejected = True
+                    if terminal_now is None:
+                        if pool["active"] == attempt_key:
+                            pool["rejected"].add(attempt_key)
+                            next_key = next((key for key in pool["keys"] if key not in pool["rejected"]), None)
+                            if next_key is not None:
+                                pool["active"] = next_key
+                        elif pool["active"] not in pool["rejected"]:
+                            next_key = pool["active"]
+                        all_rejected = next_key is None
                     else:
                         all_rejected = False
+                if terminal_now is not None:
+                    raise terminal_now
                 if all_rejected:
                     self._fail(error)
                 retryable = True
@@ -346,7 +355,10 @@ class ModelEndpointSession:
                 self._fail(error)
 
             with self.state_lock:
-                if phase != "preflight":
+                terminal_now = self.failure
+                if terminal_now is not None:
+                    no_retry = False
+                elif phase != "preflight":
                     if self.retries_left <= 0:
                         no_retry = True
                     else:
@@ -354,6 +366,8 @@ class ModelEndpointSession:
                         no_retry = False
                 else:
                     no_retry = False
+            if terminal_now is not None:
+                raise terminal_now
             if no_retry:
                 self._fail(error)
 
@@ -370,16 +384,32 @@ class ModelEndpointSession:
             except (ValueError, TypeError):
                 pass
             with self.condition:
-                available = self.time_budget - self.spent - self.reserved
-                until_deadline = request_deadline - self.clock()
-                if delay >= available or delay >= until_deadline:
+                while True:
+                    if self.failure is not None:
+                        raise self.failure
+                    now = self.clock()
+                    until_deadline = request_deadline - now
+                    available = self.time_budget - self.spent - self.reserved
+                    if until_deadline <= 0:
+                        should_fail = True
+                        budget_exhausted = False
+                        break
+                    if delay < available and delay < until_deadline:
+                        self.reserved += delay
+                        should_fail = False
+                        budget_exhausted = False
+                        break
+                    if self.reserved > 0:
+                        self.condition.wait(timeout=max(0.0, until_deadline))
+                        continue
                     should_fail = True
-                else:
-                    self.reserved += delay
-                    should_fail = False
+                    budget_exhausted = available <= 0
+                    break
             if should_fail:
                 if phase == "preflight":
                     self._fail(self._out_of_time(phase, request_deadline, last_error))
+                if budget_exhausted:
+                    self._fail(ModelEndpointFailure("budget_exhausted", phase=phase))
                 raise self._local_deadline_failure(phase)
             self.emit({"state": "waiting_on_model_endpoint", **error.as_dict(),
                        "attempt": attempts, "model": model,
