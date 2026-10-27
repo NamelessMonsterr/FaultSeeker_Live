@@ -113,13 +113,18 @@ class PipelineRuntime:
         original_structured = TransactionReplayer.get_structured_trace
         def checked_structured(replayer, tx_hash, chain):
             payload, trace_error = None, None
-            try:
-                payload = check_structured(original_structured(replayer, tx_hash, chain), tx_hash, chain)
-            except Exception as exc:
-                # Opt-in keyless explorer trace for chains where the RPC trace is unavailable; default is off.
-                if os.getenv("FAULTSEEKER_EXPLORER_TRACE") != "1" or chain not in EXPLORER_CHAINS:
-                    raise
-                trace_error = exc
+            mode = os.getenv("FAULTSEEKER_EXPLORER_TRACE", "")
+            if mode == "direct" and chain in EXPLORER_CHAINS:
+                # Direct mode: never ask an RPC node for a trace first (a configured trace RPC may be billable).
+                trace_error = RuntimeError("explorer trace requested directly")
+            else:
+                try:
+                    payload = check_structured(original_structured(replayer, tx_hash, chain), tx_hash, chain)
+                except Exception as exc:
+                    # Opt-in keyless explorer trace for chains where the RPC trace is unavailable; default is off.
+                    if mode != "1" or chain not in EXPLORER_CHAINS:
+                        raise
+                    trace_error = exc
             tx = rpc_call(chain, "eth_getTransactionByHash", [tx_hash], timeout=15)
             network = rpc_call(chain, "eth_chainId", [], timeout=15)
             try:

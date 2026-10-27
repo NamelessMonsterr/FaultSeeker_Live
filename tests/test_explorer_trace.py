@@ -242,3 +242,23 @@ def test_malformed_rpc_block_identity_refused(field, value):
     tx = copy.deepcopy(ETH_TX); tx[field] = value
     with pytest.raises(ti.TraceIdentityError):
         et.rows_from_parity(copy.deepcopy(BS_ETH), tx, TX, 1)
+
+
+def test_direct_mode_never_calls_the_rpc_trace_path(monkeypatch, tmp_path):
+    m, runtime, rep, calls = _install(monkeypatch, tmp_path, copy.deepcopy(ETH_TX), "0x1")
+    traced = []
+    original = rep.TransactionReplayer.get_structured_trace
+    def spy(self, tx_hash, chain):
+        traced.append(chain)
+        raise RuntimeError("would hit a trace RPC")
+    monkeypatch.setattr(rep.TransactionReplayer, "get_structured_trace", spy)
+    monkeypatch.setattr(m, "payload_from_explorer", lambda c, h, tx, cid: et.payload_from_explorer(c, h, tx, cid, fetch=lambda *a: copy.deepcopy(BS_ETH)))
+    monkeypatch.setenv("FAULTSEEKER_EXPLORER_TRACE", "direct")
+    runtime.install()
+    try:
+        payload = rep.TransactionReplayer.get_structured_trace(object(), TX, "eth")
+        assert payload["trace_provenance"]["source"] == "explorer_raw_trace"
+        assert traced == []                                   # the trace RPC was never asked
+        assert set(calls) == {"eth_getTransactionByHash", "eth_chainId"}   # identity reads only
+    finally:
+        runtime.close()
