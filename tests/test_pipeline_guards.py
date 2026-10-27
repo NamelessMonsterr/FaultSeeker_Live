@@ -64,6 +64,16 @@ def test_failure_report_always_includes_analysis_integrity_and_wall_cap():
     assert "model failure" not in json.dumps(report)
 
 
+def test_failure_report_preserves_sanitized_model_failure_kind():
+    m = importlib.import_module("app.pipeline_guards")
+    endpoint = importlib.import_module("app.model_endpoint")
+    runtime = m.PipelineRuntime(TX, "eth", session=endpoint.ModelEndpointSession())
+    runtime.partial = {"transaction": {"hash": TX, "chain": "eth"}}
+    report = runtime.failure_report(endpoint.ModelEndpointFailure("rate_limited", 429))
+    assert report["failure"]["kind"] == "rate_limited"
+    assert "ModelEndpointFailure" not in json.dumps(report["failure"])
+
+
 def test_successful_model_run_cannot_validate_an_unobserved_function_label():
     m = importlib.import_module("app.pipeline_guards")
     identity = importlib.import_module("app.trace_identity")
