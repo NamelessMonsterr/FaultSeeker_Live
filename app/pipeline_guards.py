@@ -407,7 +407,7 @@ class PipelineRuntime:
         if isinstance(error, TraceIdentityError):
             result["failure"] = {"kind": "trace_identity", "message": str(error)}
         elif error is not None:
-            result["failure"] = {"kind": type(error).__name__}
+            result["failure"] = {"kind": getattr(error, "kind", type(error).__name__)}
         result["trace_provenance"] = deepcopy((self.sequence or {}).get("trace_provenance", {}))
         return result
 
