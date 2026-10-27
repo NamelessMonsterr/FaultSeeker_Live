@@ -116,8 +116,7 @@ def test_real_cache_identity_guard_rejects_wrong_chain(pinned, monkeypatch):
 @pytest.mark.parametrize("statuses,expected", [
     ([401, 200, 200, 200], ["first", "second", "second", "second"]),
     ([403, 200, 200, 200], ["first", "second", "second", "second"]),
-    ([429, 200, 200, 200], ["first", "second", "second", "second"]),
-    ([200, 429, 200, 200], ["first", "first", "second", "second"]),
+    ([200, 401, 200, 200], ["first", "first", "second", "second"]),
 ])
 def test_real_agents_keep_preflight_rotation_and_rotate_mid_run(pinned, monkeypatch, statuses, expected):
     agents = importlib.import_module("faultseeker.utils.agent")
@@ -146,5 +145,52 @@ def test_real_agents_keep_preflight_rotation_and_rotate_mid_run(pinned, monkeypa
         assert session.failure is None
         assert "test-first" not in json.dumps(events)
         assert "PRIVATE_PROVIDER_BODY" not in json.dumps(events)
+    finally:
+        runtime.close()
+
+@pytest.mark.parametrize("phase,retry_after", [
+    ("preflight", "1"),
+    ("preflight", "99999"),
+    ("analysis", "1"),
+    ("analysis", "99999"),
+])
+def test_real_agents_stop_on_429_without_rotation_or_retry(pinned, monkeypatch, phase, retry_after):
+    agents = importlib.import_module("faultseeker.utils.agent")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-first,test-second")
+    calls, events = [], []
+    statuses = iter([429, 200] if phase == "preflight" else [200, 429, 200])
+    def factory(**kwargs):
+        def reply(request):
+            calls.append(request.headers["authorization"])
+            status = next(statuses, 200)
+            if status != 200:
+                return httpx.Response(status, headers={"Retry-After": retry_after}, text="PRIVATE_PROVIDER_BODY")
+            return httpx.Response(200, json={"id": "offline", "object": "chat.completion", "created": 0,
+                "model": MODEL, "choices": [{"index": 0, "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "OK"}}]})
+        return OpenAI(**kwargs, http_client=httpx.Client(transport=httpx.MockTransport(reply)))
+    monkeypatch.setattr(agents, "OpenAI", factory)
+    session = ModelEndpointSession(retry_limit=2, emit=events.append)
+    runtime = PipelineRuntime(TX, "eth", session=session).install()
+    try:
+        if phase == "preflight":
+            with pytest.raises(ModelEndpointFailure) as failure:
+                runtime.preflight([MODEL])
+        else:
+            runtime.preflight([MODEL])
+            with pytest.raises(ModelEndpointFailure) as failure:
+                agents.GPTAgent("offline", MODEL)._send_message("Mocked request")
+        assert failure.value.kind == "rate_limited"
+        assert failure.value.phase == phase
+        assert len(calls) == (1 if phase == "preflight" else 2)
+        assert calls == ["Bearer test-first"] * len(calls)
+        assert session.retries_left == 2
+        assert not any(event.get("key_rotation") for event in events)
+        assert not any(event.get("retry_in_seconds", 0) > 0 for event in events)
+        assert "PRIVATE_PROVIDER_BODY" not in json.dumps(events)
+        with pytest.raises(ModelEndpointFailure) as sticky:
+            agents.GPTAgent("offline", MODEL)._send_message("Must not issue another request")
+        assert sticky.value.kind == "rate_limited"
+        assert len(calls) == (1 if phase == "preflight" else 2)
     finally:
         runtime.close()
