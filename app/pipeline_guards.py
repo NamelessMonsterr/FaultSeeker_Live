@@ -18,9 +18,9 @@ except ImportError:  # app/server.py invoked directly
 
 
 try:
-    from .explorer_trace import payload_from_explorer, EXPLORER_TRACE_INSTANCES as EXPLORER_CHAINS
+    from .explorer_trace import payload_from_explorer, pro_rpc, PRO_CHAINS, EXPLORER_TRACE_INSTANCES as EXPLORER_CHAINS
 except ImportError:
-    from explorer_trace import payload_from_explorer, EXPLORER_TRACE_INSTANCES as EXPLORER_CHAINS
+    from explorer_trace import payload_from_explorer, pro_rpc, PRO_CHAINS, EXPLORER_TRACE_INSTANCES as EXPLORER_CHAINS
 CHAIN_IDS = {"eth": 1, "bsc": 56, "polygon": 137, "arbitrum": 42161,
              "optimism": 10, "avalanche": 43114, "base": 8453, "fantom": 250,
              "zksync": 324, "linea": 59144, "scroll": 534352, "gnosis": 100,
@@ -128,8 +128,9 @@ class PipelineRuntime:
                     if mode != "1" or chain not in EXPLORER_CHAINS:
                         raise
                     trace_error = exc
-            tx = rpc_call(chain, "eth_getTransactionByHash", [tx_hash], timeout=15)
-            network = rpc_call(chain, "eth_chainId", [], timeout=15)
+            read = (lambda method, params: pro_rpc(chain, method, params)) if chain in PRO_CHAINS else (lambda method, params: rpc_call(chain, method, params, timeout=15))
+            tx = read("eth_getTransactionByHash", [tx_hash])
+            network = read("eth_chainId", [])
             try:
                 actual_chain = int(network, 16) if isinstance(network, str) else int(network)
             except (ValueError, TypeError):
@@ -149,7 +150,7 @@ class PipelineRuntime:
             root = payload["trace"]
             receipt = None
             if isinstance(tx, dict) and tx.get("to") is None:
-                receipt = rpc_call(chain, "eth_getTransactionReceipt", [tx_hash], timeout=15)
+                receipt = read("eth_getTransactionReceipt", [tx_hash])
             validate_trace_root(tx, root, tx_hash, receipt)
             payload = deepcopy(payload)
             payload["trace_provenance"] = {

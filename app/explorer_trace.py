@@ -4,6 +4,7 @@ The explorer supplies only the call tree. Transaction and block identity must co
 separate standard JSON-RPC eth_getTransactionByHash result, and the trace root has to match it
 (from, to, input). No trace row is produced if any of that fails.
 """
+import os
 import re
 
 try:
@@ -116,8 +117,44 @@ import json as _json
 import urllib.request as _urlreq
 
 EXPLORER_TRACE_INSTANCES = {"eth": ("https://eth.blockscout.com", 1), "optimism": ("https://explorer.optimism.io", 10)}
+# Blockscout PRO API (free plan, 100K credits/day, Bearer key). Chain id is part of the path. Needs BLOCKSCOUT_PRO_API_KEY.
+# Base, Polygon and zkSync are plan-gated on the free tier (HTTP 402), so they are not listed.
+PRO_HOST = "https://api.blockscout.com"
+PRO_CHAINS = {"scroll": 534352, "gnosis": 100, "celo": 42220}
+EXPLORER_TRACE_INSTANCES.update({name: (f"{PRO_HOST}/{cid}", cid) for name, cid in PRO_CHAINS.items()})
 _MAX_BYTES = 2_000_000
 _TX = re.compile(r"0x[0-9a-fA-F]{64}")
+
+
+def _pro_key():
+    key = os.environ.get("BLOCKSCOUT_PRO_API_KEY", "").strip()
+    if not key or not re.fullmatch(r"proapi_[A-Za-z0-9_-]{8,200}", key):
+        raise TraceIdentityError("Blockscout PRO API key is not configured for this chain.")
+    return key
+
+
+def pro_rpc(chain, method, params, opener=None):
+    """One standard JSON-RPC read through the Blockscout PRO gateway for identity (chain id, transaction, receipt)."""
+    if chain not in PRO_CHAINS or method not in ("eth_chainId", "eth_getTransactionByHash", "eth_getTransactionReceipt"):
+        raise TraceIdentityError("PRO identity read is not available for this chain or method.")
+    base = f"{PRO_HOST}/{PRO_CHAINS[chain]}/json-rpc"
+    body = _json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
+    request = _urlreq.Request(base, data=body, method="POST", headers={
+        "User-Agent": "faultseeker-console/1", "Content-Type": "application/json", "Accept": "application/json",
+        "Authorization": "Bearer " + _pro_key()})
+    try:
+        with (opener or _urlreq.urlopen)(request, timeout=20) as response:
+            if not str(response.geturl()).startswith(PRO_HOST + "/"):
+                raise TraceIdentityError("PRO gateway redirected to an unverified host.")
+            data = response.read(_MAX_BYTES + 1)
+        reply = _json.loads(data)
+    except TraceIdentityError:
+        raise
+    except Exception as exc:
+        raise TraceIdentityError(f"PRO identity read failed: {type(exc).__name__}") from None
+    if not isinstance(reply, dict) or reply.get("error") or "result" not in reply:
+        raise TraceIdentityError("PRO identity read returned an error.")
+    return reply["result"]
 
 
 def fetch_raw_trace(chain, tx_hash, opener=None):
@@ -126,7 +163,10 @@ def fetch_raw_trace(chain, tx_hash, opener=None):
         raise TraceIdentityError("Explorer trace is not available for this chain or hash.")
     base = EXPLORER_TRACE_INSTANCES[chain][0]
     url = f"{base}/api/v2/transactions/{tx_hash.lower()}/raw-trace"
-    request = _urlreq.Request(url, headers={"User-Agent": "faultseeker-console/1", "Accept": "application/json"})
+    headers = {"User-Agent": "faultseeker-console/1", "Accept": "application/json"}
+    if chain in PRO_CHAINS:
+        headers["Authorization"] = "Bearer " + _pro_key()
+    request = _urlreq.Request(url, headers=headers)
     try:
         with (opener or _urlreq.urlopen)(request, timeout=20) as response:
             if not str(response.geturl()).startswith(base + "/"):

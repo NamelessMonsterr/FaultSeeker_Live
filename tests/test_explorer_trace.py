@@ -1,3 +1,4 @@
+import os
 import copy
 import importlib
 import json
@@ -309,5 +310,97 @@ def test_direct_mode_on_unsupported_chain_fails_closed_without_any_rpc(monkeypat
         with pytest.raises(ti.TraceIdentityError):
             rep.TransactionReplayer.get_structured_trace(object(), TX, "bsc")
         assert traced == [] and calls == []
+    finally:
+        runtime.close()
+
+
+PRO = json.load(open(os.path.join(os.path.dirname(__file__), "fixtures", "blockscout_pro_trace_samples.json")))
+
+
+@pytest.mark.parametrize("chain", ["gnosis", "scroll", "celo"])
+def test_pro_chain_real_samples_become_verified_rows(chain):
+    s = PRO[chain]
+    p = et.payload_from_explorer(chain, s["hash"], s["tx"], s["chain_id"], fetch=lambda c, h: copy.deepcopy(s["raw_trace"]))
+    assert p["trace_provenance"]["block_number"] == int(s["tx"]["blockNumber"], 16)
+    assert p["trace_provenance"]["block_hash"].lower() == s["tx"]["blockHash"].lower()
+    assert p["trace_provenance"]["completeness_proven"] is False
+
+
+@pytest.mark.parametrize("chain", ["gnosis", "scroll", "celo"])
+def test_pro_chain_refuses_wrong_chain_id_and_tampered_root(chain):
+    s = PRO[chain]
+    with pytest.raises(ti.TraceIdentityError):
+        et.payload_from_explorer(chain, s["hash"], s["tx"], 1, fetch=lambda c, h: copy.deepcopy(s["raw_trace"]))
+    bad = copy.deepcopy(s["raw_trace"])
+    root = bad[0]["action"] if isinstance(bad, list) else bad
+    key = "input"
+    root[key] = "0xdeadbeef"
+    with pytest.raises(ti.TraceIdentityError):
+        et.payload_from_explorer(chain, s["hash"], s["tx"], s["chain_id"], fetch=lambda c, h: bad)
+
+
+def test_pro_plan_gated_and_unsupported_chains_are_not_listed():
+    for chain in ("base", "polygon", "zksync", "arbitrum", "bsc"):
+        assert chain not in et.EXPLORER_TRACE_INSTANCES
+
+
+class _Resp:
+    def __init__(self, body, url): self._b, self._u = body, url
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+    def geturl(self): return self._u
+    def read(self, n=-1): return self._b
+
+
+def test_pro_fetch_needs_key_and_sends_bearer_only_to_pro_host(monkeypatch):
+    s = PRO["gnosis"]
+    monkeypatch.delenv("BLOCKSCOUT_PRO_API_KEY", raising=False)
+    with pytest.raises(ti.TraceIdentityError):
+        et.fetch_raw_trace("gnosis", s["hash"], opener=lambda r, timeout=None: _Resp(b"[]", r.full_url))
+    monkeypatch.setenv("BLOCKSCOUT_PRO_API_KEY", "proapi_" + "a" * 20)
+    seen = []
+    def opener(req, timeout=None):
+        seen.append(req)
+        return _Resp(json.dumps(s["raw_trace"]).encode(), req.full_url)
+    assert et.fetch_raw_trace("gnosis", s["hash"], opener=opener) == s["raw_trace"]
+    assert seen[0].full_url.startswith("https://api.blockscout.com/100/api/v2/transactions/")
+    assert seen[0].get_header("Authorization") == "Bearer proapi_" + "a" * 20
+    # keyless instances never get a Bearer header
+    monkeypatch.setattr(et, "_urlreq", type("U", (), {"Request": et._urlreq.Request, "urlopen": None}))
+    seen.clear()
+    et.fetch_raw_trace("eth", TX, opener=lambda r, timeout=None: (seen.append(r), _Resp(b"[]", r.full_url))[1])
+    assert seen[0].get_header("Authorization") is None
+
+
+def test_pro_rpc_allows_only_identity_methods_and_refuses_redirect_and_errors(monkeypatch):
+    monkeypatch.setenv("BLOCKSCOUT_PRO_API_KEY", "proapi_" + "b" * 20)
+    with pytest.raises(ti.TraceIdentityError):
+        et.pro_rpc("gnosis", "debug_traceTransaction", [], opener=lambda r, timeout=None: _Resp(b"{}", r.full_url))
+    with pytest.raises(ti.TraceIdentityError):
+        et.pro_rpc("eth", "eth_chainId", [], opener=lambda r, timeout=None: _Resp(b"{}", r.full_url))
+    with pytest.raises(ti.TraceIdentityError):
+        et.pro_rpc("gnosis", "eth_chainId", [], opener=lambda r, timeout=None: _Resp(b'{"result":"0x64"}', "https://evil.example/x"))
+    with pytest.raises(ti.TraceIdentityError):
+        et.pro_rpc("gnosis", "eth_chainId", [], opener=lambda r, timeout=None: _Resp(b'{"error":{"code":-1}}', r.full_url))
+    assert et.pro_rpc("gnosis", "eth_chainId", [], opener=lambda r, timeout=None: _Resp(b'{"result":"0x64"}', r.full_url)) == "0x64"
+
+
+def test_wired_direct_mode_on_pro_chain_reads_identity_through_the_pro_gateway(monkeypatch, tmp_path):
+    s = PRO["gnosis"]
+    m, runtime, rep, calls = _install(monkeypatch, tmp_path, None, None)
+    pro_calls = []
+    def fake_pro(chain, method, params, opener=None):
+        pro_calls.append((chain, method))
+        return {"eth_getTransactionByHash": s["tx"], "eth_chainId": hex(s["chain_id"])}[method]
+    monkeypatch.setattr(m, "pro_rpc", fake_pro)
+    monkeypatch.setattr(m, "payload_from_explorer", lambda c, h, tx, cid: et.payload_from_explorer(c, h, tx, cid, fetch=lambda *a: copy.deepcopy(s["raw_trace"])))
+    monkeypatch.setenv("FAULTSEEKER_EXPLORER_TRACE", "direct")
+    runtime.install()
+    try:
+        payload = rep.TransactionReplayer.get_structured_trace(object(), s["hash"], "gnosis")
+        assert payload["trace_provenance"]["source"] == "explorer_raw_trace"
+        assert payload["trace_provenance"]["completeness_proven"] is False
+        assert calls == []                                       # the console RPC registry was never used
+        assert sorted(m_ for _, m_ in pro_calls) == ["eth_chainId", "eth_getTransactionByHash"]
     finally:
         runtime.close()
