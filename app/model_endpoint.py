@@ -136,7 +136,12 @@ class ModelEndpointSession:
             deadline=deadline if deadline is not None else self.clock() + max(0.1, float(timeout)))
 
     def call(self, factory, kwargs, model, phase="analysis", deadline=None):
+        queued_at = self.clock()
         with self.lock:
+            lock_acquired = self.clock()
+            queue_wait = max(0.0, lock_acquired - queued_at)
+            self.emit({"state": "model_request_started", "phase": phase, "model": model,
+                       "queue_wait_seconds": round(queue_wait, 3)})
             self.assert_healthy()
             retry_number = 0
             last_error = None
@@ -150,6 +155,7 @@ class ModelEndpointSession:
                 client = None
                 pool = None
                 error = None
+                attempt_number = None
                 try:
                     if model not in self.model_routes and self.route_policy is not None:
                         route, keys = self.route_policy(model)
@@ -171,8 +177,9 @@ class ModelEndpointSession:
                         options["api_key"] = pool["active"]
                     bounded = client.with_options(**options)
                     self.attempts += 1
+                    attempt_number = self.attempts
                     self.emit({"state": "waiting_on_model_endpoint", "phase": phase,
-                               "attempt": self.attempts, "model": model,
+                               "attempt": attempt_number, "model": model,
                                "retry_in_seconds": 0})
                     completion = bounded.chat.completions.create(**adapt_request(model, kwargs))
                     choices = getattr(completion, "choices", None)
@@ -188,6 +195,12 @@ class ModelEndpointSession:
                         client.close()
                 phase_calls = self.calls.setdefault(phase, {"ok": 0, "failed": 0})
                 phase_calls["failed" if error is not None else "ok"] += 1
+                self.emit({"state": "model_request_attempt", "phase": phase, "model": model,
+                           "attempt": attempt_number,
+                           "elapsed_seconds": round(max(0.0, self.clock() - started), 3),
+                           "outcome": "failed" if error is not None else "ok",
+                           "error_kind": error.kind if error is not None else None,
+                           "http_status": error.status_code if error is not None else None})
                 if error is not None:
                     last_error = error
                 if self.spent > self.time_budget:
