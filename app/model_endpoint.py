@@ -133,11 +133,13 @@ class ModelEndpointSession:
         # shared circuit or misreport a transport-budget exhaustion.
         return ModelEndpointFailure("request_deadline_exceeded", phase=phase)
 
-    def _deadline_or_budget_failure(self, phase):
+    def _deadline_or_budget_failure(self, phase, deadline=None, last_error=None):
         with self.state_lock:
             exhausted = self.spent >= self.time_budget
         if exhausted:
             self._fail(ModelEndpointFailure("budget_exhausted", phase=phase))
+        if phase == "preflight":
+            self._fail(self._out_of_time(phase, deadline, last_error))
         raise self._local_deadline_failure(phase)
 
     def _out_of_time(self, phase, deadline, last_error):
@@ -206,7 +208,7 @@ class ModelEndpointSession:
                         raise self.failure
                     now = self.clock()
                     if now >= request_deadline:
-                        self._deadline_or_budget_failure(phase)
+                        self._deadline_or_budget_failure(phase, request_deadline, last_error)
                     available = self.time_budget - self.spent - self.reserved
                     if available > 0:
                         break
