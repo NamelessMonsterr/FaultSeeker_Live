@@ -4,8 +4,10 @@ The explorer supplies only the call tree. Transaction and block identity must co
 separate standard JSON-RPC eth_getTransactionByHash result, and the trace root has to match it
 (from, to, input). No trace row is produced if any of that fails.
 """
+import json as _json
 import os
 import re
+import urllib.request as _urlreq
 
 try:
     from .trace_identity import TraceIdentityError
@@ -113,8 +115,6 @@ def rows_from_calltracer(tree, tx, tx_hash, chain_id=None):
 
 
 # ---- keyless fetch + pipeline payload -------------------------------------------------------
-import json as _json
-import urllib.request as _urlreq
 
 EXPLORER_TRACE_INSTANCES = {"eth": ("https://eth.blockscout.com", 1), "optimism": ("https://explorer.optimism.io", 10),
                             "aurora": ("https://explorer.aurora.dev", 1313161554)}
@@ -125,6 +125,15 @@ PRO_CHAINS = {"scroll": 534352, "gnosis": 100, "celo": 42220}
 EXPLORER_TRACE_INSTANCES.update({name: (f"{PRO_HOST}/{cid}", cid) for name, cid in PRO_CHAINS.items()})
 _MAX_BYTES = 2_000_000
 _TX = re.compile(r"0x[0-9a-fA-F]{64}")
+
+
+class _NoRedirect(_urlreq.HTTPRedirectHandler):
+    """Refuse every redirect before urllib can replay the request (and its Authorization header) elsewhere."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise TraceIdentityError("Blockscout PRO API redirected; refusing to forward the credential.")
+
+
+_pro_open = _urlreq.build_opener(_NoRedirect).open
 
 
 def _pro_key():
@@ -144,7 +153,7 @@ def pro_rpc(chain, method, params, opener=None):
         "User-Agent": "faultseeker-console/1", "Content-Type": "application/json", "Accept": "application/json",
         "Authorization": "Bearer " + _pro_key()})
     try:
-        with (opener or _urlreq.urlopen)(request, timeout=20) as response:
+        with (opener or _pro_open)(request, timeout=20) as response:
             if not str(response.geturl()).startswith(PRO_HOST + "/"):
                 raise TraceIdentityError("PRO gateway redirected to an unverified host.")
             data = response.read(_MAX_BYTES + 1)
@@ -169,7 +178,7 @@ def fetch_raw_trace(chain, tx_hash, opener=None):
         headers["Authorization"] = "Bearer " + _pro_key()
     request = _urlreq.Request(url, headers=headers)
     try:
-        with (opener or _urlreq.urlopen)(request, timeout=20) as response:
+        with (opener or (_pro_open if chain in PRO_CHAINS else _urlreq.urlopen))(request, timeout=20) as response:
             if not str(response.geturl()).startswith(base + "/"):
                 raise TraceIdentityError("Explorer redirected to an unverified host.")
             data = response.read(_MAX_BYTES + 1)
@@ -210,7 +219,7 @@ def payload_from_explorer(chain, tx_hash, tx, rpc_chain_id, fetch=fetch_raw_trac
         for i in loc:
             node = node["children"][i]
         node["error"] = next(r["error"] for r in rows if r["traceAddress"] == loc)
-    provenance = {**seq["trace_provenance"], "source": "explorer_raw_trace", "explorer": EXPLORER_TRACE_INSTANCES[chain][0],
+    provenance = {**seq["trace_provenance"], "source": "explorer_raw_trace", "trace_provider": "blockscout_pro_api" if chain in PRO_CHAINS else "blockscout_instance_keyless", "explorer": EXPLORER_TRACE_INSTANCES[chain][0],
                   "identity_cross_check": "eth_getTransactionByHash + eth_chainId",
                   "frame_errors": len(errored), "frame_error_locations": errored,
                   "completeness": ("explorer-reported; parity subtrace counts and child indexes verified consistent" if isinstance(raw, list)

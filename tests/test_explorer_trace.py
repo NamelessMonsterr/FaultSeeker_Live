@@ -417,3 +417,85 @@ def test_aurora_is_keyless_and_never_sends_a_bearer_header(monkeypatch):
     assert seen[0].full_url.startswith("https://explorer.aurora.dev/api/v2/transactions/")
     assert seen[0].get_header("Authorization") is None
     assert "aurora" not in et.PRO_CHAINS
+
+
+def test_flag_off_or_normal_trace_never_uses_the_pro_gateway_for_identity(monkeypatch, tmp_path):
+    s = PRO["gnosis"]
+    m, runtime, rep, calls = _install(monkeypatch, tmp_path, copy.deepcopy(s["tx"]), hex(s["chain_id"]))
+    pro_calls = []
+    monkeypatch.setattr(m, "pro_rpc", lambda *a, **k: pro_calls.append(a) or (_ for _ in ()).throw(AssertionError("PRO gateway used")))
+    runtime.install()
+    try:
+        monkeypatch.delenv("FAULTSEEKER_EXPLORER_TRACE", raising=False)
+        with pytest.raises(RuntimeError, match="no rpc trace"):      # flag off: unchanged behaviour, original error
+            rep.TransactionReplayer.get_structured_trace(object(), s["hash"], "gnosis")
+        assert pro_calls == [] and calls == []
+    finally:
+        runtime.close()
+    # flag "1" with a normal RPC trace that works: identity comes from the console registry, labelled as such
+    m, runtime, rep, calls = _install(monkeypatch, tmp_path, copy.deepcopy(s["tx"]), hex(s["chain_id"]))
+    good = et.payload_from_explorer("gnosis", s["hash"], copy.deepcopy(s["tx"]), s["chain_id"], fetch=lambda *a: copy.deepcopy(s["raw_trace"]))
+    def working(self, tx_hash, chain):
+        return copy.deepcopy(good)
+    monkeypatch.setattr(rep.TransactionReplayer, "get_structured_trace", working)
+    monkeypatch.setattr(m, "pro_rpc", lambda *a, **k: (_ for _ in ()).throw(AssertionError("PRO gateway used")))
+    monkeypatch.setenv("FAULTSEEKER_EXPLORER_TRACE", "1")
+    runtime.install()
+    try:
+        payload = rep.TransactionReplayer.get_structured_trace(object(), s["hash"], "gnosis")
+        assert sorted(calls) == ["eth_chainId", "eth_getTransactionByHash"]
+        assert payload["trace_provenance"]["identity_source"] == "console_rpc_registry"
+    finally:
+        runtime.close()
+
+
+def test_pro_identity_is_labelled_as_same_provider_and_registry_identity_as_independent(monkeypatch, tmp_path):
+    s = PRO["gnosis"]
+    m, runtime, rep, calls = _install(monkeypatch, tmp_path, None, None)
+    monkeypatch.setattr(m, "pro_rpc", lambda chain, method, params, opener=None: {"eth_getTransactionByHash": s["tx"], "eth_chainId": hex(s["chain_id"])}[method])
+    monkeypatch.setattr(m, "payload_from_explorer", lambda c, h, tx, cid: et.payload_from_explorer(c, h, tx, cid, fetch=lambda *a: copy.deepcopy(s["raw_trace"])))
+    monkeypatch.setenv("FAULTSEEKER_EXPLORER_TRACE", "direct")
+    runtime.install()
+    try:
+        prov = rep.TransactionReplayer.get_structured_trace(object(), s["hash"], "gnosis")["trace_provenance"]
+        assert prov["identity_source"] == "blockscout_pro_json_rpc"
+        assert prov["identity_independent_of_trace_source"] is False
+        assert prov["trace_provider"] == "blockscout_pro_api"
+    finally:
+        runtime.close()
+    m, runtime, rep, calls = _install(monkeypatch, tmp_path, copy.deepcopy(ETH_TX), "0x1")
+    monkeypatch.setattr(m, "payload_from_explorer", lambda c, h, tx, cid: et.payload_from_explorer(c, h, tx, cid, fetch=lambda *a: copy.deepcopy(BS_ETH)))
+    monkeypatch.setenv("FAULTSEEKER_EXPLORER_TRACE", "direct")
+    runtime.install()
+    try:
+        prov = rep.TransactionReplayer.get_structured_trace(object(), TX, "eth")["trace_provenance"]
+        assert prov["identity_source"] == "console_rpc_registry"
+        assert prov["identity_independent_of_trace_source"] is True
+        assert prov["trace_provider"] == "blockscout_instance_keyless"
+    finally:
+        runtime.close()
+
+
+def test_pro_default_opener_refuses_real_redirects_before_the_credential_is_replayed():
+    import http.server, threading
+    hits = {"second": []}
+    class Second(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            hits["second"].append(self.headers.get("Authorization"))
+            self.send_response(200); self.end_headers(); self.wfile.write(b"[]")
+        log_message = lambda *a: None
+    second = http.server.HTTPServer(("127.0.0.1", 0), Second)
+    class First(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(302); self.send_header("Location", f"http://127.0.0.1:{second.server_port}/x"); self.end_headers()
+        log_message = lambda *a: None
+    first = http.server.HTTPServer(("127.0.0.1", 0), First)
+    for srv in (first, second):
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        req = et._urlreq.Request(f"http://127.0.0.1:{first.server_port}/", headers={"Authorization": "Bearer proapi_" + "c" * 20})
+        with pytest.raises(ti.TraceIdentityError):
+            et._pro_open(req, timeout=5)
+        assert hits["second"] == []                  # the redirect target never received the request or the header
+    finally:
+        first.shutdown(); second.shutdown()

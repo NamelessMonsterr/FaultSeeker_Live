@@ -128,7 +128,10 @@ class PipelineRuntime:
                     if mode != "1" or chain not in EXPLORER_CHAINS:
                         raise
                     trace_error = exc
-            read = (lambda method, params: pro_rpc(chain, method, params)) if chain in PRO_CHAINS else (lambda method, params: rpc_call(chain, method, params, timeout=15))
+            # The PRO gateway is used for identity only when the explorer path is actually engaged (payload is None here);
+            # a normal RPC trace, or the flag being off, keeps reading the console RPC registry.
+            use_pro = payload is None and chain in PRO_CHAINS
+            read = (lambda method, params: pro_rpc(chain, method, params)) if use_pro else (lambda method, params: rpc_call(chain, method, params, timeout=15))
             tx = read("eth_getTransactionByHash", [tx_hash])
             network = read("eth_chainId", [])
             try:
@@ -157,6 +160,8 @@ class PipelineRuntime:
                 **(payload.get("trace_provenance") or {}),
                 "source": (payload.get("trace_provenance") or {}).get("source", "structured_rpc_or_cache"),
                 "identity_cross_check": "eth_getTransactionByHash + eth_chainId",
+                "identity_source": "blockscout_pro_json_rpc" if use_pro else "console_rpc_registry",
+                "identity_independent_of_trace_source": not use_pro,
                 "transaction_hash": tx_hash.lower(), "chain": chain,
                 "block_hash": tx.get("blockHash"), "block_number": tx.get("blockNumber"),
                 "function_identity": "calldata_selector", "abi_verified": False}
