@@ -133,6 +133,13 @@ class ModelEndpointSession:
         # shared circuit or misreport a transport-budget exhaustion.
         return ModelEndpointFailure("request_deadline_exceeded", phase=phase)
 
+    def _deadline_or_budget_failure(self, phase):
+        with self.state_lock:
+            exhausted = self.spent >= self.time_budget
+        if exhausted:
+            self._fail(ModelEndpointFailure("budget_exhausted", phase=phase))
+        raise self._local_deadline_failure(phase)
+
     def _out_of_time(self, phase, deadline, last_error):
         with self.state_lock:
             budget_left = self.time_budget - self.spent
@@ -199,7 +206,7 @@ class ModelEndpointSession:
                         raise self.failure
                     now = self.clock()
                     if now >= request_deadline:
-                        raise self._local_deadline_failure(phase)
+                        self._deadline_or_budget_failure(phase)
                     available = self.time_budget - self.spent - self.reserved
                     if available > 0:
                         break
@@ -222,7 +229,7 @@ class ModelEndpointSession:
                     left = request_deadline - now
                     reservation = min(self.call_timeout, available, left)
                     if reservation <= 0:
-                        raise self._local_deadline_failure(phase)
+                        self._deadline_or_budget_failure(phase)
                     self.reserved += reservation
                     attempt_number = None
             if exhausted:
@@ -250,7 +257,7 @@ class ModelEndpointSession:
                         now = self.clock()
                         until_deadline = request_deadline - now
                         if until_deadline <= 0:
-                            raise self._local_deadline_failure(phase)
+                            self._deadline_or_budget_failure(phase)
                         available = self.time_budget - self.spent - self.reserved
                         if available > 0:
                             reservation = min(reservation, available, until_deadline)
@@ -262,7 +269,7 @@ class ModelEndpointSession:
                         self.condition.wait(timeout=until_deadline)
                 remaining = min(reservation, request_deadline - self.clock())
                 if remaining <= 0:
-                    raise self._local_deadline_failure(phase)
+                    self._deadline_or_budget_failure(phase)
                 options = {"max_retries": 0, "timeout": remaining}
                 if route:
                     options["base_url"] = route
@@ -331,7 +338,7 @@ class ModelEndpointSession:
                 if deadline_exceeded:
                     if phase == "preflight":
                         self._fail(self._out_of_time(phase, request_deadline, None))
-                    raise self._local_deadline_failure(phase)
+                    self._deadline_or_budget_failure(phase)
                 self.emit({"state": "model_endpoint_ready", "phase": phase,
                            "model": model, "attempts": attempts})
                 return completion
@@ -349,7 +356,7 @@ class ModelEndpointSession:
             if now >= request_deadline:
                 if phase == "preflight":
                     self._fail(self._out_of_time(phase, request_deadline, last_error))
-                raise self._local_deadline_failure(phase)
+                self._deadline_or_budget_failure(phase)
             with self.state_lock:
                 budget_left = self.time_budget - self.spent - self.reserved
                 if budget_left <= 0:
@@ -450,7 +457,7 @@ class ModelEndpointSession:
                     self._fail(self._out_of_time(phase, request_deadline, last_error))
                 if budget_exhausted:
                     self._fail(ModelEndpointFailure("budget_exhausted", phase=phase))
-                raise self._local_deadline_failure(phase)
+                self._deadline_or_budget_failure(phase)
             self.emit({"state": "waiting_on_model_endpoint", **error.as_dict(),
                        "attempt": attempts, "model": model,
                        "retry_in_seconds": delay, "retries_remaining": self.retries_left})
