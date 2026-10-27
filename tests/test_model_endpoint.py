@@ -224,7 +224,7 @@ def test_concurrent_retry_reservations_are_atomic_and_bounded():
         worker.join(timeout=6)
     assert all(not worker.is_alive() for worker in workers), "concurrent retries did not finish"
     assert len(requests) == 4
-    assert outcomes == [("ok", "OK"), ("ok", "OK")] or outcomes == [("ok", "OK"), ("ok", "OK")]
+    assert len(outcomes) == 2 and all(outcome == ("ok", "OK") for outcome in outcomes)
     assert session.retries_left == 0
     assert session.failure is None
     assert reservations and max(reservations) <= session.time_budget
