@@ -458,6 +458,68 @@ def test_valid_completion_at_shared_time_boundary(elapsed, accepted):
 
 
 
+def test_explicit_tighter_deadline_does_not_trip_shared_budget_on_retry_after():
+    m, session, factory, calls, _, clock = setup([
+        httpx.Response(503, headers={"Retry-After": "99999"}, json={"error": "temporary"})])
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.call(factory, {"model": MODEL, "messages": []}, MODEL, deadline=1.0)
+    assert failure.value.kind == "request_deadline_exceeded"
+    assert len(calls) == 1 and clock.now == 0
+    assert session.failure is None
+
+
+def test_budget_overrun_is_sticky_and_blocks_inflight_success_commit():
+    m = importlib.import_module("app.model_endpoint")
+    local = threading.local()
+    slow_entered, terminal = threading.Event(), threading.Event()
+    requests, outcomes = [], []
+    def clock():
+        return getattr(local, "now", 0.0)
+    def emit(event):
+        if event.get("state") == "model_endpoint_failed":
+            terminal.set()
+    def handle(request):
+        message = json.loads(request.content)["messages"][0]["content"]
+        requests.append(message)
+        if message == "inflight-success":
+            slow_entered.set()
+            if not terminal.wait(timeout=3):
+                raise AssertionError("over-budget finalizer did not trip the circuit")
+            return httpx.Response(200, json=OK)
+        if not slow_entered.wait(timeout=3):
+            raise AssertionError("success request did not become in-flight")
+        local.now = 75.0
+        return httpx.Response(503, text="private upstream failure")
+    def factory():
+        return OpenAI(api_key="test-secret-never-output", base_url="https://model.invalid/v1",
+                      http_client=httpx.Client(transport=httpx.MockTransport(handle)))
+    session = m.ModelEndpointSession(emit=emit, time_budget=60, call_timeout=20, clock=clock)
+    def invoke(message):
+        try:
+            result = session.call(factory, {"model": MODEL, "messages": [
+                {"role": "user", "content": message}]}, MODEL)
+            outcomes.append((message, "ok", result.choices[0].message.content))
+        except Exception as exc:
+            outcomes.append((message, "error", exc))
+    slow = threading.Thread(target=invoke, args=("inflight-success",))
+    overrun = threading.Thread(target=invoke, args=("overrun",))
+    slow.start()
+    overrun.start()
+    for worker in (slow, overrun):
+        worker.join(timeout=5)
+    assert not slow.is_alive() and not overrun.is_alive()
+    assert len(requests) == 2
+    assert session.spent == 75.0
+    assert session.summary()["failure"]["kind"] == "budget_exhausted"
+    assert not any(item[0] == "inflight-success" and item[1] == "ok" for item in outcomes)
+    before = len(requests)
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.call(factory, {"model": MODEL, "messages": [
+            {"role": "user", "content": "must-not-start"}]}, MODEL)
+    assert failure.value.kind == "budget_exhausted"
+    assert len(requests) == before == 2
+
+
 def test_preflight_cold_start_retries_past_retry_limit():
     # A waking endpoint that 502s more often than the analysis retry allowance
     # must still get its full preflight window to become ready.
