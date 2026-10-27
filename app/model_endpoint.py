@@ -147,9 +147,10 @@ class ModelEndpointSession:
         with self.state_lock:
             budget_left = self.time_budget - self.spent
         deadline_left = (deadline - self.clock()) if deadline is not None else None
-        if (phase == "preflight" and last_error is not None
-                and deadline_left is not None and deadline_left <= budget_left):
-            return last_error
+        if (deadline_left is not None and deadline_left <= budget_left):
+            if phase == "preflight" and last_error is not None:
+                return last_error
+            return ModelEndpointFailure("request_deadline_exceeded", phase=phase)
         return ModelEndpointFailure("budget_exhausted", phase=phase)
 
     def preflight(self, factory, model, timeout=20, deadline=None):
