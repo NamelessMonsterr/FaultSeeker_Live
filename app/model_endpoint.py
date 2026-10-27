@@ -285,7 +285,13 @@ class ModelEndpointSession:
                 with self.state_lock:
                     if self.failure is not None:
                         raise self.failure
-                    self._count_tokens(completion)
+                    deadline_exceeded = self.clock() > request_deadline
+                    if not deadline_exceeded:
+                        self._count_tokens(completion)
+                if deadline_exceeded:
+                    if phase == "preflight":
+                        self._fail(self._out_of_time(phase, request_deadline, None))
+                    raise self._local_deadline_failure(phase)
                 self.emit({"state": "model_endpoint_ready", "phase": phase,
                            "model": model, "attempts": attempts})
                 return completion
