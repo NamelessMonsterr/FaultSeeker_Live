@@ -1,6 +1,7 @@
 """Transport-only tests. All model HTTP is intercepted by MockTransport."""
 import importlib
 import json
+import threading
 import types
 
 import httpx
@@ -68,6 +69,50 @@ def test_timeout_is_bounded_and_classified():
     assert failure.value.kind == "timeout"
     assert len(calls) == 7 and clock.now < 20  # deadline-bounded, not count-bounded
     assert "SECRET" not in str(failure.value)
+
+
+def test_expired_absolute_deadline_fails_before_factory_or_network():
+    m, session, factory, calls, _, clock = setup([])
+    made = []
+    def forbidden_factory():
+        made.append(True)
+        return factory()
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.call(forbidden_factory, {"model": MODEL, "messages": []}, MODEL,
+                     deadline=clock.now)
+    assert failure.value.kind == "budget_exhausted"
+    assert made == [] and calls == []
+
+
+def test_contended_admission_times_out_without_network():
+    m, session, factory, calls, _, _ = setup([], admission_timeout=0)
+    made, errors = [], []
+    def forbidden_factory():
+        made.append(True)
+        return factory()
+    def invoke():
+        try:
+            session.call(forbidden_factory, {"model": MODEL, "messages": []}, MODEL)
+        except Exception as exc:
+            errors.append(exc)
+
+    # Hold the actual admission lock in this thread; the worker's zero-timeout
+    # acquire deterministically fails without a timing-sensitive sleep.
+    session.lock.acquire()
+    worker = threading.Thread(target=invoke)
+    try:
+        worker.start()
+        worker.join(timeout=2)
+        assert not worker.is_alive(), "admission did not honor its zero wait bound"
+    finally:
+        session.lock.release()
+        if worker.is_alive():
+            worker.join(timeout=2)
+    assert len(errors) == 1
+    assert isinstance(errors[0], m.ModelEndpointFailure)
+    assert errors[0].kind == "budget_exhausted"
+    assert made == [] and calls == []
+    assert session.failure is errors[0]
 
 
 def test_recovery_keeps_model_and_does_not_reset_shared_retry_allowance():
