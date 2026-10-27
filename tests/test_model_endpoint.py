@@ -519,6 +519,19 @@ def test_explicit_tighter_deadline_does_not_trip_shared_budget_on_retry_after():
     assert session.failure is None
 
 
+def test_tighter_preflight_deadline_preserves_current_upstream_error():
+    m, session, factory, calls, events, clock = setup([
+        httpx.Response(503, headers={"Retry-After": "99999"}, text="private upstream failure")])
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.preflight(factory, MODEL, timeout=20, deadline=1.0)
+    assert failure.value.kind == "upstream_http"
+    assert failure.value.status_code == 503
+    assert failure.value.phase == "preflight"
+    assert len(calls) == 1 and clock.now == 0
+    assert session.failure is not None and session.failure.kind == "upstream_http"
+    assert "private upstream failure" not in json.dumps(events)
+
+
 def test_budget_overrun_is_sticky_and_blocks_inflight_success_commit():
     m = importlib.import_module("app.model_endpoint")
     local = threading.local()
