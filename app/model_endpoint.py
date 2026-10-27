@@ -237,7 +237,7 @@ class ModelEndpointSession:
                     left = request_deadline - now
                     reservation = min(self.call_timeout, available, left)
                     if reservation <= 0:
-                        self._deadline_or_budget_failure(phase, request_deadline, last_error)
+                        self._deadline_or_budget_failure(phase, request_deadline, last_error, explicit_tighter)
                     self.reserved += reservation
                     attempt_number = None
             if exhausted:
@@ -464,7 +464,8 @@ class ModelEndpointSession:
                     if self.reserved > 0:
                         self.condition.wait(timeout=max(0.0, until_deadline))
                         continue
-                    should_fail = available <= 0 or (delay >= available and not explicit_tighter)
+                    budget_exhausted = available <= 0 or (delay >= available and not explicit_tighter)
+                    should_fail = True
                     break
             if should_fail:
                 if phase == "preflight":
