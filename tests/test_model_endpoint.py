@@ -89,10 +89,13 @@ def test_waiting_worker_is_not_failed_by_a_synthetic_admission_timeout():
     entered, release = threading.Event(), threading.Event()
     requests, outcomes = [], []
     def handle(request):
-        requests.append(request)
-        entered.set()
-        if not release.wait(timeout=3):
-            raise AssertionError("test did not release mocked transport")
+        body = json.loads(request.content)
+        message = body["messages"][0]["content"]
+        requests.append(message)
+        if message == "slow":
+            entered.set()
+            if not release.wait(timeout=3):
+                raise AssertionError("test did not release mocked transport")
         return httpx.Response(200, json=OK)
     def factory():
         return OpenAI(api_key="test-secret-never-output", base_url="https://model.invalid/v1",
@@ -100,7 +103,8 @@ def test_waiting_worker_is_not_failed_by_a_synthetic_admission_timeout():
     session = m.ModelEndpointSession(admission_timeout=0, time_budget=30, call_timeout=5)
     def first_call():
         try:
-            outcomes.append(("first", session.call(factory, {"model": MODEL, "messages": []}, MODEL)))
+            outcomes.append(("first", session.call(factory, {"model": MODEL, "messages": [
+                {"role": "user", "content": "slow"}]}, MODEL)))
         except Exception as exc:
             outcomes.append(("first-error", exc))
     worker = threading.Thread(target=first_call)
@@ -109,7 +113,8 @@ def test_waiting_worker_is_not_failed_by_a_synthetic_admission_timeout():
         assert entered.wait(timeout=2), "first mocked request never reached transport"
         # A second worker is allowed to enter once the short state lock is free;
         # it must not manufacture a terminal failure because the first is in HTTP.
-        result = session.call(factory, {"model": MODEL, "messages": []}, MODEL)
+        result = session.call(factory, {"model": MODEL, "messages": [
+            {"role": "user", "content": "quick"}]}, MODEL)
         assert result.choices[0].message.content == "OK"
     finally:
         release.set()
