@@ -35,7 +35,7 @@ class ModelEndpointFailure(RuntimeError):
     def as_dict(self):
         return {"kind": self.kind, "http_status": self.status_code,
                 "phase": self.phase, "message": str(self),
-                "scope": "credential" if self.kind in ("authentication", "rate_limited") else "endpoint"}
+                "scope": "credential" if self.kind == "authentication" else ("provider_limit" if self.kind == "rate_limited" else "endpoint")}
 
 
 def classify(error, phase):
