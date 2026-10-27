@@ -221,7 +221,7 @@ class ModelEndpointSession:
                 if deadline is not None and self.clock() >= deadline:
                     self._fail(self._out_of_time(phase, deadline, last_error))
                 next_key = None
-                if pool and len(pool["keys"]) > 1 and error.kind in ("authentication", "rate_limited"):
+                if pool and len(pool["keys"]) > 1 and error.kind == "authentication":
                     pool["rejected"].add(pool["active"])
                     next_key = next((key for key in pool["keys"] if key not in pool["rejected"]), None)
                     if next_key is None:
