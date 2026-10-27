@@ -50,7 +50,9 @@ def classify(error, phase):
     if status == 404:
         return ModelEndpointFailure("model_unavailable", status, phase), False
     if status == 429:
-        return ModelEndpointFailure("rate_limited", status, phase), True
+        # Usage/rate limits are an operator action, not a transient retry signal.
+        # Do not multiply a provider quota response into more requests.
+        return ModelEndpointFailure("rate_limited", status, phase), False
     if isinstance(status, int) and 500 <= status <= 599:
         return ModelEndpointFailure("upstream_http", status, phase), True
     if isinstance(status, int) and 400 <= status <= 499:
