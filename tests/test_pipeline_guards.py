@@ -251,7 +251,7 @@ def test_preflight_deadline_is_not_restarted_by_key_rotation(monkeypatch):
     runtime, calls, events, query = rotation_runtime(monkeypatch, [401, 200], seconds=11)
     with pytest.raises(ModelEndpointFailure) as failure:
         runtime.preflight(["gpt-6.1-sol-low"], timeout=20)
-    assert failure.value.kind == "budget_exhausted"
+    assert failure.value.kind == "request_deadline_exceeded"
     assert len(calls) == 2 and runtime.session.spent == 22
 
 
@@ -260,7 +260,7 @@ def test_second_model_cannot_start_after_shared_preflight_deadline(monkeypatch):
     runtime, calls, events, query = rotation_runtime(monkeypatch, [200, 200], seconds=20)
     with pytest.raises(ModelEndpointFailure) as failure:
         runtime.preflight(["gpt-6.1-sol-low", "gpt-6.1-sol-medium"], timeout=20)
-    assert failure.value.kind == "budget_exhausted"
+    assert failure.value.kind == "request_deadline_exceeded"
     assert len(calls) == 1 and runtime.session.spent == 20
 
 
