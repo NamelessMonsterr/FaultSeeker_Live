@@ -258,6 +258,23 @@ def test_preflight_key_rotation_stays_bounded_by_key_count():
     assert "SECRET" not in json.dumps(events)
 
 
+def test_analysis_rate_limit_stops_without_retry_or_key_rotation():
+    m, session, factory, calls, events, clock = setup([
+        httpx.Response(429, headers={"Retry-After": "1"}, json={"error": {"message": "quota"}}),
+        httpx.Response(200, json=OK),
+    ])
+    session.register_keys("https://model.invalid/v1", ["first-key", "second-key"], model=MODEL)
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.call(factory, {"model": MODEL, "messages": []}, MODEL)
+    assert failure.value.kind == "rate_limited"
+    assert len(calls) == 1
+    assert session.retries_left == 2
+    assert not any(e.get("key_rotation") for e in events)
+    assert "quota" not in json.dumps(events)
+    assert "first-key" not in json.dumps(events)
+    assert "second-key" not in json.dumps(events)
+
+
 def test_preflight_rate_limit_retry_after_beyond_deadline_stays_bounded():
     m, session, factory, calls, _, clock = setup(
         [httpx.Response(429, headers={"Retry-After": "99999"}, json={"error": "quota"})])
