@@ -1,3 +1,4 @@
+import os
 import importlib
 import json
 import types
@@ -336,6 +337,23 @@ def test_implicit_openai_model_cannot_escape_routing_policy(monkeypatch):
     assert len(calls) == 1
 
 
+@pytest.fixture
+def pinned_fork(monkeypatch, tmp_path):
+    """Independent pinned-fork sys.path; does not rely on other tests having imported faultseeker."""
+    import subprocess
+    from pathlib import Path
+    location = os.getenv("FAULTSEEKER_TEST_PIPELINE_REPO")
+    if not location:
+        pytest.skip("Exact pinned pipeline unavailable: set FAULTSEEKER_TEST_PIPELINE_REPO")
+    root = Path(__file__).resolve().parents[1]
+    pin = next(l.split("=", 1)[1] for l in (root / "Dockerfile").read_text().splitlines() if l.startswith("ARG FAULTSEEKER_SHA="))
+    assert subprocess.check_output(["git", "-C", location, "rev-parse", "HEAD"], text=True).strip() == pin
+    monkeypatch.syspath_prepend(location)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "true")
+    return location
+
+
 def _annotated(calls, fa_completed=1, **extra):
     from types import SimpleNamespace
     m = importlib.import_module("app.pipeline_guards")
@@ -373,7 +391,7 @@ def test_legitimate_empty_model_result_is_preserved():
     assert r["priority_basis"] == "heuristic_preanalysis_estimate"
 
 
-def test_itera_alias_routes_to_openai_compatible_agent_not_ollama(monkeypatch):
+def test_itera_alias_routes_to_openai_compatible_agent_not_ollama(pinned_fork, monkeypatch):
     monkeypatch.setenv("ITERA_API_KEY", "test-key-not-real")
     import sys
     agent = importlib.import_module("faultseeker.utils.agent")
@@ -388,7 +406,7 @@ def test_itera_alias_routes_to_openai_compatible_agent_not_ollama(monkeypatch):
         runtime.close()
 
 
-def test_provider_config_restored_even_when_run_raises(monkeypatch):
+def test_provider_config_restored_even_when_run_raises(pinned_fork, monkeypatch):
     from types import SimpleNamespace
     monkeypatch.setenv("ITERA_API_KEY", "test-key-not-real")
     agent = importlib.import_module("faultseeker.utils.agent")
@@ -407,37 +425,29 @@ def test_provider_config_restored_even_when_run_raises(monkeypatch):
     assert agent.PROVIDER_CONFIG is before and "itera/" not in agent.PROVIDER_CONFIG
 
 
-def _fake_itera(status=200):
-    """Local synthetic OpenAI-compatible endpoint. Offline fixture, not a real model."""
-    import json, threading
-    from http.server import BaseHTTPRequestHandler, HTTPServer
-    seen = []
-    class Handler(BaseHTTPRequestHandler):
-        def log_message(self, *a): pass
-        def do_POST(self):
-            body = json.loads(self.rfile.read(int(self.headers["content-length"])))
-            seen.append({"path": self.path, "auth": self.headers.get("authorization"), "body": body})
-            if status != 200:
-                self.send_response(status); self.end_headers(); self.wfile.write(b"x"); return
-            out = json.dumps({"id": "fx", "object": "chat.completion", "created": 0, "model": body["model"],
-                "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "{}"}}],
-                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}).encode()
-            self.send_response(200); self.send_header("content-type", "application/json"); self.end_headers(); self.wfile.write(out)
-    server = HTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    return server, seen
-
-
 @pytest.mark.parametrize("status,expect_status,expect_ok", [(200, "partial", 1), (400, "partial", 0)])
-def test_offline_fixture_real_factory_hook_phase_and_status_path(monkeypatch, status, expect_status, expect_ok):
+def test_offline_fixture_real_factory_hook_phase_and_status_path(pinned_fork, monkeypatch, status, expect_status, expect_ok):
     """SYNTHETIC OFFLINE FIXTURE: proves routing/hook/phase/status wiring only. Not model quality, not live chain proof."""
     from app.model_endpoint import ModelEndpointSession
     agent = importlib.import_module("faultseeker.utils.agent")
     m = importlib.import_module("app.pipeline_guards")
     identity = importlib.import_module("app.trace_identity")
-    server, seen = _fake_itera(status)
-    try:
-        monkeypatch.setenv("ITERA_BASE_URL", f"http://127.0.0.1:{server.server_port}/v1")
+    import httpx, json as _json
+    from openai import OpenAI
+    seen = []
+    def reply(request):
+        seen.append({"auth": request.headers.get("authorization"), "body": _json.loads(request.content)})
+        if status != 200:
+            return httpx.Response(status, text="x")
+        return httpx.Response(200, json={"id": "fx", "object": "chat.completion", "created": 0, "model": "m",
+            "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "{}"}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})
+    def factory(**kwargs):
+        kwargs.pop("http_client", None)
+        return OpenAI(**kwargs, http_client=httpx.Client(transport=httpx.MockTransport(reply)))
+    monkeypatch.setattr(agent, "OpenAI", factory)
+    if True:
+        monkeypatch.setenv("ITERA_BASE_URL", "https://itera-fixture.invalid/v1")
         monkeypatch.setenv("ITERA_API_KEY", "fixture-key-not-real")
         session = ModelEndpointSession(retry_limit=0, time_budget=30, call_timeout=5)
         runtime = m.PipelineRuntime(TX, "eth", session=session)
@@ -469,5 +479,3 @@ def test_offline_fixture_real_factory_hook_phase_and_status_path(monkeypatch, st
                 assert result["stage_completed"] == "forensics-only"
             else:
                 assert result["analysis_status"] == expect_status
-    finally:
-        server.shutdown()
