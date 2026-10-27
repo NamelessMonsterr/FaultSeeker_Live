@@ -450,7 +450,7 @@ class ModelEndpointSession:
                         self.condition.wait(timeout=max(0.0, until_deadline))
                         continue
                     should_fail = True
-                    budget_exhausted = available <= 0
+                    budget_exhausted = delay >= available
                     break
             if should_fail:
                 if phase == "preflight":
