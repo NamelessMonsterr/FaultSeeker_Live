@@ -285,7 +285,7 @@ class PipelineRuntime:
         self.restorers.clear()
 
 
-ITERA_DEFAULT_TIME_BUDGET_SECS = 2400.0   # measured Itera calls 7-56s; queued full flow needs >600s
+ITERA_DEFAULT_TIME_BUDGET_SECS = 6000.0   # forecast full flow exceeds 1h; stays under the cap below
 ITERA_MAX_TIME_BUDGET_SECS = 6600.0       # must stay under the 7200s DEMO_RUN_TIMEOUT_SECS wall cap
 
 

@@ -114,11 +114,11 @@ def test_itera_budget_is_route_specific_and_bounded(monkeypatch):
         monkeypatch.delenv(n, raising=False)
     assert model_time_budget(("gpt-6.1-sol-low", None)) == 600
     assert model_time_budget(()) == 600
-    assert model_time_budget(("itera/qwen3.8-27b",)) == 2400
+    assert model_time_budget(("itera/qwen3.8-27b",)) == 6000
     monkeypatch.setenv("FAULTSEEKER_ITERA_TIME_BUDGET_SECS", "999999")
     assert model_time_budget(("itera/qwen3.8-27b",)) == 6600
     monkeypatch.setenv("DEMO_RUN_TIMEOUT_SECS", "3000")
-    assert model_time_budget(("itera/qwen3.8-27b",)) == 2400
+    assert model_time_budget(("itera/qwen3.8-27b",)) == 6000
     assert model_time_budget(("gpt-6.1-sol-low",)) == 600
 
 
