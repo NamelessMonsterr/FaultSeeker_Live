@@ -267,6 +267,7 @@ def test_analysis_rate_limit_stops_without_retry_or_key_rotation():
     with pytest.raises(m.ModelEndpointFailure) as failure:
         session.call(factory, {"model": MODEL, "messages": []}, MODEL)
     assert failure.value.kind == "rate_limited"
+    assert failure.value.as_dict()["scope"] == "provider_limit"
     assert len(calls) == 1
     assert session.retries_left == 2
     assert not any(e.get("key_rotation") for e in events)
