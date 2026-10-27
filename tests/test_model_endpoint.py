@@ -115,6 +115,46 @@ def test_contended_admission_times_out_without_network():
     assert session.failure is errors[0]
 
 
+def test_admission_failure_wins_race_against_inflight_success():
+    m = importlib.import_module("app.model_endpoint")
+    entered, release = threading.Event(), threading.Event()
+    requests, events, outcomes = [], [], []
+    def handle(request):
+        requests.append(request)
+        entered.set()
+        if not release.wait(timeout=3):
+            raise AssertionError("test did not release mocked transport")
+        return httpx.Response(200, json=OK)
+    def factory():
+        return OpenAI(api_key="test-secret-never-output", base_url="https://model.invalid/v1",
+                      http_client=httpx.Client(transport=httpx.MockTransport(handle)))
+    session = m.ModelEndpointSession(emit=events.append, admission_timeout=0,
+                                     time_budget=30, call_timeout=5)
+    def first_call():
+        try:
+            outcomes.append(("success", session.call(factory, {"model": MODEL, "messages": []}, MODEL)))
+        except Exception as exc:
+            outcomes.append(("error", exc))
+
+    worker = threading.Thread(target=first_call)
+    worker.start()
+    try:
+        assert entered.wait(timeout=2), "first mocked request never reached transport"
+        with pytest.raises(m.ModelEndpointFailure) as queued:
+            session.call(lambda: pytest.fail("queued request must not build a client"),
+                         {"model": MODEL, "messages": []}, MODEL)
+        assert queued.value.kind == "budget_exhausted"
+    finally:
+        release.set()
+        worker.join(timeout=3)
+    assert not worker.is_alive()
+    assert len(requests) == 1
+    assert len(outcomes) == 1 and outcomes[0][0] == "error"
+    assert outcomes[0][1] is queued.value
+    assert session.failure is queued.value
+    assert not any(event.get("state") == "model_endpoint_ready" for event in events)
+
+
 def test_recovery_keeps_model_and_does_not_reset_shared_retry_allowance():
     # Preflight retries are bounded by their deadline, not the shared allowance,
     # so the analysis call below still has all of it (3 attempts, 3 failures).
