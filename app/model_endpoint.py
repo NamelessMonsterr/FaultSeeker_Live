@@ -137,7 +137,7 @@ class ModelEndpointSession:
                                     explicit_tighter=False):
         with self.state_lock:
             exhausted = self.spent >= self.time_budget
-        if exhausted or not explicit_tighter:
+        if exhausted:
             self._fail(ModelEndpointFailure("budget_exhausted", phase=phase))
         if phase == "preflight" and last_error is not None:
             self._fail(last_error)
