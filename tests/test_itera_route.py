@@ -126,7 +126,7 @@ def test_selftest_uses_adapted_payload(monkeypatch):
     import app.server as srv
     seen = {}
     class C:
-        def __init__(self, **k): pass
+        def __init__(self, **k): seen['timeout'] = k.get('timeout')
         class chat:
             class completions:
                 @staticmethod
@@ -150,3 +150,4 @@ def test_selftest_uses_adapted_payload(monkeypatch):
     assert seen["model"] == "qwen/qwen3.8-27b"
     assert seen["extra_body"] == {"reasoning_effort": "none"}
     assert out["keys"][0]["ok"] is True
+    assert seen["timeout"] == 120

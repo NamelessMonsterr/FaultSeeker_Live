@@ -626,7 +626,7 @@ def llm_selftest(model: str = "gemini-3.8-flash", max_keys: int = 1,
     for i, k in enumerate(keys[:min(max(1, max_keys), 3)]):
         client = None
         try:
-            client = _oai.OpenAI(api_key=k, base_url=base_url, timeout=30, max_retries=0)
+            client = _oai.OpenAI(api_key=k, base_url=base_url, timeout=(120 if model.startswith("itera/") else 30), max_retries=0)
             r = client.chat.completions.create(**adapt_request(model, dict(
                 model=model,
                 messages=[{"role": "user", "content": "Reply with the single word: ok"}],
