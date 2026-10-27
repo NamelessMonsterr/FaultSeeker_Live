@@ -59,15 +59,25 @@ def check_structured(payload, tx_hash, chain):
 
 def sequence_from_parity(rows, tx_hash, chain, verified_chain="eth"):
     """Convert real trace_transaction frames while verifying hash/block provenance."""
-    if chain != verified_chain or not rows:
+    if chain != verified_chain or not isinstance(rows, list) or not rows:
         raise TraceIdentityError("Trace chain does not match requested chain.")
-    block_hash = rows[0].get("blockHash")
+    block_hash = rows[0].get("blockHash") if isinstance(rows[0], dict) else None
+    if not isinstance(block_hash, str) or not re.fullmatch(r"0x[0-9a-fA-F]{64}", block_hash):
+        raise TraceIdentityError("Trace block provenance is missing or malformed.")
     nodes = {}
     for row in rows:
-        if row.get("transactionHash", "").lower() != tx_hash.lower() or row.get("blockHash") != block_hash:
+        if not isinstance(row, dict):
+            raise TraceIdentityError("Trace row is malformed.")
+        row_hash = row.get("transactionHash")
+        if not isinstance(row_hash, str) or row_hash.lower() != tx_hash.lower() or row.get("blockHash") != block_hash:
             raise TraceIdentityError("Trace transaction or block provenance does not match.")
-        action = row.get("action", {})
-        location = tuple(row["traceAddress"])
+        action = row.get("action")
+        location_value = row.get("traceAddress")
+        if not isinstance(action, dict) or not isinstance(location_value, list) or any(type(i) is not int or i < 0 for i in location_value):
+            raise TraceIdentityError("Trace frame action or location is malformed.")
+        location = tuple(location_value)
+        if location in nodes:
+            raise TraceIdentityError("Trace contains a duplicate frame location.")
         nodes[location] = {"callee": action.get("to"), "caller": action.get("from"),
                            "input": action.get("input", "0x"), "gas": action.get("gas"),
                            "value": action.get("value"), "call_type": action.get("callType", row.get("type")),
