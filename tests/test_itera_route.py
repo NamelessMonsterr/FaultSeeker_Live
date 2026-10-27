@@ -106,3 +106,47 @@ def test_empty_answer_is_a_failure_not_a_result():
 def test_itera_model_is_listed_with_its_own_credential_env():
     server_src = open("app/server.py", encoding="utf-8").read()
     assert '"id": "itera/qwen3.8-27b"' in server_src and '"keyEnv": "ITERA_API_KEY"' in server_src
+
+
+def test_itera_budget_is_route_specific_and_bounded(monkeypatch):
+    from app.pipeline_guards import model_time_budget
+    for n in ("FAULTSEEKER_MODEL_TIME_BUDGET_SECS", "FAULTSEEKER_ITERA_TIME_BUDGET_SECS", "DEMO_RUN_TIMEOUT_SECS"):
+        monkeypatch.delenv(n, raising=False)
+    assert model_time_budget(("gpt-6.1-sol-low", None)) == 600
+    assert model_time_budget(()) == 600
+    assert model_time_budget(("itera/qwen3.8-27b",)) == 2400
+    monkeypatch.setenv("FAULTSEEKER_ITERA_TIME_BUDGET_SECS", "999999")
+    assert model_time_budget(("itera/qwen3.8-27b",)) == 6600
+    monkeypatch.setenv("DEMO_RUN_TIMEOUT_SECS", "3000")
+    assert model_time_budget(("itera/qwen3.8-27b",)) == 2400
+    assert model_time_budget(("gpt-6.1-sol-low",)) == 600
+
+
+def test_selftest_uses_adapted_payload(monkeypatch):
+    import app.server as srv
+    seen = {}
+    class C:
+        def __init__(self, **k): pass
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kw):
+                    seen.update(kw)
+                    class M: content = "ok"
+                    class Ch: message = M
+                    class R: choices = [Ch]
+                    return R
+        def close(self): pass
+    import sys, types
+    stub = types.ModuleType("faultseeker.utils.agent")
+    stub.PROVIDER_CONFIG = {}
+    for name in ("faultseeker", "faultseeker.utils"):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    monkeypatch.setitem(sys.modules, "faultseeker.utils.agent", stub)
+    import openai
+    monkeypatch.setattr(openai, "OpenAI", C)
+    monkeypatch.setenv("ITERA_API_KEY", "k")
+    out = srv.llm_selftest(model="itera/qwen3.8-27b")
+    assert seen["model"] == "qwen/qwen3.8-27b"
+    assert seen["extra_body"] == {"reasoning_effort": "none"}
+    assert out["keys"][0]["ok"] is True

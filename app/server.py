@@ -16,14 +16,14 @@ from contextlib import asynccontextmanager
 from urllib.parse import urlsplit, quote
 
 try:
-    from .model_routes import resolve_route
+    from .model_routes import adapt_request, resolve_route
     from .rpc_transport import PublicRPCRelay, parse_endpoint
 except ImportError:
     try:
-        from app.model_routes import resolve_route
+        from app.model_routes import adapt_request, resolve_route
         from app.rpc_transport import PublicRPCRelay, parse_endpoint
     except ModuleNotFoundError:
-        from model_routes import resolve_route
+        from model_routes import adapt_request, resolve_route
         from rpc_transport import PublicRPCRelay, parse_endpoint
 
 from datetime import datetime, timezone
@@ -627,11 +627,11 @@ def llm_selftest(model: str = "gemini-3.8-flash", max_keys: int = 1,
         client = None
         try:
             client = _oai.OpenAI(api_key=k, base_url=base_url, timeout=30, max_retries=0)
-            r = client.chat.completions.create(
+            r = client.chat.completions.create(**adapt_request(model, dict(
                 model=model,
                 messages=[{"role": "user", "content": "Reply with the single word: ok"}],
                 max_tokens=8,
-            )
+            )))
             out.append({"key_index": i + 1, "ok": True,
                         "reply": (r.choices[0].message.content or "")[:40]})
         except Exception as e:  # noqa: BLE001 - diagnostic reports every failure type
@@ -707,7 +707,8 @@ def _prepare_pipeline(req, mode, q):
             raise
         from pipeline_guards import make_runtime
     return make_runtime(req["txn_hash"], req["chain"], mode != "no-llm",
-                        lambda data: q.put(("model_status", data)))
+                        lambda data: q.put(("model_status", data)),
+                        models=(req.get("mode"), req.get("forensics_model")))
 
 
 def worker(run_id, req, q):

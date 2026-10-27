@@ -285,10 +285,27 @@ class PipelineRuntime:
         self.restorers.clear()
 
 
-def make_runtime(tx_hash, chain, use_model, emit):
+ITERA_DEFAULT_TIME_BUDGET_SECS = 2400.0   # measured Itera calls 7-56s; queued full flow needs >600s
+ITERA_MAX_TIME_BUDGET_SECS = 6600.0       # must stay under the 7200s DEMO_RUN_TIMEOUT_SECS wall cap
+
+
+def model_time_budget(models=()):
+    """Shared model budget. Itera-only runs get a bounded route-specific budget;
+    every other model keeps FAULTSEEKER_MODEL_TIME_BUDGET_SECS (default 600)."""
+    base = float(os.getenv("FAULTSEEKER_MODEL_TIME_BUDGET_SECS", "600"))
+    selected = [str(m) for m in models if m]
+    if not selected or not any(m.startswith("itera/") for m in selected):
+        return base
+    wall = float(os.getenv("DEMO_RUN_TIMEOUT_SECS", "7200"))
+    cap = min(ITERA_MAX_TIME_BUDGET_SECS, max(base, wall - 600.0))
+    want = float(os.getenv("FAULTSEEKER_ITERA_TIME_BUDGET_SECS", str(ITERA_DEFAULT_TIME_BUDGET_SECS)))
+    return max(base, min(want, cap))
+
+
+def make_runtime(tx_hash, chain, use_model, emit, models=()):
     session = ModelEndpointSession(emit=emit,
         retry_limit=int(os.getenv("FAULTSEEKER_MODEL_RETRY_LIMIT", "3")),
-        time_budget=float(os.getenv("FAULTSEEKER_MODEL_TIME_BUDGET_SECS", "600")),
+        time_budget=model_time_budget(models),
         call_timeout=float(os.getenv("FAULTSEEKER_MODEL_CALL_TIMEOUT_SECS", os.getenv("FAULTSEEKER_LLM_TIMEOUT_SECS", "60")))) if use_model else None
     runtime = PipelineRuntime(tx_hash, chain, session=session, emit=emit)
     try:
