@@ -161,7 +161,7 @@ class PipelineRuntime:
                 "source": (payload.get("trace_provenance") or {}).get("source", "structured_rpc_or_cache"),
                 "identity_cross_check": "eth_getTransactionByHash + eth_chainId",
                 "identity_source": "blockscout_pro_json_rpc" if use_pro else "console_rpc_registry",
-                "identity_independent_of_trace_source": not use_pro,
+                "identity_independent_of_trace_source": False if use_pro else None,  # None: not established for registry reads
                 "transaction_hash": tx_hash.lower(), "chain": chain,
                 "block_hash": tx.get("blockHash"), "block_number": tx.get("blockNumber"),
                 "function_identity": "calldata_selector", "abi_verified": False}

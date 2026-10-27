@@ -133,7 +133,11 @@ class _NoRedirect(_urlreq.HTTPRedirectHandler):
         raise TraceIdentityError("Blockscout PRO API redirected; refusing to forward the credential.")
 
 
-_pro_open = _urlreq.build_opener(_NoRedirect).open
+def _build_pro_opener(*extra_handlers):
+    return _urlreq.build_opener(_NoRedirect, *extra_handlers)
+
+
+_pro_open = _build_pro_opener().open
 
 
 def _pro_key():

@@ -449,7 +449,7 @@ def test_flag_off_or_normal_trace_never_uses_the_pro_gateway_for_identity(monkey
         runtime.close()
 
 
-def test_pro_identity_is_labelled_as_same_provider_and_registry_identity_as_independent(monkeypatch, tmp_path):
+def test_pro_identity_is_labelled_as_same_provider_and_registry_identity_as_unestablished(monkeypatch, tmp_path):
     s = PRO["gnosis"]
     m, runtime, rep, calls = _install(monkeypatch, tmp_path, None, None)
     monkeypatch.setattr(m, "pro_rpc", lambda chain, method, params, opener=None: {"eth_getTransactionByHash": s["tx"], "eth_chainId": hex(s["chain_id"])}[method])
@@ -470,32 +470,30 @@ def test_pro_identity_is_labelled_as_same_provider_and_registry_identity_as_inde
     try:
         prov = rep.TransactionReplayer.get_structured_trace(object(), TX, "eth")["trace_provenance"]
         assert prov["identity_source"] == "console_rpc_registry"
-        assert prov["identity_independent_of_trace_source"] is True
+        assert prov["identity_independent_of_trace_source"] is None     # registry provider independence is not established
         assert prov["trace_provider"] == "blockscout_instance_keyless"
     finally:
         runtime.close()
 
 
-def test_pro_default_opener_refuses_real_redirects_before_the_credential_is_replayed():
-    import http.server, threading
-    hits = {"second": []}
-    class Second(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):
-            hits["second"].append(self.headers.get("Authorization"))
-            self.send_response(200); self.end_headers(); self.wfile.write(b"[]")
-        log_message = lambda *a: None
-    second = http.server.HTTPServer(("127.0.0.1", 0), Second)
-    class First(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(302); self.send_header("Location", f"http://127.0.0.1:{second.server_port}/x"); self.end_headers()
-        log_message = lambda *a: None
-    first = http.server.HTTPServer(("127.0.0.1", 0), First)
-    for srv in (first, second):
-        threading.Thread(target=srv.serve_forever, daemon=True).start()
-    try:
-        req = et._urlreq.Request(f"http://127.0.0.1:{first.server_port}/", headers={"Authorization": "Bearer proapi_" + "c" * 20})
-        with pytest.raises(ti.TraceIdentityError):
-            et._pro_open(req, timeout=5)
-        assert hits["second"] == []                  # the redirect target never received the request or the header
-    finally:
-        first.shutdown(); second.shutdown()
+def test_pro_opener_refuses_a_real_redirect_response_before_replaying_the_request():
+    """Real urllib redirect machinery with an in-process 302 (no sockets, so it runs under the offline runner)."""
+    import io, urllib.request, urllib.response, email.message
+    opened = []
+    class Fake(urllib.request.BaseHandler):
+        handler_order = 100
+        def http_open(self, req):
+            opened.append((req.full_url, req.get_header("Authorization")))
+            headers = email.message.Message()
+            headers["Location"] = "http://other.example/x"
+            resp = urllib.response.addinfourl(io.BytesIO(b""), headers, req.full_url, 302)
+            resp.msg = "Found"
+            return resp
+    opener = et._build_pro_opener(Fake)
+    req = urllib.request.Request("http://pro.example/x", headers={"Authorization": "Bearer proapi_" + "c" * 20})
+    with pytest.raises(ti.TraceIdentityError):
+        opener.open(req, timeout=5)
+    assert opened == [("http://pro.example/x", "Bearer proapi_" + "c" * 20)]     # never followed to the second URL
+    # the module-level opener PRO requests use is built by the same function and has the refusing handler
+    assert any(isinstance(h, et._NoRedirect) for h in et._pro_open.__self__.handlers)
+    assert not any(type(h) is urllib.request.HTTPRedirectHandler for h in et._pro_open.__self__.handlers)
