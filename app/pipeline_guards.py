@@ -43,6 +43,11 @@ class PipelineRuntime:
         self.source = None
         self.model_keys = {}
         self.function_analysis = {"started": 0, "completed": 0}  # observed FunctionAnalyzer.run, not inferred
+        try:
+            from .function_wall_guard import WallCapLedger
+        except ImportError:
+            from function_wall_guard import WallCapLedger
+        self.wall_cap = WallCapLedger()
 
     def replace(self, owner, name, replacement):
         original = getattr(owner, name)
@@ -209,6 +214,11 @@ class PipelineRuntime:
             self.function_analysis["completed"] += 1
             return result
         self.replace(FunctionAnalyzer, "run", checked_analysis)
+        for _name, _kind in (("_function_analysis_init", "function"), ("_txn_analysis_init", "transaction")):
+            if hasattr(FunctionAnalyzer, _name):
+                self.replace(FunctionAnalyzer, _name, self.wall_cap.wrap(getattr(FunctionAnalyzer, _name), _kind))
+        self.replace(FunctionAnalyzer, "_update_potentially_vulnerable_function",
+                     self.wall_cap.wrap_update(FunctionAnalyzer._update_potentially_vulnerable_function))
         return self
 
     def _model_config(self, model):
@@ -275,6 +285,8 @@ class PipelineRuntime:
                 "preflight_calls_ok": calls.get("preflight", {}).get("ok", 0),
                 "scored_functions": scored, "evidence_cards": cards,
                 "function_analysis_runs_observed": dict(self.function_analysis)}
+            wall = self.wall_cap.summary()
+            result["analysis_integrity"]["function_wall_cap"] = wall
             if analysis.get("ok", 0) == 0:
                 # No model completion was received for analysis: nothing was analysed,
                 # so scores come from deterministic pre-analysis heuristics only.
@@ -302,6 +314,17 @@ class PipelineRuntime:
             else:
                 result["stage_completed"] = "stage-3"
                 result["priority_basis"] = "model_scored_functions"
+            bad = wall["likely_forced"] + wall["unknown_exit"] + wall["error"]
+            if bad:
+                # The fork returns partial candidates at its wall cap with no flag; a completion
+                # marker alone does not prove the function analysis finished.
+                result["analysis_status"] = "partial"
+                result["stage_completed"] = "function-analysis-partial"  # never leave the stage-3 default on a truncated analysis
+                result["sections"] = {**(result.get("sections") or {}), "function_analysis": "partial_wall_cap" if wall["likely_forced"] else ("partial_errors" if wall["error"] else "partial_unverified_exit"), "scoring": "not_validated"}
+                result["priority_basis"] = "heuristic_preanalysis_estimate"
+                result.setdefault("limitations", []).append(
+                    f"Function analysis: {wall['normal']} ended normally, {wall['likely_forced']} likely stopped by the {wall['cap_secs']}s per-function wall cap, "
+                    f"{wall['unknown_exit']} ended without an observed normal exit, {wall['error']} errored. Candidates from those functions are partial; scoring is not validated.")
         return result
 
     def failure_report(self, error=None):
