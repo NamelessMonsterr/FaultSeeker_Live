@@ -357,8 +357,6 @@ class ModelEndpointSession:
                     if not deadline_exceeded:
                         self._count_tokens(completion)
                 if deadline_exceeded:
-                    if phase == "preflight":
-                        self._fail(self._out_of_time(phase, request_deadline, None))
                     self._deadline_or_budget_failure(phase, request_deadline, last_error, explicit_tighter)
                 self.emit({"state": "model_endpoint_ready", "phase": phase,
                            "model": model, "attempts": attempts})
