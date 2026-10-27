@@ -474,7 +474,7 @@ class ModelEndpointSession:
                     should_fail = True
                     break
             if should_fail:
-                if explicit_tighter and request_deadline > self.clock() - 0.000001:
+                if explicit_tighter and request_deadline > self.clock():
                     self._deadline_or_budget_failure(phase, request_deadline, last_error, explicit_tighter)
                 if phase == "preflight":
                     self._fail(self._out_of_time(phase, request_deadline, last_error))
