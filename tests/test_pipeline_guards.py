@@ -55,6 +55,8 @@ def test_failure_report_always_includes_analysis_integrity_and_wall_cap():
     report = runtime.failure_report(RuntimeError("model failure"))
     assert report["analysis_integrity"]["failure_path"] is True
     assert report["analysis_integrity"]["trace_identity_checked"] is False
+    assert report["analysis_integrity"]["unverified_targets"] is None
+    assert report["analysis_integrity"]["target_validation"] == "not_assessed"
     assert report["analysis_integrity"]["function_analysis_complete"] is False
     assert report["analysis_integrity"]["function_wall_cap"]["likely_forced"] == 1
     assert report["analysis_integrity"]["model_analysis"]["analysis_calls_ok"] == 0
