@@ -162,7 +162,9 @@ def test_preflight_429_is_terminal_without_rotation_or_backoff(monkeypatch):
     assert failure.value.as_dict()["scope"] == "provider_limit"
     assert calls == ["Bearer test-first"]
     assert runtime.session.retries_left == 3
-    assert runtime.session.spent == 0
+    # rotation_runtime advances its monotonic clock by one second per HTTP call;
+    # the sole request is charged, but no retry/backoff sleep is performed.
+    assert runtime.session.spent == 1.0
     assert not any(event.get("key_rotation") for event in events)
     assert not any(event.get("retry_in_seconds", 0) > 0 for event in events)
     with pytest.raises(ModelEndpointFailure) as sticky:
