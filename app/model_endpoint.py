@@ -137,7 +137,11 @@ class ModelEndpointSession:
                                     explicit_tighter=False):
         with self.state_lock:
             exhausted = self.spent >= self.time_budget
-        if exhausted:
+        # A deadline derived from the shared budget is a shared circuit failure,
+        # even if actual elapsed accounting is still below the limit because an
+        # in-flight reservation has not yet finalized. A tighter caller deadline
+        # is local and must not poison other workers.
+        if exhausted or not explicit_tighter:
             self._fail(ModelEndpointFailure("budget_exhausted", phase=phase))
         if phase == "preflight" and last_error is not None:
             self._fail(last_error)
@@ -375,8 +379,6 @@ class ModelEndpointSession:
             last_error = error
             now = self.clock()
             if now >= request_deadline:
-                if phase == "preflight":
-                    self._fail(self._out_of_time(phase, request_deadline, last_error))
                 self._deadline_or_budget_failure(phase, request_deadline, last_error, explicit_tighter)
             with self.state_lock:
                 budget_left = self.time_budget - self.spent - self.reserved
@@ -475,9 +477,9 @@ class ModelEndpointSession:
                     break
             if should_fail:
                 if explicit_tighter and request_deadline > self.clock():
-                    self._deadline_or_budget_failure(phase, request_deadline, last_error, explicit_tighter)
-                if phase == "preflight":
-                    self._fail(self._out_of_time(phase, request_deadline, last_error))
+                    # The retry delay cannot fit this caller's tighter deadline;
+                    # do not convert that local miss into a shared budget failure.
+                    raise self._local_deadline_failure(phase)
                 if budget_exhausted:
                     self._fail(ModelEndpointFailure("budget_exhausted", phase=phase))
                 self._deadline_or_budget_failure(phase, request_deadline, last_error, explicit_tighter)
