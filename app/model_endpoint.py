@@ -84,6 +84,7 @@ class ModelEndpointSession:
         self.attempts = 0
         self.calls = {}
         self.failure = None
+        self.failure_emitted = False
         self.state_lock = threading.RLock()
         self.condition = threading.Condition(self.state_lock)
         self.key_pools = {}
@@ -111,14 +112,18 @@ class ModelEndpointSession:
 
     def _fail(self, error):
         with self.state_lock:
-            first_failure = self.failure is None
-            if first_failure:
+            if self.failure is None:
                 self.failure = error
             else:
                 error = self.failure
+            emit_failure = not self.failure_emitted
+            if emit_failure:
+                self.failure_emitted = True
             self.condition.notify_all()
             attempts = self.attempts
-        if first_failure:
+        # A 429 may have atomically installed the sticky failure in the attempt
+        # finalizer so concurrent successes cannot commit; publish its event here.
+        if emit_failure:
             self.emit({"state": "model_endpoint_failed", **error.as_dict(),
                        "attempts": attempts})
         raise error from None
@@ -281,7 +286,6 @@ class ModelEndpointSession:
                     if self.failure is not None:
                         raise self.failure
                     self._count_tokens(completion)
-                    tokens_committed = True
                 self.emit({"state": "model_endpoint_ready", "phase": phase,
                            "model": model, "attempts": attempts})
                 return completion
