@@ -317,7 +317,7 @@ def test_direct_mode_on_unsupported_chain_fails_closed_without_any_rpc(monkeypat
 PRO = json.load(open(os.path.join(os.path.dirname(__file__), "fixtures", "blockscout_pro_trace_samples.json")))
 
 
-@pytest.mark.parametrize("chain", ["gnosis", "scroll", "celo"])
+@pytest.mark.parametrize("chain", ["gnosis", "scroll", "celo", "aurora"])
 def test_pro_chain_real_samples_become_verified_rows(chain):
     s = PRO[chain]
     p = et.payload_from_explorer(chain, s["hash"], s["tx"], s["chain_id"], fetch=lambda c, h: copy.deepcopy(s["raw_trace"]))
@@ -326,7 +326,7 @@ def test_pro_chain_real_samples_become_verified_rows(chain):
     assert p["trace_provenance"]["completeness_proven"] is False
 
 
-@pytest.mark.parametrize("chain", ["gnosis", "scroll", "celo"])
+@pytest.mark.parametrize("chain", ["gnosis", "scroll", "celo", "aurora"])
 def test_pro_chain_refuses_wrong_chain_id_and_tampered_root(chain):
     s = PRO[chain]
     with pytest.raises(ti.TraceIdentityError):
@@ -404,3 +404,16 @@ def test_wired_direct_mode_on_pro_chain_reads_identity_through_the_pro_gateway(m
         assert sorted(m_ for _, m_ in pro_calls) == ["eth_chainId", "eth_getTransactionByHash"]
     finally:
         runtime.close()
+
+
+def test_aurora_is_keyless_and_never_sends_a_bearer_header(monkeypatch):
+    s = PRO["aurora"]
+    monkeypatch.delenv("BLOCKSCOUT_PRO_API_KEY", raising=False)
+    seen = []
+    def opener(req, timeout=None):
+        seen.append(req)
+        return _Resp(json.dumps(s["raw_trace"]).encode(), req.full_url)
+    assert et.fetch_raw_trace("aurora", s["hash"], opener=opener) == s["raw_trace"]
+    assert seen[0].full_url.startswith("https://explorer.aurora.dev/api/v2/transactions/")
+    assert seen[0].get_header("Authorization") is None
+    assert "aurora" not in et.PRO_CHAINS

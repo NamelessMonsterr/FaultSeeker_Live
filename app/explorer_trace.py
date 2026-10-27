@@ -116,7 +116,8 @@ def rows_from_calltracer(tree, tx, tx_hash, chain_id=None):
 import json as _json
 import urllib.request as _urlreq
 
-EXPLORER_TRACE_INSTANCES = {"eth": ("https://eth.blockscout.com", 1), "optimism": ("https://explorer.optimism.io", 10)}
+EXPLORER_TRACE_INSTANCES = {"eth": ("https://eth.blockscout.com", 1), "optimism": ("https://explorer.optimism.io", 10),
+                            "aurora": ("https://explorer.aurora.dev", 1313161554)}
 # Blockscout PRO API (free plan, 100K credits/day, Bearer key). Chain id is part of the path. Needs BLOCKSCOUT_PRO_API_KEY.
 # Base, Polygon and zkSync are plan-gated on the free tier (HTTP 402), so they are not listed.
 PRO_HOST = "https://api.blockscout.com"
