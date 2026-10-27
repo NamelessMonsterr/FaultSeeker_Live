@@ -138,7 +138,7 @@ def rotation_runtime(monkeypatch, statuses, retry_limit=3, budget=60, seconds=1)
     return runtime, calls, events, query
 
 
-@pytest.mark.parametrize("first_status", [401, 403, 429])
+@pytest.mark.parametrize("first_status", [401, 403])
 def test_preflight_rotates_key_specific_failures_and_keeps_valid_key(monkeypatch, first_status):
     runtime, calls, events, query = rotation_runtime(monkeypatch, [first_status, 200, 200])
     runtime.preflight(["gpt-6.1-sol-low"])
@@ -148,6 +148,27 @@ def test_preflight_rotates_key_specific_failures_and_keeps_valid_key(monkeypatch
     # consumes the shared analysis retry allowance.
     assert runtime.session.retries_left == 3
     assert runtime.session.failure is None
+    assert "test-first" not in json.dumps(events)
+    assert "PRIVATE_PROVIDER_BODY" not in json.dumps(events)
+
+
+def test_preflight_429_is_terminal_without_rotation_or_backoff(monkeypatch):
+    from app.model_endpoint import ModelEndpointFailure
+    runtime, calls, events, query = rotation_runtime(monkeypatch, [429, 200, 200])
+    with pytest.raises(ModelEndpointFailure) as failure:
+        runtime.preflight(["gpt-6.1-sol-low"])
+    assert failure.value.kind == "rate_limited"
+    assert failure.value.phase == "preflight"
+    assert failure.value.as_dict()["scope"] == "provider_limit"
+    assert calls == ["Bearer test-first"]
+    assert runtime.session.retries_left == 3
+    assert runtime.session.spent == 0
+    assert not any(event.get("key_rotation") for event in events)
+    assert not any(event.get("retry_in_seconds", 0) > 0 for event in events)
+    with pytest.raises(ModelEndpointFailure) as sticky:
+        query()
+    assert sticky.value.kind == "rate_limited"
+    assert calls == ["Bearer test-first"]
     assert "test-first" not in json.dumps(events)
     assert "PRIVATE_PROVIDER_BODY" not in json.dumps(events)
 
