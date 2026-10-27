@@ -202,7 +202,8 @@ def test_concurrent_retry_reservations_are_atomic_and_bounded():
         with guard:
             requests.append(request)
             number = len(requests)
-            reservations.append(session.reserved)
+            with session.state_lock:
+                reservations.append(session.spent + session.reserved)
         if number <= 2:
             rendezvous.wait(timeout=3)
             return httpx.Response(502, text="private upstream failure")
