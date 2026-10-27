@@ -357,7 +357,9 @@ class ModelEndpointSession:
                     if not deadline_exceeded:
                         self._count_tokens(completion)
                 if deadline_exceeded:
-                    self._deadline_or_budget_failure(phase, request_deadline, last_error, explicit_tighter)
+                    # A late successful response is a request deadline miss, not
+                    # a stale prior retry's error or a shared-budget failure.
+                    self._deadline_or_budget_failure(phase, request_deadline, None, explicit_tighter)
                 self.emit({"state": "model_endpoint_ready", "phase": phase,
                            "model": model, "attempts": attempts})
                 return completion
@@ -472,6 +474,8 @@ class ModelEndpointSession:
                     should_fail = True
                     break
             if should_fail:
+                if explicit_tighter and request_deadline > self.clock() - 0.000001:
+                    self._deadline_or_budget_failure(phase, request_deadline, last_error, explicit_tighter)
                 if phase == "preflight":
                     self._fail(self._out_of_time(phase, request_deadline, last_error))
                 if budget_exhausted:
