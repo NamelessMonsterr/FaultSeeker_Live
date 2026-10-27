@@ -114,9 +114,12 @@ class PipelineRuntime:
         def checked_structured(replayer, tx_hash, chain):
             payload, trace_error = None, None
             mode = os.getenv("FAULTSEEKER_EXPLORER_TRACE", "")
-            if mode == "direct" and chain in EXPLORER_CHAINS:
+            if mode == "direct" and chain not in EXPLORER_CHAINS:
+                # Fail closed: falling back to the normal RPC trace path could spend provider credits.
+                raise TraceIdentityError("Direct explorer trace mode is not supported for this chain.")
+            if mode == "direct":
                 # Direct mode: never ask an RPC node for a trace first (a configured trace RPC may be billable).
-                trace_error = RuntimeError("explorer trace requested directly")
+                trace_error = None
             else:
                 try:
                     payload = check_structured(original_structured(replayer, tx_hash, chain), tx_hash, chain)
@@ -138,8 +141,11 @@ class PipelineRuntime:
                     payload = payload_from_explorer(chain, tx_hash, tx, actual_chain)
                 except TraceIdentityError:
                     raise
-                except Exception:
-                    raise trace_error
+                except Exception as exc:
+                    # Surface the real explorer failure; keep the RPC trace error as context when there is one.
+                    if trace_error is not None:
+                        raise exc from trace_error
+                    raise
             root = payload["trace"]
             receipt = None
             if isinstance(tx, dict) and tx.get("to") is None:
@@ -147,7 +153,8 @@ class PipelineRuntime:
             validate_trace_root(tx, root, tx_hash, receipt)
             payload = deepcopy(payload)
             payload["trace_provenance"] = {
-                "source": payload.get("trace_provenance", {}).get("source", "structured_rpc_or_cache") if trace_error else "structured_rpc_or_cache",
+                **(payload.get("trace_provenance") or {}),
+                "source": (payload.get("trace_provenance") or {}).get("source", "structured_rpc_or_cache"),
                 "identity_cross_check": "eth_getTransactionByHash + eth_chainId",
                 "transaction_hash": tx_hash.lower(), "chain": chain,
                 "block_hash": tx.get("blockHash"), "block_number": tx.get("blockNumber"),

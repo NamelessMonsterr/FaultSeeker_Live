@@ -262,3 +262,52 @@ def test_direct_mode_never_calls_the_rpc_trace_path(monkeypatch, tmp_path):
         assert set(calls) == {"eth_getTransactionByHash", "eth_chainId"}   # identity reads only
     finally:
         runtime.close()
+
+
+def test_wired_provenance_retains_all_explorer_fields(monkeypatch, tmp_path):
+    m, runtime, rep, calls = _install(monkeypatch, tmp_path, copy.deepcopy(ETH_TX), "0x1")
+    monkeypatch.setattr(m, "payload_from_explorer", lambda c, h, tx, cid: et.payload_from_explorer(c, h, tx, cid, fetch=lambda *a: copy.deepcopy(BS_ETH)))
+    monkeypatch.setenv("FAULTSEEKER_EXPLORER_TRACE", "direct")
+    runtime.install()
+    try:
+        prov = rep.TransactionReplayer.get_structured_trace(object(), TX, "eth")["trace_provenance"]
+        raw = et.payload_from_explorer("eth", TX, copy.deepcopy(ETH_TX), 1, fetch=lambda *a: copy.deepcopy(BS_ETH))["trace_provenance"]
+        for key in ("completeness", "completeness_proven", "frame_errors", "frame_error_locations", "explorer"):
+            assert key in raw, key
+            assert prov[key] == raw[key], key
+        assert prov["completeness_proven"] is False
+        assert prov["identity_cross_check"] == "eth_getTransactionByHash + eth_chainId"
+        assert prov["block_number"] == ETH_TX["blockNumber"]
+    finally:
+        runtime.close()
+
+
+def test_direct_mode_preserves_the_real_explorer_error(monkeypatch, tmp_path):
+    m, runtime, rep, calls = _install(monkeypatch, tmp_path, copy.deepcopy(ETH_TX), "0x1")
+    def boom(c, h, tx, cid):
+        raise ConnectionError("blockscout unreachable")
+    monkeypatch.setattr(m, "payload_from_explorer", boom)
+    monkeypatch.setenv("FAULTSEEKER_EXPLORER_TRACE", "direct")
+    runtime.install()
+    try:
+        with pytest.raises(ConnectionError, match="blockscout unreachable"):
+            rep.TransactionReplayer.get_structured_trace(object(), TX, "eth")
+    finally:
+        runtime.close()
+
+
+def test_direct_mode_on_unsupported_chain_fails_closed_without_any_rpc(monkeypatch, tmp_path):
+    m, runtime, rep, calls = _install(monkeypatch, tmp_path, copy.deepcopy(ETH_TX), "0x1")
+    traced = []
+    def spy(self, tx_hash, chain):
+        traced.append(chain)
+        return {}
+    monkeypatch.setattr(rep.TransactionReplayer, "get_structured_trace", spy)
+    monkeypatch.setenv("FAULTSEEKER_EXPLORER_TRACE", "direct")
+    runtime.install()
+    try:
+        with pytest.raises(ti.TraceIdentityError):
+            rep.TransactionReplayer.get_structured_trace(object(), TX, "bsc")
+        assert traced == [] and calls == []
+    finally:
+        runtime.close()
