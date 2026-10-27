@@ -25,6 +25,7 @@ class ModelEndpointFailure(RuntimeError):
             "invalid_request": "Model endpoint rejected the request.",
             "invalid_response": "Model endpoint returned an invalid completion response.",
             "budget_exhausted": "The shared model-endpoint time budget was exhausted.",
+            "request_deadline_exceeded": "This model request exceeded its entry-time deadline.",
             "endpoint_error": "Model endpoint request failed.",
         }
         message = messages[kind]
@@ -216,8 +217,7 @@ class ModelEndpointSession:
                     if reservation <= 0:
                         raise self._local_deadline_failure(phase)
                     self.reserved += reservation
-                    self.attempts += 1
-                    attempt_number = self.attempts
+                    attempt_number = None
             if exhausted:
                 self._fail(budget_error)
 
@@ -233,6 +233,9 @@ class ModelEndpointSession:
                 if pool and attempt_key is not None:
                     options["api_key"] = attempt_key
                 bounded = client.with_options(**options)
+                with self.state_lock:
+                    self.attempts += 1
+                    attempt_number = self.attempts
                 self.emit({"state": "model_request_started", "phase": phase, "model": model,
                            "queue_wait_seconds": round(max(0.0, started - queued_at), 3)})
                 self.emit({"state": "waiting_on_model_endpoint", "phase": phase,
