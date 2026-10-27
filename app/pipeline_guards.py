@@ -42,6 +42,7 @@ class PipelineRuntime:
         self.restorers = []
         self.source = None
         self.model_keys = {}
+        self.function_analysis = {"started": 0, "completed": 0}  # observed FunctionAnalyzer.run, not inferred
 
     def replace(self, owner, name, replacement):
         original = getattr(owner, name)
@@ -198,12 +199,14 @@ class PipelineRuntime:
         original_analyze = FunctionAnalyzer.run
         def checked_analysis(analyzer, *args, **kwargs):
             self.assert_healthy()
+            self.function_analysis["started"] += 1
             try:
                 result = original_analyze(analyzer, *args, **kwargs)
             except Exception:
                 self.assert_healthy()
                 raise
             self.assert_healthy()  # ThreadPoolExecutor may catch individual failures.
+            self.function_analysis["completed"] += 1
             return result
         self.replace(FunctionAnalyzer, "run", checked_analysis)
         return self
@@ -270,7 +273,8 @@ class PipelineRuntime:
             result["analysis_integrity"]["model_analysis"] = {
                 "analysis_calls_ok": analysis.get("ok", 0), "analysis_calls_failed": analysis.get("failed", 0),
                 "preflight_calls_ok": calls.get("preflight", {}).get("ok", 0),
-                "scored_functions": scored, "evidence_cards": cards}
+                "scored_functions": scored, "evidence_cards": cards,
+                "function_analysis_runs_observed": dict(self.function_analysis)}
             if analysis.get("ok", 0) == 0:
                 # No model completion was received for analysis: nothing was analysed,
                 # so scores come from deterministic pre-analysis heuristics only.
@@ -280,12 +284,23 @@ class PipelineRuntime:
                 result["priority_basis"] = "heuristic_preanalysis_estimate"
                 result["limitations"].append(
                     "No model analysis completion was received, so priority and exploitability scores are heuristic pre-analysis estimates, not validated findings.")
+            elif self.function_analysis["completed"] == 0:
+                # Model calls succeeded (e.g. forensics) but the per-function analysis stage
+                # was never observed to complete: do not let the server default claim stage-3.
+                result["analysis_status"] = "partial"
+                result["stage_completed"] = "forensics-only"
+                result["sections"] = {**(result.get("sections") or {}), "function_analysis": "not_observed", "scoring": "not_observed"}
+                result["priority_basis"] = "heuristic_preanalysis_estimate"
+                result["limitations"].append(
+                    "Function-level analysis was not observed to complete, so stage coverage beyond forensics is unknown and scores are heuristic pre-analysis estimates.")
             elif scored == 0 and cards == 0:
+                result["stage_completed"] = "stage-3"
                 # The model ran and legitimately reported no scored function: keep status, label the scores.
                 result["priority_basis"] = "heuristic_preanalysis_estimate"
                 result["limitations"].append(
                     "The model analysed the run but produced no scored function or evidence card; priority and exploitability are heuristic estimates.")
             else:
+                result["stage_completed"] = "stage-3"
                 result["priority_basis"] = "model_scored_functions"
         return result
 

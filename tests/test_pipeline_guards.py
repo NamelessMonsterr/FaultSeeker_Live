@@ -336,13 +336,14 @@ def test_implicit_openai_model_cannot_escape_routing_policy(monkeypatch):
     assert len(calls) == 1
 
 
-def _annotated(calls, **extra):
+def _annotated(calls, fa_completed=1, **extra):
     from types import SimpleNamespace
     m = importlib.import_module("app.pipeline_guards")
     identity = importlib.import_module("app.trace_identity")
     seq = identity.sequence_from_parity(FIXTURE["responses"]["trace_transaction"], TX, "eth")
     runtime = m.PipelineRuntime(TX, "eth")
     runtime.sequence = seq
+    runtime.function_analysis = {"started": fa_completed, "completed": fa_completed}
     runtime.session = SimpleNamespace(summary=lambda: {"calls": calls, "tokens": {}}, assert_healthy=lambda: None)
     base = {"transaction_hash": TX, "chain": "eth", "analysis_status": "completed",
             "priority_score": 0.85, "limitations": []}
@@ -357,9 +358,18 @@ def test_no_analysis_completion_is_partial_and_score_labelled_heuristic():
     assert r["stage_completed"] == "deterministic-checks"
 
 
+def test_model_calls_ok_but_function_analysis_unobserved_is_not_stage3():
+    r = _annotated({"preflight": {"ok": 1, "failed": 0}, "analysis": {"ok": 3, "failed": 0}}, fa_completed=0)
+    assert r["analysis_status"] == "partial"
+    assert r["stage_completed"] == "forensics-only" != "stage-3"
+    assert r["sections"]["function_analysis"] == "not_observed"
+    assert r["priority_basis"] == "heuristic_preanalysis_estimate"
+
+
 def test_legitimate_empty_model_result_is_preserved():
     r = _annotated({"preflight": {"ok": 1, "failed": 0}, "analysis": {"ok": 6, "failed": 0}})
     assert r["analysis_status"] == "completed"
+    assert r["stage_completed"] == "stage-3"
     assert r["priority_basis"] == "heuristic_preanalysis_estimate"
 
 
@@ -418,7 +428,7 @@ def _fake_itera(status=200):
     return server, seen
 
 
-@pytest.mark.parametrize("status,expect_status,expect_ok", [(200, "completed", 1), (400, "partial", 0)])
+@pytest.mark.parametrize("status,expect_status,expect_ok", [(200, "partial", 1), (400, "partial", 0)])
 def test_offline_fixture_real_factory_hook_phase_and_status_path(monkeypatch, status, expect_status, expect_ok):
     """SYNTHETIC OFFLINE FIXTURE: proves routing/hook/phase/status wiring only. Not model quality, not live chain proof."""
     from app.model_endpoint import ModelEndpointSession
@@ -455,7 +465,8 @@ def test_offline_fixture_real_factory_hook_phase_and_status_path(monkeypatch, st
         if result is not None:
             if expect_ok:
                 assert result["analysis_status"] == expect_status
-                assert result["priority_basis"] == "heuristic_preanalysis_estimate"  # empty "{}" reply: no scored functions
+                assert result["priority_basis"] == "heuristic_preanalysis_estimate"  # FunctionAnalyzer never ran in this fixture: stage coverage unobserved
+                assert result["stage_completed"] == "forensics-only"
             else:
                 assert result["analysis_status"] == expect_status
     finally:
