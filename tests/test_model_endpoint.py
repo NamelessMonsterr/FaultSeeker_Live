@@ -120,6 +120,20 @@ def test_time_budget_spans_successful_queries_and_preflight():
     assert failure.value.kind == "budget_exhausted"
 
 
+def test_request_telemetry_reports_elapsed_and_queue_wait_without_payloads():
+    m, session, factory, calls, events, clock = setup([httpx.Response(200, json=OK)])
+    session.call(factory, {"model": MODEL, "messages": [{"role": "user", "content": "PRIVATE PROMPT"}]}, MODEL)
+    started = next(e for e in events if e["state"] == "model_request_started")
+    attempt = next(e for e in events if e["state"] == "model_request_attempt")
+    assert started["queue_wait_seconds"] == 0
+    assert attempt["elapsed_seconds"] >= 0
+    assert attempt["outcome"] == "ok"
+    assert attempt["error_kind"] is None
+    assert "PRIVATE PROMPT" not in json.dumps(events)
+    assert "test-secret-never-output" not in json.dumps(events)
+    assert "authorization" not in json.dumps(events).lower()
+
+
 def test_http_200_html_is_not_a_model_completion():
     m, session, factory, calls, _, _ = setup([httpx.Response(200, text="<html>SECRET</html>")])
     with pytest.raises(m.ModelEndpointFailure) as failure:
