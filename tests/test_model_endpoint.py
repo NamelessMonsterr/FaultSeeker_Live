@@ -84,6 +84,40 @@ def test_expired_absolute_deadline_fails_before_factory_or_network():
     assert made == [] and calls == []
 
 
+def test_absolute_deadline_includes_wait_for_state_lock():
+    m = importlib.import_module("app.model_endpoint")
+    clock = Clock()
+    queued = threading.Event()
+    made, errors = [], []
+    def tracked_clock():
+        value = clock.monotonic()
+        queued.set()
+        return value
+    session = m.ModelEndpointSession(clock=tracked_clock, time_budget=30, call_timeout=5)
+    def forbidden_factory():
+        made.append(True)
+        raise AssertionError("expired queued request must not build a client")
+    def invoke():
+        try:
+            session.call(forbidden_factory, {"model": MODEL, "messages": []}, MODEL,
+                         deadline=1.0)
+        except Exception as exc:
+            errors.append(exc)
+    session.state_lock.acquire()
+    worker = threading.Thread(target=invoke)
+    try:
+        worker.start()
+        assert queued.wait(timeout=2), "worker did not enter call"
+        clock.now = 2.0
+    finally:
+        session.state_lock.release()
+        worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert len(errors) == 1 and isinstance(errors[0], m.ModelEndpointFailure)
+    assert errors[0].kind == "request_deadline_exceeded"
+    assert made == [] and session.failure is None
+
+
 def test_waiting_worker_is_not_failed_by_a_synthetic_admission_timeout():
     m = importlib.import_module("app.model_endpoint")
     entered, release = threading.Event(), threading.Event()
