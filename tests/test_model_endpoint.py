@@ -187,7 +187,7 @@ def test_two_mocked_requests_overlap_without_holding_state_lock():
         worker.join(timeout=4)
     assert all(not worker.is_alive() for worker in workers), "requests did not overlap/release"
     assert len(seen) == 2
-    assert outcomes == [("ok", "OK"), ("ok", "OK")] or outcomes == [("ok", "OK"), ("ok", "OK")]
+    assert len(outcomes) == 2 and all(outcome == ("ok", "OK") for outcome in outcomes)
     assert session.failure is None
     assert session.summary()["calls"]["analysis"] == {"ok": 2, "failed": 0}
 
