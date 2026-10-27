@@ -334,3 +334,44 @@ def test_implicit_openai_model_cannot_escape_routing_policy(monkeypatch):
         runtime.session.call(lambda: (_ for _ in ()).throw(AssertionError("Factory must not be used")),
             {"model":"gpt-4o-mini","messages":[]}, "gpt-4o-mini")
     assert len(calls) == 1
+
+
+def _annotated(calls, **extra):
+    from types import SimpleNamespace
+    m = importlib.import_module("app.pipeline_guards")
+    identity = importlib.import_module("app.trace_identity")
+    seq = identity.sequence_from_parity(FIXTURE["responses"]["trace_transaction"], TX, "eth")
+    runtime = m.PipelineRuntime(TX, "eth")
+    runtime.sequence = seq
+    runtime.session = SimpleNamespace(summary=lambda: {"calls": calls, "tokens": {}}, assert_healthy=lambda: None)
+    base = {"transaction_hash": TX, "chain": "eth", "analysis_status": "completed",
+            "priority_score": 0.85, "limitations": []}
+    return runtime.annotate_result({**base, **extra})
+
+
+def test_no_analysis_completion_is_partial_and_score_labelled_heuristic():
+    r = _annotated({"preflight": {"ok": 1, "failed": 0}, "analysis": {"ok": 0, "failed": 4}})
+    assert r["analysis_status"] == "partial"
+    assert r["priority_basis"] == "heuristic_preanalysis_estimate"
+    assert r["sections"]["function_analysis"] == "no_model_analysis"
+
+
+def test_legitimate_empty_model_result_is_preserved():
+    r = _annotated({"preflight": {"ok": 1, "failed": 0}, "analysis": {"ok": 6, "failed": 0}})
+    assert r["analysis_status"] == "completed"
+    assert r["priority_basis"] == "heuristic_preanalysis_estimate"
+
+
+def test_itera_alias_routes_to_openai_compatible_agent_not_ollama(monkeypatch):
+    monkeypatch.setenv("ITERA_API_KEY", "test-key-not-real")
+    import sys
+    agent = importlib.import_module("faultseeker.utils.agent")
+    m = importlib.import_module("app.pipeline_guards")
+    runtime = m.PipelineRuntime(TX, "eth")
+    from types import SimpleNamespace
+    runtime.session = SimpleNamespace(call=lambda *a, **k: "", route_policy=None, summary=lambda: {})
+    runtime.install_model_hooks(agent)
+    try:
+        assert isinstance(agent.build_provider_agent("t", "itera/qwen3.8-27b"), agent.UniversalAgent)
+    finally:
+        runtime.close()

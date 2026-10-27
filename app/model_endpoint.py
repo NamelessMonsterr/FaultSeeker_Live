@@ -78,6 +78,7 @@ class ModelEndpointSession:
         self.clock, self.sleep = clock, sleep
         self.spent = 0.0
         self.attempts = 0
+        self.calls = {}  # phase -> {"ok": n, "failed": n}; real completions, not token counts
         self.failure = None
         self.lock = threading.RLock()
         self.key_pools = {}
@@ -185,6 +186,8 @@ class ModelEndpointSession:
                     self.spent += max(0.0, self.clock() - started)
                     if client is not None:
                         client.close()
+                phase_calls = self.calls.setdefault(phase, {"ok": 0, "failed": 0})
+                phase_calls["failed" if error is not None else "ok"] += 1
                 if error is not None:
                     last_error = error
                 if self.spent > self.time_budget:
@@ -253,6 +256,7 @@ class ModelEndpointSession:
 
     def summary(self):
         return {"attempts": self.attempts, "tokens": dict(self.tokens), "retries_remaining": self.retries_left,
+                "calls": {phase: dict(counts) for phase, counts in self.calls.items()},
                 "transport_seconds": round(self.spent, 3),
                 "time_budget_seconds": self.time_budget,
                 "failure": self.failure.as_dict() if self.failure else None}
