@@ -118,6 +118,57 @@ def test_absolute_deadline_includes_wait_for_state_lock():
     assert made == [] and session.failure is None
 
 
+def test_shared_budget_deadline_expiring_in_queue_is_sticky():
+    m = importlib.import_module("app.model_endpoint")
+    clock = Clock()
+    queued = threading.Event()
+    made = []
+    def tracked_clock():
+        value = clock.monotonic()
+        queued.set()
+        return value
+    session = m.ModelEndpointSession(time_budget=1, call_timeout=0.5, clock=tracked_clock)
+    def forbidden_factory():
+        made.append(True)
+        raise AssertionError("queued request must not create a client after its shared deadline")
+    def invoke():
+        with pytest.raises(m.ModelEndpointFailure) as failure:
+            session.call(forbidden_factory, {"model": MODEL, "messages": []}, MODEL)
+        assert failure.value.kind == "budget_exhausted"
+    session.state_lock.acquire()
+    worker = threading.Thread(target=invoke)
+    try:
+        worker.start()
+        assert queued.wait(timeout=2)
+        clock.now = 2.0
+    finally:
+        session.state_lock.release()
+        worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert made == []
+    assert session.failure is not None and session.failure.kind == "budget_exhausted"
+
+
+def test_failed_attempt_at_exact_shared_budget_cannot_retry():
+    m, session, factory, calls, _, clock = setup([
+        httpx.Response(503, text="private upstream failure"),
+        httpx.Response(200, json=OK)])
+    def timed_factory():
+        client = factory()
+        transport = client._client._transport
+        original = transport.handler
+        def respond(request):
+            clock.now += 60.0
+            return original(request)
+        transport.handler = respond
+        return client
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.call(timed_factory, {"model": MODEL, "messages": []}, MODEL)
+    assert failure.value.kind == "budget_exhausted"
+    assert session.summary()["failure"]["kind"] == "budget_exhausted"
+    assert len(calls) == 1 and clock.now == 60.0
+
+
 def test_waiting_worker_is_not_failed_by_a_synthetic_admission_timeout():
     m = importlib.import_module("app.model_endpoint")
     entered, release = threading.Event(), threading.Event()
