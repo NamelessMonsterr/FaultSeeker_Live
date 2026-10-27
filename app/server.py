@@ -338,6 +338,7 @@ MODELS = [
     {"id": "agnes-2.5-flash", "label": "agnes 2.5 flash (NaraRouter free)", "keyEnv": "NARAROUTER_API_KEY"},
     {"id": "laguna-s-2.1", "label": "Laguna S 2.1 (NaraRouter free)", "keyEnv": "NARAROUTER_API_KEY"},
     {"id": "qwen/qwen3.8-27b", "label": "Qwen 3.8 27B (Groq)", "keyEnv": "GROQ_API_KEY"},
+    {"id": "itera/qwen3.8-27b", "label": "Qwen 3.8 27B (Itera free)", "keyEnv": "ITERA_API_KEY"},
     {"id": "no-llm", "label": "No LLM - deterministic Stage 1 (free RPC)", "keyEnv": None},
 ]
 
@@ -780,7 +781,7 @@ def worker(run_id, req, q):
         mode = req.get("mode", "no-llm")
         # Groq's free tier caps output tokens/min hard; parallel Stage 2 workers
         # blow through it together. Serialize unless the caller overrides.
-        _groqish = (req.get("mode") or "").startswith(("qwen/", "openai/gpt-oss", "allam-", "llama-", "z-ai/", "deepseek-ai/", "nvidia/", "gpt-"))
+        _groqish = (req.get("mode") or "").startswith(("qwen/", "itera/", "openai/gpt-oss", "allam-", "llama-", "z-ai/", "deepseek-ai/", "nvidia/", "gpt-"))
         s2w = str(req.get("stage2_workers") or ("1" if _groqish else "")).strip()
         if s2w:
             env_prior["FAULTSEEKER_STAGE2_WORKERS"] = os.environ.get("FAULTSEEKER_STAGE2_WORKERS")
@@ -829,6 +830,12 @@ def worker(run_id, req, q):
             os.environ[entry["keyEnv"]] = "\n".join(keys)
             # Legacy agent constructors require OPENAI_API_KEY even for the direct
             # route. Only the shared transport sends requests, using per-model keys.
+            if "ITERA_API_KEY" in (entry["keyEnv"], f_entry["keyEnv"]) and not os.environ.get("OPENAI_API_KEY"):
+                # Legacy agent constructors only need a non-empty value. The shared
+                # transport sends the Itera key to the Itera route alone.
+                env_prior["OPENAI_API_KEY"] = os.environ.get("OPENAI_API_KEY")
+                env_set.append("OPENAI_API_KEY")
+                os.environ["OPENAI_API_KEY"] = "unused-placeholder"
             if entry["keyEnv"] == "OPENAI_DIRECT_API_KEY" or f_entry["keyEnv"] == "OPENAI_DIRECT_API_KEY":
                 if "OPENAI_API_KEY" not in env_set:
                     env_prior["OPENAI_API_KEY"] = os.environ.get("OPENAI_API_KEY")

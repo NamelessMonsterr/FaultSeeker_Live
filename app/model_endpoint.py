@@ -4,6 +4,11 @@ import time
 
 import httpx
 
+try:
+    from .model_routes import adapt_request
+except ImportError:  # app/server.py invoked directly
+    from model_routes import adapt_request
+
 
 class ModelEndpointFailure(RuntimeError):
     def __init__(self, kind, status_code=None, phase="analysis"):
@@ -78,6 +83,7 @@ class ModelEndpointSession:
         self.key_pools = {}
         self.model_routes = {}
         self.route_policy = None
+        self.tokens = {"prompt": 0, "completion": 0, "reasoning": 0}
 
     def register_keys(self, base_url, keys, model=None):
         """Keep credential state per endpoint/model, private to this run's memory.
@@ -167,7 +173,7 @@ class ModelEndpointSession:
                     self.emit({"state": "waiting_on_model_endpoint", "phase": phase,
                                "attempt": self.attempts, "model": model,
                                "retry_in_seconds": 0})
-                    completion = bounded.chat.completions.create(**kwargs)
+                    completion = bounded.chat.completions.create(**adapt_request(model, kwargs))
                     choices = getattr(completion, "choices", None)
                     if not choices or not isinstance(getattr(choices[0].message, "content", None), str) or not choices[0].message.content.strip():
                         raise ModelEndpointFailure("invalid_response", phase=phase)
@@ -186,6 +192,7 @@ class ModelEndpointSession:
                 if deadline is not None and self.clock() > deadline:
                     self._fail(self._out_of_time(phase, deadline, error))
                 if error is None:
+                    self._count_tokens(completion)
                     self.emit({"state": "model_endpoint_ready", "phase": phase,
                                "model": model, "attempts": self.attempts})
                     return completion
@@ -235,8 +242,17 @@ class ModelEndpointSession:
                 self.sleep(delay)
                 self.spent += max(0.0, self.clock() - before)
 
+    def _count_tokens(self, completion):
+        usage = getattr(completion, "usage", None)
+        if usage is None:
+            return
+        details = getattr(usage, "completion_tokens_details", None)
+        self.tokens["prompt"] += int(getattr(usage, "prompt_tokens", 0) or 0)
+        self.tokens["completion"] += int(getattr(usage, "completion_tokens", 0) or 0)
+        self.tokens["reasoning"] += int(getattr(details, "reasoning_tokens", 0) or 0)
+
     def summary(self):
-        return {"attempts": self.attempts, "retries_remaining": self.retries_left,
+        return {"attempts": self.attempts, "tokens": dict(self.tokens), "retries_remaining": self.retries_left,
                 "transport_seconds": round(self.spent, 3),
                 "time_budget_seconds": self.time_budget,
                 "failure": self.failure.as_dict() if self.failure else None}

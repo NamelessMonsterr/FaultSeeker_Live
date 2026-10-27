@@ -89,6 +89,11 @@
       "keyEnv": "GROQ_API_KEY"
     },
     {
+      "id": "itera/qwen3.8-27b",
+      "label": "Qwen 3.8 27B (Itera free)",
+      "keyEnv": "ITERA_API_KEY"
+    },
+    {
       "id": "no-llm",
       "label": "No LLM - deterministic Stage 1 (free RPC)",
       "keyEnv": null

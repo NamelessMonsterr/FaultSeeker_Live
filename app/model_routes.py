@@ -3,8 +3,37 @@ import os
 from urllib.parse import urlsplit
 
 
+ITERA_PREFIX = "itera/"
+ITERA_DEFAULT_BASE_URL = "https://api.iteracompute.com/v1"
+# Console alias -> Itera's published model id (the free tier model; verified via GET /v1/models).
+ITERA_UPSTREAM_MODELS = {"itera/qwen3.8-27b": "qwen/qwen3.8-27b"}
+
+
+def adapt_request(model, kwargs):
+    """Rewrite a request for the operator-selected Itera route.
+
+    The console model id carries an ``itera/`` alias so it can never share a route
+    or credential with the Groq ``qwen/`` models. Itera's free Qwen is a reasoning
+    model: without ``reasoning_effort=none`` it spends the whole completion budget
+    on reasoning and returns an empty answer. Other models are returned unchanged.
+    """
+    if not str(model).startswith(ITERA_PREFIX):
+        return kwargs
+    adapted = dict(kwargs)
+    adapted["model"] = ITERA_UPSTREAM_MODELS.get(str(model), str(model)[len(ITERA_PREFIX):])
+    extra = dict(adapted.get("extra_body") or {})
+    extra["reasoning_effort"] = "none"
+    adapted["extra_body"] = extra
+    return adapted
+
+
 def resolve_route(model, provider_url=None, provider_env="OPENAI_API_KEY"):
-    if model.startswith("gpt-6.1-sol-"):
+    if model.startswith(ITERA_PREFIX):
+        # Operator-set endpoint only; visitor input never chooses the destination.
+        endpoint = os.getenv("ITERA_BASE_URL") or ITERA_DEFAULT_BASE_URL
+        key_env = "ITERA_API_KEY"
+        setting = "ITERA_BASE_URL"
+    elif model.startswith("gpt-6.1-sol-"):
         endpoint = os.getenv("CODEX_PROXY_BASE_URL") or os.getenv("OPENAI_BASE_URL")
         key_env = "OPENAI_API_KEY"
         setting = "CODEX_PROXY_BASE_URL"
