@@ -229,9 +229,38 @@ class ModelEndpointSession:
                 self._fail(budget_error)
 
             started = self.clock()
+            setup_charged = False
+            reservation_held = True
+            network_started = None
+            setup_elapsed = 0.0
             try:
                 client, route, pool, attempt_key = self._route_and_pool(factory, model)
-                remaining = min(reservation - (self.clock() - started), request_deadline - self.clock())
+                setup_elapsed = max(0.0, self.clock() - started)
+                # Client construction counts against the cumulative budget, but
+                # call_timeout remains the per-network-attempt allowance. Reconcile
+                # the reservation after setup without serializing the HTTP request.
+                with self.condition:
+                    self.spent += setup_elapsed
+                    self.reserved = max(0.0, self.reserved - reservation)
+                    reservation_held = False
+                    setup_charged = True
+                    while True:
+                        if self.failure is not None:
+                            raise self.failure
+                        now = self.clock()
+                        until_deadline = request_deadline - now
+                        if until_deadline <= 0:
+                            raise self._local_deadline_failure(phase)
+                        available = self.time_budget - self.spent - self.reserved
+                        if available > 0:
+                            reservation = min(reservation, available, until_deadline)
+                            self.reserved += reservation
+                            reservation_held = True
+                            break
+                        if self.reserved <= 0:
+                            raise ModelEndpointFailure("budget_exhausted", phase=phase)
+                        self.condition.wait(timeout=until_deadline)
+                remaining = min(reservation, request_deadline - self.clock())
                 if remaining <= 0:
                     raise self._local_deadline_failure(phase)
                 options = {"max_retries": 0, "timeout": remaining}
@@ -240,6 +269,7 @@ class ModelEndpointSession:
                 if pool and attempt_key is not None:
                     options["api_key"] = attempt_key
                 bounded = client.with_options(**options)
+                network_started = self.clock()
                 with self.state_lock:
                     self.attempts += 1
                     attempt_number = self.attempts
@@ -259,17 +289,20 @@ class ModelEndpointSession:
                 response = getattr(exc, "response", None)
                 retry_hint = getattr(response, "headers", {}).get("retry-after", "")
             finally:
-                elapsed = max(0.0, self.clock() - started)
-                # Client cleanup must not strand the shared reservation if a
-                # custom transport/client raises while closing.
+                network_elapsed = max(0.0, self.clock() - network_started) if network_started is not None else 0.0
+                elapsed = setup_elapsed + network_elapsed if setup_charged else max(0.0, self.clock() - started)
                 if client is not None:
                     try:
                         client.close()
                     except Exception:
                         pass
                 with self.condition:
-                    self.reserved = max(0.0, self.reserved - reservation)
-                    self.spent += elapsed
+                    if reservation_held:
+                        self.reserved = max(0.0, self.reserved - reservation)
+                    if not setup_charged:
+                        self.spent += elapsed
+                    else:
+                        self.spent += network_elapsed
                     phase_calls = self.calls.setdefault(phase, {"ok": 0, "failed": 0})
                     phase_calls["failed" if error is not None else "ok"] += 1
                     if error is not None and error.kind == "rate_limited":
