@@ -1,4 +1,5 @@
 """Canonical-target checks against a fetched historical trace, not invented calls."""
+import copy
 import importlib
 import json
 from pathlib import Path
@@ -49,6 +50,19 @@ def test_wrong_chain_or_hash_is_not_silently_accepted(chain, tx):
     m = importlib.import_module("app.trace_identity")
     with pytest.raises(m.TraceIdentityError):
         m.sequence_from_parity(FIXTURE["responses"]["trace_transaction"], tx, chain, verified_chain="eth")
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda rows: [row.pop("blockHash") for row in rows],
+    lambda rows: rows[1].__setitem__("traceAddress", []),  # duplicate root location
+    lambda rows: rows[1].__setitem__("traceAddress", [-1]),
+])
+def test_sequence_from_parity_rejects_malformed_frame_identity(mutate):
+    from app.trace_identity import sequence_from_parity, TraceIdentityError
+    rows = copy.deepcopy(FIXTURE["responses"]["trace_transaction"])
+    mutate(rows)
+    with pytest.raises(TraceIdentityError):
+        sequence_from_parity(rows, TX, "eth")
 
 
 @pytest.mark.parametrize("kind", ["CREATE", "CREATE2"])
