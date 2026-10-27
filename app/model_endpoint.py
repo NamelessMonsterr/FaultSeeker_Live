@@ -72,11 +72,14 @@ class ModelEndpointSession:
     allowance, so a cold-starting endpoint gets its whole window to wake up.
     """
     def __init__(self, emit=lambda event: None, retry_limit=3, time_budget=600,
-                 call_timeout=60, clock=time.monotonic, sleep=time.sleep):
+                 call_timeout=60, admission_timeout=30, clock=time.monotonic, sleep=time.sleep):
         self.emit = emit
         self.retries_left = max(0, int(retry_limit))
         self.time_budget = max(0.1, float(time_budget))
         self.call_timeout = max(0.1, float(call_timeout))
+        # Bounds time spent waiting to enter the serialized request path.
+        # This is separate from the per-attempt SDK timeout and transport budget.
+        self.admission_timeout = max(0.0, float(admission_timeout))
         self.clock, self.sleep = clock, sleep
         self.spent = 0.0
         self.attempts = 0
@@ -139,7 +142,17 @@ class ModelEndpointSession:
 
     def call(self, factory, kwargs, model, phase="analysis", deadline=None):
         queued_at = self.clock()
-        with self.lock:
+        # Deadline is absolute from the caller; admission_timeout independently
+        # bounds contention when no earlier caller deadline exists. Do not change
+        # call_timeout: it remains the per-attempt SDK timeout.
+        admission_wait = min(self.admission_timeout, max(0.0, deadline - queued_at)) if deadline is not None else self.admission_timeout
+        if deadline is not None and deadline <= queued_at:
+            self._fail(self._out_of_time(phase, deadline, None))
+        if not self.lock.acquire(timeout=admission_wait):
+            self.emit({"state": "model_request_admission_timeout", "phase": phase,
+                       "model": model, "queue_wait_seconds": round(max(0.0, self.clock() - queued_at), 3)})
+            self._fail(ModelEndpointFailure("budget_exhausted", phase=phase))
+        try:
             lock_acquired = self.clock()
             queue_wait = max(0.0, lock_acquired - queued_at)
             self.emit({"state": "model_request_started", "phase": phase, "model": model,
@@ -259,6 +272,8 @@ class ModelEndpointSession:
                 before = self.clock()
                 self.sleep(delay)
                 self.spent += max(0.0, self.clock() - before)
+        finally:
+            self.lock.release()
 
     def _count_tokens(self, completion):
         usage = getattr(completion, "usage", None)
