@@ -253,6 +253,7 @@ def test_preflight_deadline_is_not_restarted_by_key_rotation(monkeypatch):
         runtime.preflight(["gpt-6.1-sol-low"], timeout=20)
     assert failure.value.kind == "request_deadline_exceeded"
     assert len(calls) == 2 and runtime.session.spent == 22
+    assert runtime.session.failure is None
 
 
 def test_second_model_cannot_start_after_shared_preflight_deadline(monkeypatch):
