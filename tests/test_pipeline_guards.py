@@ -395,3 +395,68 @@ def test_provider_config_restored_even_when_run_raises(monkeypatch):
     finally:
         runtime.close()
     assert agent.PROVIDER_CONFIG is before and "itera/" not in agent.PROVIDER_CONFIG
+
+
+def _fake_itera(status=200):
+    """Local synthetic OpenAI-compatible endpoint. Offline fixture, not a real model."""
+    import json, threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    seen = []
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *a): pass
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["content-length"])))
+            seen.append({"path": self.path, "auth": self.headers.get("authorization"), "body": body})
+            if status != 200:
+                self.send_response(status); self.end_headers(); self.wfile.write(b"x"); return
+            out = json.dumps({"id": "fx", "object": "chat.completion", "created": 0, "model": body["model"],
+                "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "{}"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}).encode()
+            self.send_response(200); self.send_header("content-type", "application/json"); self.end_headers(); self.wfile.write(out)
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, seen
+
+
+@pytest.mark.parametrize("status,expect_status,expect_ok", [(200, "completed", 1), (400, "partial", 0)])
+def test_offline_fixture_real_factory_hook_phase_and_status_path(monkeypatch, status, expect_status, expect_ok):
+    """SYNTHETIC OFFLINE FIXTURE: proves routing/hook/phase/status wiring only. Not model quality, not live chain proof."""
+    from app.model_endpoint import ModelEndpointSession
+    agent = importlib.import_module("faultseeker.utils.agent")
+    m = importlib.import_module("app.pipeline_guards")
+    identity = importlib.import_module("app.trace_identity")
+    server, seen = _fake_itera(status)
+    try:
+        monkeypatch.setenv("ITERA_BASE_URL", f"http://127.0.0.1:{server.server_port}/v1")
+        monkeypatch.setenv("ITERA_API_KEY", "fixture-key-not-real")
+        session = ModelEndpointSession(retry_limit=0, time_budget=30, call_timeout=5)
+        runtime = m.PipelineRuntime(TX, "eth", session=session)
+        runtime.source = agent
+        runtime.sequence = identity.sequence_from_parity(FIXTURE["responses"]["trace_transaction"], TX, "eth")
+        before = agent.PROVIDER_CONFIG
+        try:
+            runtime.install_model_hooks(agent)
+            ag = agent.build_provider_agent("fixture task", "itera/qwen3.8-27b")
+            assert isinstance(ag, agent.UniversalAgent)
+            try:
+                ag.query("Return JSON.")
+            except Exception:
+                pass
+        finally:
+            result = None
+            if status == 200 or session.failure is None:
+                result = runtime.annotate_result({"transaction_hash": TX, "chain": "eth", "analysis_status": "completed",
+                                                  "priority_score": 0.85, "limitations": []})
+            runtime.close()
+        assert agent.PROVIDER_CONFIG is before
+        assert seen and seen[0]["auth"] == "Bearer fixture-key-not-real"
+        assert seen[0]["body"]["extra_body"]["reasoning_effort"] == "none" if "extra_body" in seen[0]["body"] else seen[0]["body"].get("reasoning_effort") == "none"
+        assert session.summary()["calls"]["analysis"]["ok"] == expect_ok
+        if result is not None:
+            if expect_ok:
+                assert result["analysis_status"] == expect_status
+                assert result["priority_basis"] == "heuristic_preanalysis_estimate"  # empty "{}" reply: no scored functions
+            else:
+                assert result["analysis_status"] == expect_status
+    finally:
+        server.shutdown()
