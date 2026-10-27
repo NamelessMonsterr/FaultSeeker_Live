@@ -187,6 +187,8 @@ class ModelEndpointSession:
             retry_hint = ""
             pool = None
             attempt_key = None
+            attempt_number = None
+            reservation = 0.0
 
             # Atomically reserve one attempt's maximum transport time. If all
             # remaining budget is reserved by in-flight attempts, wait for a
@@ -258,8 +260,13 @@ class ModelEndpointSession:
                 retry_hint = getattr(response, "headers", {}).get("retry-after", "")
             finally:
                 elapsed = max(0.0, self.clock() - started)
+                # Client cleanup must not strand the shared reservation if a
+                # custom transport/client raises while closing.
                 if client is not None:
-                    client.close()
+                    try:
+                        client.close()
+                    except Exception:
+                        pass
                 with self.condition:
                     self.reserved = max(0.0, self.reserved - reservation)
                     self.spent += elapsed
