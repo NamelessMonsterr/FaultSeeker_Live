@@ -108,3 +108,45 @@ The proxy root showed Render's application-loading screen on the first browser r
 Current upstream documentation (https://github.com/dvcrn/codex-oauth-proxy) describes Codex OAuth forwarding, authenticated /v1/models and /health. Its current documentation is not proof of the unpinned implementation built into this older deployment. Remaining GPT/Codex quota and request limits have not been verified; no model calls started. The Itera quota evidence must not be used as allowance evidence for GPT.
 
 Resume: inspect the GPT proxy's account usage/readiness without model charges, resolve exact pipeline source acquisition approval, then run the first suitable transaction with the GPT proxy only. Real dev/live passes remain zero.
+
+## Live attempt L-ETH-001: 70794a87be5d (2026-11-02)
+
+User subsequently authorized Qwen if needed, retaining GPT proxy as primary, and instructed stopping repeated credit-dashboard checks to focus on execution. No provider settings changed. Render's configured Itera key suffix matched the key label on the inspected account; account dashboard showed 30M available, zero used/reserved, 128K context and 160K TPM. This does not establish GPT limits. Configured primary Ethereum RPC was classified privately as QuickNode; no endpoint value recorded. No payments, upgrades or quota-evading key rotation authorized or performed.
+
+Exactly one new live Analyze transaction action was submitted with Ethereum hash `0x2606d459a50ca4920722a111745c2eeced1d8a01ff25ee762e22d5d4b1595739`, model gpt-6.1-sol-low, blank caller keys, blank caller RPC and replay=false. The transaction is a contract-call candidate with an existing recorded trace fixture; this attempt must independently establish current provenance before correctness is claimed.
+
+Live console: 947db7d508f5b93eb603e075b77a77408a91779d. Configured pipeline pin: fb57c3fad63784b7a63dc7fdf1845364c76ce0b7 (runtime SHA not directly attested). Run ID: 70794a87be5d. Proxy wrapper: 070d9d61d3bd9140a5ea71707582781a32ce65f3, upstream implementation revision unpinned/unknown. First observed elapsed 00:21; UI explicitly waiting on model endpoint in preflight with retry-in-1s within shared budget. No new request was submitted to restart or duplicate the run. Outcome pending; no passed stage, score or persisted result claimed yet.
+
+Counts so far: new live attempts 1, completed/correctness passes 0; development real attempts 0. Historical report reopen is separate UI evidence and excluded from analysis pass counts.
+
+### L-ETH-001 terminal result
+
+Persisted report for 70794a87be5d is failed / INCONCLUSIVE, stage_completed=none; deterministic_checks, function_analysis and scoring all skipped. Model endpoint summary reports upstream_http HTTP 503 in preflight, 26 attempts, preflight ok=0/failed=26, transport_seconds=116.727, shared budget=2400 seconds, retries_remaining=3 and reported token counters all zero. UI reached report retrieval around elapsed 02:13 and rendered the failed report rather than HTML or a successful verdict. Reported zero token counters do not independently establish provider billing.
+
+Source at the deployed console SHA configures default preflight timeout=120 seconds, explaining the approximately two-minute preflight window. Its preflight retries do not consume the analysis retry counter. No additional GPT analysis was submitted after this failure.
+
+### Current GPT proxy auth evidence
+
+Read-only Render application logs for proxy service srv-dbd0se6q1p3s73dip3s0 (last-hour view) contain repeated failed-to-refresh messages and the structured OAuth error code refresh_token_reused, including the phrase already been used; HTTP 401/Unauthorized signals are also present. Raw log bodies and credentials were not printed or saved. Evidence location: Render service logs; observation summarized here.
+
+This establishes a current OAuth refresh failure despite a successful /health response and supports an auth-related cause for the newly observed 503 preflight failure. It does not prove every 503 has that cause or solve historical 401/502 incidents. Reauthentication/replacement of the proxy's stored OAuth credentials requires account-owner action; no credentials were rotated, edited or refreshed manually by this session. Stop further GPT calls until resolved.
+
+## Live attempt L-ETH-002: 8692ff7dc377 (2026-11-02)
+
+After L-ETH-001 reached its persisted terminal failed report, submitted exactly one separate live request for the same Ethereum hash with model itera/qwen3.8-27b, blank caller keys/RPC and replay=false. User explicitly authorized Qwen if needed and stopping repeated quota dashboard checks. This is a separate provider test after an outage, not quota-evasion/key cycling or a silent fallback. Exact console/configured pipeline SHAs remain as recorded for L-ETH-001.
+
+Run ID 8692ff7dc377. At elapsed 00:50 UI reports waiting on model endpoint in preflight; no stage or result claimed complete. Outcome pending; no duplicate/restart request submitted. Counts: live attempts 2, terminal failed 1, active 1, complete/correctness passes 0; development real attempts 0.
+
+### L-ETH-002 terminal result and persistence checks
+
+Persisted Qwen report is failed / INCONCLUSIVE, stage_completed=none. All three sections are skipped. Endpoint summary: attempts=1; preflight failed=1/ok=0; failure kind timeout, no HTTP status; transport_seconds=123.983; shared budget=6000 seconds; retries_remaining=3; reported token counters zero. UI elapsed stopped at 02:16. No model request was resubmitted after timeout.
+
+Itera Logs initially hid the new failure under its default filter. Selecting All requests exposed request a3d3a245-0c3a-45e8-8c68-14c99c9bb40d, dated 2 Nov 2026 16:48 UTC, qwen/qwen3.8-27b, FAILED, zero input/cache/output counters and displayed charge $0.0000. This correlates with the console run's 16:48:20 UTC start. Server-side cause was not established from the available request-detail UI; do not label it a quota rejection, queue timeout or application defect without further evidence.
+
+Live history now records 70794a87be5d (GPT) at 2026-11-02T16:45:06+00:00 and 8692ff7dc377 (Qwen) at 2026-11-02T16:48:20+00:00, both error. Reopened each from its own View report control: matching run ID, INCONCLUSIVE, correct 503/timeout classification and skipped stages persisted. GPT report showed no rendered raw HTML error. The rendered Qwen terminal report was visually inspected; history reopening uses status error while initial report status was failed, both visibly inconclusive.
+
+Final attempt counts for this cycle: **2 new live runs, 2 terminal failures, 0 active runs, 0 completed transaction analyses, 0 correctness passes**. Reported preflight HTTP attempts total 27 (26 GPT + 1 Qwen), not 27 separate analyses. Both failed before deterministic/trace/function/scoring work; no current on-chain verification or source-ground-truth check completed. Development real attempts remain zero. Local offline backend baseline remains 294 passed / 31 skipped; frontend remains 13 passed. These are separate evidence categories.
+
+User directed stopping repeated credit-dashboard checks; no more such checks were made. GPT calls stopped after proxy refresh_token_reused evidence. Qwen calls stopped after its single timeout. Restoring GPT requires owner reauthentication, and additional Qwen retries must be justified by changed external state or a diagnosed cause. No credential changes, payments, installs, deployment or retry loops were introduced.
+
+Current next steps: restore the GPT proxy's existing Codex authentication through the account owner, obtain explicit permission for the exact pipeline checkout (two automatic approval rejections remain in force), then reproduce/validate development with that source and rerun a suitable transaction once readiness is restored. Keep the full 16-chain scope; all unattempted chains remain blocked, never silently removed.
