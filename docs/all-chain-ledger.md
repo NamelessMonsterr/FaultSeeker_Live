@@ -94,3 +94,17 @@ Rendered report was visually inspected in the browser. Evidence is this observat
 Itera usage dashboard at https://platform.iteracompute.com/ redirects to /sign-in. No account-specific balance, remaining quota or RPM verified. Google sign-in explicitly notes automatic account creation if absent; no account creation or terms acceptance attempted. User must sign into the existing account that owns the configured Itera key before account quota verification can proceed. Model requests remain zero.
 
 Updated resume point: authenticated live UI/history inspection is complete at this limited scope; exact-pipeline download approval and existing Itera account quota access remain prerequisites for the first new full transaction run. Local line-ending and provenance fixes are saved at af55883355a3bf7262b7e1c5864112ca5e6bfab1 and 8b895b02363b1dbca4316b7d11d69081effcc2d3; neither is deployed. Real analysis passes remain 0/16 development and 0/16 live.
+
+## Provider correction: GPT proxy only (2026-11-02)
+
+User clarified that tests should use the existing GPT proxy only. This supersedes the Itera testing plan and Itera-sign-in prerequisite above. No Itera model calls were made; its dashboard/limits were read only. No provider configuration was changed. Keep gpt-6.1-sol-low for planned model calls.
+
+Render service switcher identified codex-proxy-render, service srv-dbd0se6q1p3s73dip3s0, endpoint https://codex-proxy-render.onrender.com/. Render identifies deployed wrapper repository NamelessMonsterr/codex-proxy-render, branch main, commit 070d9d61d3bd9140a5ea71707582781a32ce65f3. Proxy environment variable names are ADMIN_API_KEY, CODEX_AUTH_JSON and ENV; no values were displayed.
+
+The wrapper Dockerfile at that exact commit clones dvcrn/codex-oauth-proxy with --depth 1 and no source revision pin. Thus the wrapper SHA does not identify the built upstream implementation revision. No proxy changes or deployments were made.
+
+The proxy root showed Render's application-loading screen on the first browser request. After startup, its documented /health endpoint returned {"status":"ok"}. This confirms current reachability only; it does not prove model authentication, remaining Codex allowance or the cause of historical 502 failures. No continuous keep-warm service was introduced.
+
+Current upstream documentation (https://github.com/dvcrn/codex-oauth-proxy) describes Codex OAuth forwarding, authenticated /v1/models and /health. Its current documentation is not proof of the unpinned implementation built into this older deployment. Remaining GPT/Codex quota and request limits have not been verified; no model calls started. The Itera quota evidence must not be used as allowance evidence for GPT.
+
+Resume: inspect the GPT proxy's account usage/readiness without model charges, resolve exact pipeline source acquisition approval, then run the first suitable transaction with the GPT proxy only. Real dev/live passes remain zero.
