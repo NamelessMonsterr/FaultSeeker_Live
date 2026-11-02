@@ -4,7 +4,7 @@
 
 Draft PR: https://github.com/NamelessMonsterr/FaultSeeker_Live/pull/5, base development main, head fix/all-chain-validation. Created and verified at head 1980a692638c6bdccbc398dbd8e63da1a02f7ac4; subsequent ledger updates stay on that fix branch. Repository/base were checked in GitHub before creation. Render was rechecked immediately before publication: main1 auto-deploy On Commit, PR previews Off. No merge or deployment; Instinct review and user repo/base/deployment approvals remain outstanding.
 
-Current result: 294 offline backend passed / 31 skipped; 13 frontend passed. Two live Ethereum attempts failed in preflight and persisted honestly; zero full analyses or correctness passes across 16 chains on either build. No active run. GPT is blocked by current OAuth refresh_token_reused evidence; Qwen had one timeout with cause unverified. Exact pipeline download remains blocked by the earlier no-download restriction and automatic approval rejections.
+Current result: 325 offline backend passed / 0 skipped against the exact pinned pipeline; 13 frontend passed. Two live Ethereum attempts failed in preflight and persisted honestly; zero full analyses or correctness passes across 16 chains on either build. No active run. GPT is blocked by current OAuth refresh_token_reused evidence; Qwen had one timeout with cause unverified. User explicitly approved the exact pipeline download; source acquisition and the previous 31 integration skips are now resolved.
 
 Sections below preserve the chronological evidence and earlier snapshots; later terminal outcomes supersede pending states. The broader goal remains incomplete.
 
@@ -158,3 +158,22 @@ Final attempt counts for this cycle: **2 new live runs, 2 terminal failures, 0 a
 User directed stopping repeated credit-dashboard checks; no more such checks were made. GPT calls stopped after proxy refresh_token_reused evidence. Qwen calls stopped after its single timeout. Restoring GPT requires owner reauthentication, and additional Qwen retries must be justified by changed external state or a diagnosed cause. No credential changes, payments, installs, deployment or retry loops were introduced.
 
 Current next steps: restore the GPT proxy's existing Codex authentication through the account owner, obtain explicit permission for the exact pipeline checkout (two automatic approval rejections remain in force), then reproduce/validate development with that source and rerun a suitable transaction once readiness is restored. Keep the full 16-chain scope; all unattempted chains remain blocked, never silently removed.
+
+## Exact pipeline acquisition and integration verification
+
+User explicitly approved the pending pinned-checkout download. This supersedes the source acquisition blockers above, but does not authorize package installs, credential changes or deployment. Separate checkout: C:\Users\91701\AppData\Local\Temp\faultseeker-all-chain-pipeline, origin NamelessMonsterr/FaultSeeker-, clean detached HEAD fb57c3fad63784b7a63dc7fdf1845364c76ce0b7 (verified with git rev-parse HEAD and git status --short).
+
+Initial exact-pinned run executed all 325 cases: 318 passed, 7 failed, 0 skipped. All seven failures were UnicodeDecodeError in tests/test_function_wall_guard.py::_fork_src: read_text() selected Windows CP1252 for UTF-8 source. Corrected that test reader to read_text(encoding="utf-8"); no expected assertion, fixture, pin or external source changed.
+
+Final commands in the console worktree:
+
+```powershell
+$env:FAULTSEEKER_TEST_PIPELINE_REPO='C:\Users\91701\AppData\Local\Temp\faultseeker-all-chain-pipeline'
+python -B tests/run_offline.py --tb=short -rs
+node tests/run_frontend_offline.cjs
+git diff --check
+```
+
+Results: **325 executed, 325 passed, 0 failed, 0 skipped**, 18.57 seconds; frontend **13 executed/passed, 0 failed/skipped**; diff check passed. Python 3.11.9, OpenAI2.36.0, HTTPX0.28.1. External sockets blocked, dummy keys and temporary run storage; no live model/RPC calls or installs. The previously skipped pinned tests are now actually executed, but remain controlled-boundary integrations, not real all-chain correctness passes.
+
+Current pipeline main was independently checked as fca6b998fa0a01f3832be6a0f1aa1d768306da8f. Its calibration block has the same historical reporting defect as the Docker pin: it replaces confidence.overall after scoring without refreshing level or explanation. The original heuristic explanation therefore survives alongside calibrated overall. A separate fix/calibrated-confidence-reporting worktree was created at C:\Users\91701\Downloads\faultseeker-demo-console-main\faultseeker-pipeline-calibration-fix, based on that verified current main, with origin NamelessMonsterr/FaultSeeker-. The pinned checkout remains unchanged. Pipeline fix/testing is pending; no calibrated metric, paper content or historical report rewritten.
