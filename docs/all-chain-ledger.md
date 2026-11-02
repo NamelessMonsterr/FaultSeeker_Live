@@ -58,6 +58,18 @@ Itera's official https://iteracompute.com/free/ page, checked 2026-11-02, publis
 
 Automatic approval review rejected a temporary checkout of NamelessMonsterr/FaultSeeker- because the earlier no-download restriction is retained. The checkout did not execute. A narrowly scoped user approval request is pending for the exact pinned source only, without installs or changes to live branches. Do not bypass the rejection using another download mechanism.
 
+## Audit cycle: conflicting explorer frame hashes
+
+Confirmed defect in development `app/explorer_trace.py::rows_from_parity`: `{**row, **ident}` silently replaced a provider-supplied transactionHash/blockHash even when it contradicted the independently read RPC transaction. Root from/to/input and tree shape checks alone did not reject that contradiction. This could turn mixed/wrong provider data into apparently verified provenance; no real historical run is asserted to have suffered it.
+
+Reproduction uses copies of the existing recorded Ethereum trace fixture, changes one hash in root or child, and expects refusal. `python -B tests/run_offline.py tests/test_explorer_trace.py -k conflicting_frame_provenance --tb=short` produced **4 failed, 321 deselected** before the fix: all four unexpectedly accepted the contradictory identity. No fixture files or expected ground truth were rewritten.
+
+Fix: reject any non-null provider transactionHash/blockHash differing from RPC identity before constructing bound rows. Missing optional hashes remain allowed; matching hashes are accepted case-insensitively and canonicalized to the RPC representation. Five new regression cases cover four conflicts plus matching explicit identity. Existing root/chain/tree checks remain intact.
+
+After fix, `python -B tests/run_offline.py --tb=short -rs`: **294 passed, 0 failed, 31 skipped**, 7.66 seconds (325 collected, 294 executed). The pipeline-dependent skips remain blocked by source acquisition approval. These local adapter results do not prove the full console flow, on-chain correctness or live deployment behavior. Live console SHA remains 947db7d508f5b93eb603e075b77a77408a91779d; it has not received this development fix.
+
+The user delegated the checkout decision, but automatic approval review rejected a second attempt because that answer did not explicitly lift the no-download restriction. No download occurred; explicit approval is still required. Continue only with available local files until that changes.
+
 ## Resume point
 
 Verify the line-ending fix, obtain exact pinned pipeline for integration, verify free model quotas, authenticate live app without exposing its gate password, then select and verify an Ethereum contract transaction as the first full-flow candidate. Preserve current live revision; no merge/deploy before Instinct review, user repo/base check and explicit PR deployment approval. No live model conclusions or historical 401 root cause are claimed.
