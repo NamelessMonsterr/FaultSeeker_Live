@@ -73,3 +73,24 @@ The user delegated the checkout decision, but automatic approval review rejected
 ## Resume point
 
 Verify the line-ending fix, obtain exact pinned pipeline for integration, verify free model quotas, authenticate live app without exposing its gate password, then select and verify an Ethereum contract transaction as the first full-flow candidate. Preserve current live revision; no merge/deploy before Instinct review, user repo/base check and explicit PR deployment approval. No live model conclusions or historical 401 root cause are claimed.
+
+## Live read-only UI evidence E-live-ui-001 (2026-11-02)
+
+Chrome profile reconnected and Render remained authenticated. Existing live app initially displayed Render's cold-start page, then reached its gate. Gate credential was used only through the browser for this app; no value was printed or saved to the repository. Automation initially read label text rather than the form value and had rejected attempts; these are not evidence of an application authentication defect. The copied clipboard value and transient credential variables were cleared. Authenticated setup and archive subsequently loaded.
+
+Live Network menu lists all 16 chains in the coverage table. Recent runs opened and persisted report `6edfc282c9cd` was reopened through its View report control. No Analyze transaction action was triggered. This historical run is dated 2026-10-24 and is NOT a new live correctness pass for the current deployment.
+
+Observed report fields:
+
+- Transaction: Ethereum `0x2606d459a50ca4920722a111745c2eeced1d8a01ff25ee762e22d5d4b1595739`.
+- analysis_status=completed; reported verdict INCONCLUSIVE; analysis_mode=live-pipeline; stage_completed=stage-3.
+- One scored function and one evidence card, both rendered; selector `0xe32a9a37`, address `0xc793113f1548b97e37c409f39244ee44241bf2b3`.
+- trace_provenance: structured_rpc_or_cache; eth_getTransactionByHash + eth_chainId identity cross-check; block hash `0xadc062e388f2cb069f54f398a7b26c41c8484004deba471c78864a5c732363d3`; block number `0x12c69d2`; abi_verified=false.
+- analysis_integrity: calldata_selector identities; five ranked selector/address pairs; unverified_targets empty. No top-level SHA/version/revision fields are present.
+- Historical confidence is internally inconsistent: overall=0.9941 while its explanation says 60.2% (moderate). Preserve this evidence; root cause in the historical pipeline/calibration path is not established and no correction is claimed.
+
+Rendered report was visually inspected in the browser. Evidence is this observation record plus the persisted run ID on the existing live service; no secret-bearing screenshot or report download was written. Reopening establishes UI/history availability only, not current analysis-stage execution, source correctness or on-chain truth.
+
+Itera usage dashboard at https://platform.iteracompute.com/ redirects to /sign-in. No account-specific balance, remaining quota or RPM verified. Google sign-in explicitly notes automatic account creation if absent; no account creation or terms acceptance attempted. User must sign into the existing account that owns the configured Itera key before account quota verification can proceed. Model requests remain zero.
+
+Updated resume point: authenticated live UI/history inspection is complete at this limited scope; exact-pipeline download approval and existing Itera account quota access remain prerequisites for the first new full transaction run. Local line-ending and provenance fixes are saved at af55883355a3bf7262b7e1c5864112ca5e6bfab1 and 8b895b02363b1dbca4316b7d11d69081effcc2d3; neither is deployed. Real analysis passes remain 0/16 development and 0/16 live.
