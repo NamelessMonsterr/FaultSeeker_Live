@@ -1,8 +1,16 @@
 # All-chain analysis evidence ledger
 
+## Current status
+
+Draft PR: https://github.com/NamelessMonsterr/FaultSeeker_Live/pull/5, base development main, head fix/all-chain-validation. Created and verified at head 1980a692638c6bdccbc398dbd8e63da1a02f7ac4; subsequent ledger updates stay on that fix branch. Repository/base were checked in GitHub before creation. Render was rechecked immediately before publication: main1 auto-deploy On Commit, PR previews Off. No merge or deployment; Instinct review and user repo/base/deployment approvals remain outstanding.
+
+Current result: 294 offline backend passed / 31 skipped; 13 frontend passed. Two live Ethereum attempts failed in preflight and persisted honestly; zero full analyses or correctness passes across 16 chains on either build. No active run. GPT is blocked by current OAuth refresh_token_reused evidence; Qwen had one timeout with cause unverified. Exact pipeline download remains blocked by the earlier no-download restriction and automatic approval rejections.
+
+Sections below preserve the chronological evidence and earlier snapshots; later terminal outcomes supersede pending states. The broader goal remains incomplete.
+
 ## Current scope and identity (2026-11-02)
 
-Goal: a real, suitable transaction analysis on development and approved live for every chain advertised by the console. A pass requires completed stages, scored functions, evidence, persisted/reopened history and conclusions checked against available ground truth. No chain has passed this cycle yet. No model requests have been made.
+Goal: a real, suitable transaction analysis on development and approved live for every chain advertised by the console. A pass requires completed stages, scored functions, evidence, persisted/reopened history and conclusions checked against available ground truth. No chain has passed this cycle yet. At the initial baseline no model requests had been made; the two later attempts are recorded below.
 
 - Development baseline: `aacec55916e94325d3fe5753db22d65969926e08`; working branch `fix/all-chain-validation`.
 - Render service: `srv-dbcntfcs728c73fm1tsg`, `faultseeker-live`.
@@ -19,7 +27,7 @@ Each row covers both builds. DEV/LIVE BLOCKED means no full run has started, not
 
 | Chain | Development trace adapter in source | Hash | Dev / live status | Stage outcomes / verdict / persistence | Timing / evidence |
 | --- | --- | --- | --- | --- | --- |
-| eth | Blockscout instance; RPC trace | unset | BLOCKED / BLOCKED | not run | quota and authenticated app access pending |
+| eth | Blockscout instance; RPC trace | 0x2606d459a50ca4920722a111745c2eeced1d8a01ff25ee762e22d5d4b1595739 | DEV BLOCKED / LIVE 2 FAILED PREFLIGHT | all analysis stages skipped; INCONCLUSIVE; both reports reopened | L-ETH-001 / L-ETH-002 below; no current on-chain verification |
 | bsc | RPC trace required | unset | BLOCKED / BLOCKED | not run | provider trace capability pending |
 | polygon | RPC trace required | unset | BLOCKED / BLOCKED | not run | free route unverified |
 | arbitrum | RPC trace required | unset | BLOCKED / BLOCKED | not run | free route unverified |
