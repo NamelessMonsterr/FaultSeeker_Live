@@ -89,6 +89,7 @@ class ModelEndpointSession:
         self.condition = threading.Condition(self.state_lock)
         self.key_pools = {}
         self.model_routes = {}
+        self.model_timeouts = {}
         self.route_policy = None
         self.tokens = {"prompt": 0, "completion": 0, "reasoning": 0}
 
@@ -230,7 +231,8 @@ class ModelEndpointSession:
                 else:
                     now = self.clock()
                     left = request_deadline - now
-                    reservation = min(self.call_timeout, available, left)
+                    attempt_timeout = min(self.call_timeout, self.model_timeouts.get(model, self.call_timeout))
+                    reservation = min(attempt_timeout, available, left)
                     if reservation <= 0:
                         self._deadline_or_budget_failure(phase, request_deadline, last_error, explicit_tighter)
                     self.reserved += reservation

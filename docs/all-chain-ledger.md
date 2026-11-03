@@ -232,3 +232,32 @@ a separate compatibility concern. No timeout configuration was changed here.
 The historical timeout had no HTTP status or provider error code; queueing is
 consistent with timing but remains unproven. No new model request, payment,
 credential change or deployment was performed. Real-chain passes remain zero.
+
+### Route-specific timeout follow-through
+
+Development now defaults Itera's request/preflight allowances to 180 seconds,
+matching the documented first-call example, while retaining explicit operator
+FAULTSEEKER_MODEL_CALL_TIMEOUT_SECS / legacy FAULTSEEKER_LLM_TIMEOUT_SECS and
+FAULTSEEKER_MODEL_PREFLIGHT_SECS precedence. Other model defaults stay 60-second
+attempts and 120-second preflight. Self-test uses the same Itera attempt policy.
+
+Independent read-only review caught an intermediate mixed-model regression:
+the session-wide Itera allowance also raised GPT attempts to 180 seconds. Fixed
+before publication with per-model attempt caps. SDK MockTransport regression
+checks the actual HTTP timeout; reservation reconciliation only reduces it.
+One mixed-run preflight deadline remains shared across all selected stages.
+Shared total budget and retry counter are unchanged, SDK retries remain disabled.
+Independent re-review found no further confirmed issue in changed paths.
+
+Final exact-pinned offline command: `python -B tests/run_offline.py --tb=short -rs`
+with FAULTSEEKER_TEST_PIPELINE_REPO set to the clean fb57c3f checkout:
+**330 executed/passed, 0 failed/skipped**, 13.15 seconds.
+Frontend: `node tests/run_frontend_offline.cjs`, **13 executed/passed, 0 failed/skipped**.
+Diff check passed. An intermediate new test used a nonexistent retry_limit
+attribute; corrected to the real retries_left counter before the final run.
+
+Local process has no configured Itera key and no local env file was found;
+no corrected live request was made. Explicit deployed limits may still override
+the new defaults. Render rechecked main1 On Commit / previews Off and live SHA
+947db7d508f5b93eb603e075b77a77408a91779d before publishing only the fix ref.
+Provider recovery and full corrected-development/live flow remain unverified.

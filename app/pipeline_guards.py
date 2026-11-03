@@ -9,11 +9,11 @@ import os
 
 try:
     from .model_endpoint import ModelEndpointSession
-    from .model_routes import ITERA_DEFAULT_BASE_URL, resolve_route
+    from .model_routes import ITERA_DEFAULT_BASE_URL, resolve_route, model_call_timeout
     from .trace_identity import TraceIdentityError, canonical_to_legacy, check_structured, validate_trace_root
 except ImportError:  # app/server.py invoked directly
     from model_endpoint import ModelEndpointSession
-    from model_routes import ITERA_DEFAULT_BASE_URL, resolve_route
+    from model_routes import ITERA_DEFAULT_BASE_URL, resolve_route, model_call_timeout
     from trace_identity import TraceIdentityError, canonical_to_legacy, check_structured, validate_trace_root
 
 
@@ -438,7 +438,9 @@ def make_runtime(tx_hash, chain, use_model, emit, models=()):
     session = ModelEndpointSession(emit=emit,
         retry_limit=int(os.getenv("FAULTSEEKER_MODEL_RETRY_LIMIT", "3")),
         time_budget=model_time_budget(models),
-        call_timeout=float(os.getenv("FAULTSEEKER_MODEL_CALL_TIMEOUT_SECS", os.getenv("FAULTSEEKER_LLM_TIMEOUT_SECS", "60")))) if use_model else None
+        call_timeout=model_call_timeout(models)) if use_model else None
+    if session:
+        session.model_timeouts = {model: model_call_timeout([model]) for model in models if model}
     runtime = PipelineRuntime(tx_hash, chain, session=session, emit=emit)
     try:
         return runtime.install()

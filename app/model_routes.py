@@ -9,6 +9,18 @@ ITERA_DEFAULT_BASE_URL = "https://api.iteracompute.com/v1"
 ITERA_UPSTREAM_MODELS = {"itera/qwen3.8-27b": "qwen/qwen3.8-27b"}
 
 
+def model_call_timeout(models=()):
+    """Keep operator caps; Itera's documented example allows queue + generation."""
+    default = "180" if any(str(model).startswith(ITERA_PREFIX) for model in models) else "60"
+    return float(os.getenv("FAULTSEEKER_MODEL_CALL_TIMEOUT_SECS",
+                          os.getenv("FAULTSEEKER_LLM_TIMEOUT_SECS", default)))
+
+
+def model_preflight_timeout(models=()):
+    default = "180" if any(str(model).startswith(ITERA_PREFIX) for model in models) else "120"
+    return float(os.getenv("FAULTSEEKER_MODEL_PREFLIGHT_SECS", default))
+
+
 def adapt_request(model, kwargs):
     """Rewrite a request for the operator-selected Itera route.
 
