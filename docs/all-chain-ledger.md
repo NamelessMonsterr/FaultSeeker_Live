@@ -301,3 +301,35 @@ sets20000; isolated base and fix geth normalizers both raise at depth1024/limit1
 The Parity patch does not introduce or resolve this depth limitation. A future
 pipeline-pin update must account for it; do not claim current-main full-flow
 depth support from the older pin's passing probe.
+
+### Depth fix published separately for review
+
+Pipeline draft https://github.com/NamelessMonsterr/FaultSeeker-/pull/5 targets
+main at fca6b998; head72e6ad77d7a8d7230b461189eba9bc033d631187 on
+fix/deep-trace-processing. Normalization, TraceNode/object conversions, graph/text
+traversal and flattening are iterative; frame-only copying avoids copying every
+descendant subtree per node. Preorder identities and postorder repeated-pattern
+collection remain intact. Cycle rejection permits reused sibling references.
+
+The integrated application test still reproduced standard JSON/deepcopy failure
+before an explicit application-entrypoint policy was added: main() establishes
+a process-wide minimum recursion allowance20000, replacing the old pin's import
+side effect. It never lowers a larger limit or temporarily resets it in production.
+Direct library callers bypassing main() do not receive that allowance. No
+arbitrary-depth, bounded-resource or live correctness guarantee is claimed.
+
+Commands in the new pipeline worktree:
+`python -B tests/run_offline_depth.py tests/test_deep_application_path.py tests/test_deep_rpc_normalization.py tests/test_deep_trace_objects.py tests/test_deep_trace_flattening.py tests/test_reentrancy_state_signals.py tests/test_pipeline_parse.py`
+=> **66 executed/passed,0failed/skipped**,12.56s.
+`python -B tests/run_offline_depth.py tests`
+=> **232 executed/passed,0failed/skipped**,15.20s; diff check passed.
+Installed pyreadline3 ignored shutdown-handle warning; exit0. Independent
+read-only review found no confirmed regression. Sockets blocked, inherited keys
+removed, temporary output storage, no installs or live provider calls.
+
+The integrated test retains1024 frames through real normalization, cache JSON
+roundtrip, deepcopy, sequencer, graph, flattening and main report JSON, with
+analyze_transaction controlled around that path. It does not execute complete
+forensic/function/model reasoning. Separate Parity/calibration drafts are not
+folded in; future merge resolution must preserve all three. Pipeline main and
+console Docker pin unchanged. No merge/deploy, real-chain passes still0/16.
