@@ -78,9 +78,9 @@ def test_inception_preflight_and_analysis_use_documented_request_contract():
     assert len(requests) == 2 and sdk_attempts == ["0", "0"]
     preflight, analysis = requests
     assert preflight["model"] == analysis["model"] == "mercury-3"
-    assert preflight["temperature"] == analysis["temperature"] == 0.5
+    assert preflight["temperature"] == analysis["temperature"] == 1
     assert preflight["reasoning_effort"] == "instant" and preflight["max_completion_tokens"] == 8
-    assert analysis["reasoning_effort"] == "low" and analysis["max_completion_tokens"] == 8192
+    assert analysis["reasoning_effort"] == "low" and analysis["max_completion_tokens"] == 24576
     assert all("max_tokens" not in row and "reasoning" not in row for row in requests)
     assert session.summary()["calls"] == {"preflight": {"ok": 1, "failed": 0}, "analysis": {"ok": 1, "failed": 0}}
 
@@ -88,3 +88,18 @@ def test_inception_preflight_and_analysis_use_documented_request_contract():
 def test_other_provider_parameters_remain_unchanged():
     request = {"model": "gpt-4o-mini", "temperature": 0, "max_tokens": 12}
     assert adapt_request("gpt-4o-mini", request) == request
+
+
+def test_inception_normal_profile_and_timeout_isolation(monkeypatch):
+    from app.model_routes import model_call_timeout
+    for name in ("FAULTSEEKER_MODEL_CALL_TIMEOUT_SECS", "FAULTSEEKER_LLM_TIMEOUT_SECS"):
+        monkeypatch.delenv(name, raising=False)
+    result = adapt_request(MODEL, {"temperature": 0})
+    assert result["max_completion_tokens"] == 24576
+    assert result["temperature"] == 1
+    assert adapt_request(MODEL, {"temperature": 0.5})["temperature"] == 0.5
+    assert model_call_timeout([MODEL]) == 120
+    assert model_call_timeout(["gpt-6.1-sol-low"]) == 60
+    assert model_call_timeout([MODEL, "itera/qwen3.8-27b"]) == 180
+    monkeypatch.setenv("FAULTSEEKER_MODEL_CALL_TIMEOUT_SECS", "45")
+    assert model_call_timeout([MODEL]) == 45

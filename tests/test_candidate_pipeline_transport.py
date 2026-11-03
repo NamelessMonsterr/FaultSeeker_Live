@@ -52,8 +52,8 @@ def test_candidate_inception_agents_use_registered_cloud_policy_and_shared_trans
             assert instance.query("Controlled routing contract", format="str") == "OK"
         assert len(requests) == 7
         assert requests[0]["reasoning_effort"] == "instant"
-        assert all(row["model"] == "mercury-3" and row["temperature"] == 0.5 for row in requests)
-        assert all(row["reasoning_effort"] == "low" and row["max_completion_tokens"] == 8192 for row in requests[1:])
+        assert all(row["model"] == "mercury-3" and row["temperature"] == 1 for row in requests)
+        assert all(row["reasoning_effort"] == "low" and row["max_completion_tokens"] == 24576 for row in requests[1:])
         assert runtime.session.summary()["calls"]["analysis"] == {"ok": 6, "failed": 0}
     finally:
         runtime.close()

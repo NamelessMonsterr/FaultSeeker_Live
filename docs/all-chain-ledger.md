@@ -848,3 +848,14 @@ GET to base.blockscout.com returned403; one raw-trace attempt failedHTTPError
 registration did not change project support. Artifact:base-nalakuvara.identity-probe.json.
 No model run/full Base pass. Source:
 https://github.com/SunWeb3Sec/DeFiHackLabs/blob/main/src/test/2025-05/Nalakuvara_LotteryTicket50_exp.sol .
+
+
+### Mercury normal-profile correction — 2026-11-03
+
+- Revalidated clean starting console HEAD `1dc5bc51199c2e6bdb52008813b0ef17b7405882`. Previous continuation was status-only; this cycle changes the tested request profile.
+- Run `e35e90aa01fc` remained partial/INCONCLUSIVE after `completion_finish_reason=length` at8192; no completed chain pass is added.
+- Official API reference https://docs.inceptionlabs.ai/api-reference/chat/create-a-chat-completion documents Mercury3 normal budget24576 including reasoning and visible output, temperature default1. Replaced arbitrary8192 normal cap with bounded24576. Legacy temperatures below0.5 map to provider default1; valid explicit0.5..1 preserved. Preflight remains instant/8tokens.
+- Inception per-attempt timeout120seconds, other providers unchanged; explicit operator caps remain authoritative. Shared run budget and unfinished-response rejection unchanged. No automatic escalation or retry on truncation.
+- Test-first reproduction: `python -B -m pytest tests/test_inception_route.py -q --tb=short`:2failed,14passed before implementation (temperature/default budget assertions).
+- Verification: exact pin `fb57c3fad63784b7a63dc7fdf1845364c76ce0b7`, candidate `e9d7166ba9362e5fbaeeb349158d0649efc5632d`; `python -B tests/run_offline.py --tb=line -rs`:378passed,0failed,0skipped (14.72s). `node tests/run_frontend_offline.cjs`:18passed,0failed,0skipped. `python -B tools/sync_static.py --check` and `git diff --check`:passed.
+- Kluster tools unavailable; no Kluster verification claimed. No live generation performed for this profile yet; running server still uses previous code. No deployment, merge or protected-branch change. Development/live complete coverage remains0/16 each.

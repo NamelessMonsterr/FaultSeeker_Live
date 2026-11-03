@@ -15,7 +15,10 @@ INCEPTION_UPSTREAM_MODELS = {"inception/mercury-3": "mercury-3"}
 
 def model_call_timeout(models=()):
     """Keep operator caps; Itera's documented example allows queue + generation."""
-    default = "180" if any(str(model).startswith(ITERA_PREFIX) for model in models) else "60"
+    models = tuple(models)
+    default = ("180" if any(str(model).startswith(ITERA_PREFIX) for model in models)
+               else "120" if any(str(model).startswith(INCEPTION_PREFIX) for model in models)
+               else "60")
     return float(os.getenv("FAULTSEEKER_MODEL_CALL_TIMEOUT_SECS",
                           os.getenv("FAULTSEEKER_LLM_TIMEOUT_SECS", default)))
 
@@ -44,14 +47,15 @@ def adapt_request(model, kwargs, *, phase="analysis"):
         if (not isinstance(temperature, (int, float)) or isinstance(temperature, bool)
                 or not math.isfinite(temperature) or not 0 <= temperature <= 1):
             raise ValueError("Inception temperature must be between 0 and 1.")
-        adapted["temperature"] = max(0.5, temperature)
+        adapted["temperature"] = temperature if temperature >= 0.5 else 1
         if "max_tokens" in adapted and "max_completion_tokens" in adapted:
             raise ValueError("Conflicting Inception output-token limits.")
-        # The documented 8192 example budgets for reasoning plus visible output;
-        # real runs exhausted4096 in reasoning before completing their answers.
-        limit = adapted.pop("max_tokens", adapted.get("max_completion_tokens", 8192))
-        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 8192:
-            raise ValueError("Inception output-token limit must be between 1 and 8192.")
+        # Mercury3 normal budget includes reasoning and visible output.
+        # Keep this bounded at the documented normal default; no automatic escalation.
+        # https://docs.inceptionlabs.ai/api-reference/chat/create-a-chat-completion
+        limit = adapted.pop("max_tokens", adapted.get("max_completion_tokens", 24576))
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 24576:
+            raise ValueError("Inception output-token limit must be between 1 and 24576.")
         adapted["max_completion_tokens"] = limit
         effort = adapted.setdefault("reasoning_effort", "instant" if phase == "preflight" else "low")
         if effort not in ("instant", "low", "medium", "high"):
