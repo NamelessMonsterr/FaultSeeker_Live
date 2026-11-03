@@ -4,7 +4,7 @@
 
 Draft PR: https://github.com/NamelessMonsterr/FaultSeeker_Live/pull/5, base development main, head fix/all-chain-validation. Created and verified at head 1980a692638c6bdccbc398dbd8e63da1a02f7ac4; subsequent ledger updates stay on that fix branch. Repository/base were checked in GitHub before creation. Render was rechecked immediately before publication: main1 auto-deploy On Commit, PR previews Off. No merge or deployment; Instinct review and user repo/base/deployment approvals remain outstanding.
 
-Current result: 330 console offline backend passed / 0 skipped against the exact pinned pipeline; 13 frontend passed. Latest local combined pipeline suite:278 passed /0skipped. Two old live Ethereum attempts failed in preflight; one current development run passed Qwen preflight then failed RPC403, with zero complete analyses/correctness passes across16chains. No active analysis. GPT refresh failure is unresolved; Qwen now has one successful authenticated preflight, not a full analysis pass. Current Ethereum identity and a five-frame keyless explorer trace are verified below. Source acquisition and prior integration skips are resolved.
+Current result: 345 console offline backend passed / 0 skipped with both exact pinned pipeline and explicitly identified corrected candidate; 13 frontend passed. Latest local combined pipeline suite:286 passed /0skipped. Two old live Ethereum attempts failed in preflight; development run50c53ee29ba1 passed Qwen preflight then failed RPC403. Development run1caf1c5827dd ended partial / INCONCLUSIVE with no model analysis or scoring. Candidate cross-module routing compatibility has offline regression coverage; no complete correctness pass claimed. GPT refresh failure is unresolved. Source acquisition and prior integration skips are resolved.
 
 Sections below preserve the chronological evidence and earlier snapshots; later terminal outcomes supersede pending states. The broader goal remains incomplete.
 
@@ -449,3 +449,107 @@ C:\Users\91701\AppData\Local\Temp\faultseeker-local-validation-0745f5b807564267a
 This is a suitable additional function-analysis candidate, not a completed model
 analysis or correctness pass. No supplied preset, expected result or fixture was
 changed to force a match. Original2606 input investigation remains preserved.
+
+## Encrypted local key and D-ETH-002:1caf1c5827dd (terminal partial)
+
+User explicitly authorized local key persistence, superseding the earlier
+no-secret-disk-storage instruction for this existing Itera credential only.
+One-time masked owner entry created
+C:\Users\91701\AppData\Local\FaultSeeker\itera-key.dpapi.
+Windows DPAPI encryption binds it to the current Windows account/machine;
+inherited permissions disabled, two explicit owner/SYSTEM access rules.
+Encryption/decryption and no-overwrite tests passed with dummy data. Actual
+saved key readability checked without displaying it. No plaintext key saved,
+printed, committed or uploaded. Helper/credential are outside the repository;
+Render settings and credential value were not changed.
+
+The local server now loads the encrypted key automatically into its process
+environment; unknown inherited provider credentials/history tokens are cleared.
+Public Ethereum RPC and direct keyless explorer trace routing remain as above.
+No future manual key reentry is needed while this local encrypted credential is
+valid. This is local configuration, not a production credential deployment.
+
+Submitted exactly one new real development analysis1caf1c5827dd:
+Ethereum0xa17fdb804728f226fcd10e78eae5247abd984e0f03301312315b89cae25aa517,
+itera/qwen3.8-27b, no caller key/RPC override. Console70f49d544e0acaf1ec488338ed982395b75ec86d,
+combined pipeline745ac7435b142a22c0eece81dac43a6cdb5f427c. Initial UI/model
+events show one preflight request in progress with all analysis stages pending.
+No duplicate/restart request submitted and no success inferred from activity.
+Terminal result: partial / INCONCLUSIVE, stage_completed deterministic-checks.
+Started2026-11-03T12:30:56+05:30; report timestamp12:34:52.364995 local.
+Reported pipeline duration97.228seconds excludes preflight; persisted event
+span229.8seconds (128 events, terminal end). Do not treat pipeline duration as
+the whole run latency.
+Preflight succeeded once (132.765 transport seconds; 15 prompt and 2 completion
+tokens); analysis HTTP calls were zero, scored functions zero, evidence cards
+zero. Function-analysis controller started/completed once but no per-function
+analysis was observed. Sections explicitly say no_model_analysis / scoring
+skipped. This is not a complete analysis or correctness pass.
+Persisted result and events exist under the local validation history directory
+as 1caf1c5827dd.json and 1caf1c5827dd.events.jsonl. Terminal rendered UI inspected;
+history reopening checked through Recent runs / View report: partial,
+INCONCLUSIVE, no_model_analysis, scoring skipped, Functions and evidence (0).
+Heuristic estimates remain explicitly marked as not validated findings.
+
+Source inspection found a routing mismatch in the candidate pipeline:
+FunctionAnalyzer imports utils.utils.build_agent, whose legacy implementation
+routes every non-gpt model to OllmaAgent. The provider-aware factory instead
+lives in utils.agent, where the console registers the Itera prefix. Therefore
+successful shared-transport preflight does not establish that this constructor
+uses that transport. Offline reproduction confirmed all six FunctionAnalyzer
+Itera agents instantiated as OllmaAgent, a simulated local error was swallowed
+into an empty result, and no cloud transport calls occurred. Initial regression
+tests: 4 failed / 2 passed, including wrong Gemini and o3 routing through the
+legacy wrapper. Fix/testing underway; no new live request submitted while the
+mismatch is unresolved.
+
+## Routing regression and candidate compatibility follow-through
+
+Exact Docker pin fb57c3f already delegates utils.build_agent to the provider
+factory. Current development main fca6b99 regressed to GPT-or-Ollama routing.
+A standalone fix/provider-factory-routing branch restores the delegation and
+adds eight regression cases. Offline focused suite:38 passed,0 skipped;
+combined candidate full pipeline suite:286 passed,0 skipped.
+Standalone commit f43307f01960ae1ddc69a8cffc0923f3f1e66e16 pushed and verified
+at https://github.com/NamelessMonsterr/FaultSeeker-/pull/7 (draft, user's fork,
+base main). Pipeline main remains fca6b998fa0a01f3832be6a0f1aa1d768306da8f.
+Local integration candidate committed as6a5b0befeb85bf1c19fcdf35fddb5967e58fdb96;
+that integration branch remains local only. Render settings rechecked before
+push: console repo FaultSeeker_Live, branch main1, On Commit, previews Off,
+deployed947db7d508f5b93eb603e075b77a77408a91779d. No deployment triggered.
+
+Added a console integration test that constructs all six actual FunctionAnalyzer
+agents, mocks HTTP, and asserts Itera request adaptation plus six successful
+analysis calls in the shared session. Exact-pin console suite:331 passed,
+0 skipped; frontend13 passed,0 skipped. These are offline tests, not real passes.
+
+Explicit invocation of that routing contract against the candidate found another
+compatibility boundary: candidate agent.py lacks _parse_api_keys and
+_llm_call_with_retry. The real server supplies model_keys, masking the former
+during preflight; existing shared-transport installation depends on the latter.
+Therefore a factory-only fix is insufficient for safe candidate analysis.
+Candidate compatibility work remains in progress; no additional live model
+request has been sent. An initial standalone offline command had a temporary
+directory cleanup error after38 passing tests; rerun closes logging/restores
+working directory and exits0 with38 passed. The failed candidate contract is
+not included among passing integration counts.
+
+Candidate transport regression initial run:5 failed,331 deselected. Actual
+worker-supplied model_keys masked the missing parser but analysis bypassed
+the session, sent the raw multi-key string and unadapted alias, and swallowed
+502/429. The console now adapts older direct-SDK agents to session.call when
+their retry helper is absent; pinned helper-based behavior is unchanged.
+Legacy JSON query also swallowed propagated errors:2 regression failures
+reproduced, then a query-boundary health check preserved the latched failure.
+Fourteen candidate regressions now pass: actual analyzer transport/usage,
+SDK retry cap, GPT proxy/direct route controls, parser fallback, auth rotation,
+and mid-run502/429 propagation in string/JSON modes. No live requests used.
+
+Final offline command (both distinct checkouts, no substitution of the pin):
+FAULTSEEKER_TEST_PIPELINE_REPO=C:\Users\91701\AppData\Local\Temp\faultseeker-all-chain-pipeline
+FAULTSEEKER_TEST_CANDIDATE_REPO=C:\Users\91701\Downloads\faultseeker-demo-console-main\faultseeker-pipeline-integration
+FAULTSEEKER_TEST_CANDIDATE_SHA=6a5b0befeb85bf1c19fcdf35fddb5967e58fdb96
+python -B tests/run_offline.py --tb=short -rs
+Result345 passed,0 failed,0 skipped in13.29seconds, exit0. Candidate modules
+are isolated/restored separately from the immutable pin. Frontend13 passed,
+0 skipped; git diff --check passed. Pipeline PR7 CI:2/2 checks passed.

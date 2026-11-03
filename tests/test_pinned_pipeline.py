@@ -72,6 +72,43 @@ def test_real_agents_share_one_failure_budget_and_cannot_swallow_502(pinned, mon
         runtime.close()
 
 
+def test_function_analyzer_itera_agents_use_shared_transport(pinned, monkeypatch):
+    agents = importlib.import_module("faultseeker.utils.agent")
+    analyzer_module = importlib.import_module("faultseeker.function_analysis.function_analyzer")
+    model = "itera/qwen3.8-27b"
+    monkeypatch.setenv("ITERA_API_KEY", "dummy-only-itera-key")
+    calls = []
+    def reply(request):
+        calls.append((str(request.url), json.loads(request.content)))
+        assert request.headers["authorization"] == "Bearer dummy-only-itera-key"
+        return httpx.Response(200, json={"id": "offline", "object": "chat.completion", "created": 0,
+            "model": model, "choices": [{"index": 0, "finish_reason": "stop",
+            "message": {"role": "assistant", "content": "OK"}}]})
+    def factory(**kwargs):
+        return OpenAI(**kwargs, http_client=httpx.Client(transport=httpx.MockTransport(reply)))
+    monkeypatch.setattr(agents, "OpenAI", factory)
+    def forbidden_local(**kwargs):
+        raise AssertionError("Cloud model must not invoke local Ollama")
+    monkeypatch.setattr(agents, "chat", forbidden_local)
+    session = ModelEndpointSession(retry_limit=0)
+    runtime = PipelineRuntime(TX, "eth", session=session).install()
+    try:
+        runtime.preflight([model])
+        analyzer = analyzer_module.FunctionAnalyzer(model=model)
+        for name in ("reasoning_agent", "generation_agent", "processing_agent",
+                     "organization_agent", "children_call_filtering_agent", "agent"):
+            instance = getattr(analyzer, name)
+            assert isinstance(instance, agents.UniversalAgent)
+            assert instance.query("Offline routing contract", format="str") == "OK"
+        assert session.summary()["calls"]["analysis"]["ok"] == 6
+        assert len(calls) == 7  # one preflight and all six actual analyzer agents
+        assert all(url == "https://api.iteracompute.com/v1/chat/completions" for url, body in calls)
+        assert all(body["model"] == "qwen/qwen3.8-27b" and body["reasoning"] is False
+                   and "reasoning_effort" not in body for url, body in calls)
+    finally:
+        runtime.close()
+
+
 def test_real_sequence_and_ranker_use_verified_calldata_not_cast_label(pinned, monkeypatch):
     seq_module = importlib.import_module("faultseeker.data_collection.txn_sequencer")
     replay_module = importlib.import_module("faultseeker.data_collection.txn_replayer")

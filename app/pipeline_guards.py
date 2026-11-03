@@ -6,6 +6,8 @@ the same transport/identity policy while retaining the pinned source revision.
 """
 from copy import deepcopy
 import os
+import re
+import time
 
 try:
     from .model_endpoint import ModelEndpointSession
@@ -70,6 +72,8 @@ class PipelineRuntime:
             self.session.route_policy = self._model_config
         if hasattr(agent_module, "_llm_call_with_retry"):
             self.replace(agent_module, "_llm_call_with_retry", self.session.call)
+        legacy_transport = (not hasattr(agent_module, "_llm_call_with_retry")
+                            and callable(getattr(agent_module, "OpenAI", None)))
         config = getattr(agent_module, "PROVIDER_CONFIG", None)
         if isinstance(config, dict) and "itera/" not in config:
             # The pinned pipeline sends any unknown model prefix to a local Ollama
@@ -79,6 +83,11 @@ class PipelineRuntime:
                          {**config, "itera/": (ITERA_DEFAULT_BASE_URL, "ITERA_API_KEY")})
         for agent_class in {agent_module.GPTAgent, agent_module.UniversalAgent}:
             original = agent_class._send_message
+            if legacy_transport:
+                # Older development agents call the SDK directly and swallow its
+                # errors. Replace that boundary rather than allowing calls to
+                # bypass the shared circuit, route/key policy and SDK retry cap.
+                original = self._legacy_shared_send(agent_module, agent_class is agent_module.GPTAgent)
             def checked_send(agent, *args, _original=original, **kwargs):
                 self.assert_healthy()
                 try:
@@ -89,6 +98,47 @@ class PipelineRuntime:
                 self.assert_healthy()  # Upstream may have swallowed an APIStatusError.
                 return result
             self.replace(agent_class, "_send_message", checked_send)
+            if legacy_transport and hasattr(agent_class, "query"):
+                original_query = agent_class.query
+                def checked_query(agent, *args, _original=original_query, **kwargs):
+                    self.assert_healthy()
+                    try:
+                        result = _original(agent, *args, **kwargs)
+                    except Exception:
+                        self.assert_healthy()
+                        raise
+                    self.assert_healthy()  # Legacy JSON query catches send failures.
+                    return result
+                self.replace(agent_class, "query", checked_query)
+
+    def _legacy_shared_send(self, agent_module, is_gpt):
+        """Adapt the older direct-SDK agent contract to the shared transport.
+
+        The pinned retry-helper path remains unchanged. Keep the legacy prompt,
+        history, JSON-mode and usage-recording behavior, but propagate failures.
+        """
+        def send(agent, user_message, temperature=0):
+            started = time.monotonic()
+            user_message = user_message[:10000]
+            agent.memory.append({"role": "user", "content": user_message})
+            request = {"messages": agent._truncate_history(agent.memory),
+                       "model": agent.model, "temperature": temperature}
+            if agent.model in agent_module.JSON_MODE_MODELS or (is_gpt and agent.model.startswith(
+                    ("gpt-4o", "gpt-4.1", "gpt-4-turbo"))):
+                request["response_format"] = {"type": "json_object"}
+            def factory():
+                endpoint, keys = self._model_config(agent.model)
+                return agent_module.OpenAI(api_key=keys[0], base_url=endpoint, max_retries=0)
+            completion = self.session.call(factory, request, agent.model)
+            reply = completion.choices[0].message.content
+            agent.memory.append({"role": "assistant", "content": reply})
+            usage = getattr(completion, "usage", None)
+            agent._record_router_query(len(user_message), len(reply),
+                (time.monotonic() - started) * 1000,
+                input_tokens=getattr(usage, "prompt_tokens", None),
+                output_tokens=getattr(usage, "completion_tokens", None))
+            return reply
+        return send
 
     def install(self):
         from faultseeker.utils import agent as agents
@@ -261,7 +311,24 @@ class PipelineRuntime:
     def _model_config(self, model):
         base_url, env_name = self.source.UniversalAgent._detect_provider(model)
         base_url, env_name = resolve_route(model, base_url, env_name)
-        keys = self.model_keys.get(model) or self.source._parse_api_keys(os.getenv(env_name, ""))
+        keys = self.model_keys.get(model)
+        if not keys:
+            raw = os.getenv(env_name, "")
+            parser = getattr(self.source, "_parse_api_keys", None)
+            if callable(parser):
+                keys = parser(raw)
+            else:
+                # Current development lacks the pinned parser. Preserve its
+                # supported separators/assignment handling without SDK key reuse.
+                keys = []
+                for token in re.split(r"[\s,;]+", raw.strip()):
+                    token = token.strip().strip('"').strip("'")
+                    if "=" in token:
+                        name, _, token = token.partition("=")
+                        if "API_KEY" not in name:
+                            continue
+                    if token.strip():
+                        keys.append(token.strip())
         if not keys:
             raise ValueError("The configured model requires an API key.")
         return base_url, keys
