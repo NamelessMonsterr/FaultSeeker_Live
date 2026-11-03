@@ -14,13 +14,14 @@ except ImportError:  # app/server.py invoked directly
 
 class ModelEndpointFailure(RuntimeError):
     def __init__(self, kind, status_code=None, phase="analysis", *, provider_code=None,
-                 retry_after_seconds=None, retry_after_utc=None):
+                 retry_after_seconds=None, retry_after_utc=None, completion_finish_reason=None):
         self.kind = kind
         self.status_code = status_code
         self.phase = phase
         self.provider_code = provider_code
         self.retry_after_seconds = retry_after_seconds
         self.retry_after_utc = retry_after_utc
+        self.completion_finish_reason = completion_finish_reason
         messages = {
             "authentication": "Model endpoint rejected authentication or access.",
             "model_unavailable": "The configured model is unavailable at this endpoint.",
@@ -44,7 +45,7 @@ class ModelEndpointFailure(RuntimeError):
         result = {"kind": self.kind, "http_status": self.status_code,
                 "phase": self.phase, "message": str(self),
                 "scope": "credential" if self.kind == "authentication" else ("provider_limit" if self.kind == "rate_limited" else "endpoint")}
-        for name in ("provider_code", "retry_after_seconds", "retry_after_utc"):
+        for name in ("provider_code", "retry_after_seconds", "retry_after_utc", "completion_finish_reason"):
             value = getattr(self, name)
             if value is not None:
                 result[name] = value
@@ -341,7 +342,8 @@ class ModelEndpointSession:
                     # Retain its reported usage, but never treat it as analysis.
                     with self.state_lock:
                         self._count_tokens(completion)
-                    raise ModelEndpointFailure("incomplete_response", phase=phase)
+                    raise ModelEndpointFailure("incomplete_response", phase=phase,
+                        completion_finish_reason=choices[0].finish_reason)
                 if not choices or not isinstance(getattr(choices[0].message, "content", None), str) or not choices[0].message.content.strip():
                     raise ModelEndpointFailure("invalid_response", phase=phase)
             except Exception as exc:

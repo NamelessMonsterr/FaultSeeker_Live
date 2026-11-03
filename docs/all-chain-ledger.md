@@ -790,3 +790,30 @@ One authenticated,non-generation GET /v1/models confirmed mercury-3 available
 to the saved key. Artifact:inception-model-catalog.json in local validation
 history. This is catalog access,not inference/preflight/full-analysis success.
 No Inception generation request has started at this checkpoint.
+
+## D-ETH-005:274b48534546 (terminal partial / unfinished completion)
+
+Exactly one real Mercury analysis accepted for the verified Ethereum setup
+hash0xa17fdb804728f226fcd10e78eae5247abd984e0f03301312315b89cae25aa517.
+Console a1126b2c7113fe7d5033647b90571ef400e6d584; pipeline
+e9d7166ba9362e5fbaeeb349158d0649efc5632d. Local server PID17280/session99120,
+loopback8765. No caller key/RPC override; encrypted local Inception key used.
+First event2026-11-03T12:50:10.6Z. Six model requests: preflight1 success,
+analysis4 successes/1 explicit unfinished response; transport21.75seconds.
+Tokens1723 prompt,8278 completion,of which8230 reasoning (a subset,not extra).
+All3 shared retries unused; no429,provider fallback or paid route used.
+
+Outcome partial/INCONCLUSIVE: deterministic checks completed,address
+classification failed,function analysis/scoring skipped;0 scored functions/
+evidence cards. Function controller not reached. The incomplete-response guard
+prevented this nonempty unfinished response from counting as successful work.
+Specific finish marker was not yet persisted,so length versus filtering/tool
+status cannot be asserted from this historical report. The high reasoning
+usage suggests a budget issue but is not definitive proof.
+
+Provider's six per-request log rows match this run and label HTTP200 responses
+SUCCESS; its visible details do not expose finish_reason or a raw request body.
+Provider HTTP success is not a full-analysis pass. No secret values read from
+the dashboard. A new optional allowlisted completion_finish_reason field now
+preserves the known non-final marker; its4 regression cases first failed then
+passed. No automatic retry added and no output cap raised without diagnosis.

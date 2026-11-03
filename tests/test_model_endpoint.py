@@ -81,6 +81,7 @@ def test_explicitly_incomplete_completion_cannot_be_accepted_as_analysis(reason)
     with pytest.raises(m.ModelEndpointFailure) as failure:
         session.call(factory, {"model": MODEL, "messages": []}, MODEL)
     assert failure.value.kind == "incomplete_response"
+    assert failure.value.as_dict()["completion_finish_reason"] == reason
     assert len(calls) == 1 and session.retries_left == 2
     assert session.summary()["tokens"] == {"prompt": 5, "completion": 7, "reasoning": 3}
     assert not any(event.get("state") == "model_endpoint_ready" for event in events)
