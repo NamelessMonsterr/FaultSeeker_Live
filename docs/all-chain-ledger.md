@@ -4,7 +4,7 @@
 
 Draft PR: https://github.com/NamelessMonsterr/FaultSeeker_Live/pull/5, base development main, head fix/all-chain-validation. Created and verified at head 1980a692638c6bdccbc398dbd8e63da1a02f7ac4; subsequent ledger updates stay on that fix branch. Repository/base were checked in GitHub before creation. Render was rechecked immediately before publication: main1 auto-deploy On Commit, PR previews Off. No merge or deployment; Instinct review and user repo/base/deployment approvals remain outstanding.
 
-Current result: 345 console offline backend passed / 0 skipped with both exact pinned pipeline and explicitly identified corrected candidate; 13 frontend passed. Latest local combined pipeline suite:286 passed /0skipped. Two old live Ethereum attempts failed in preflight; development run50c53ee29ba1 passed Qwen preflight then failed RPC403. Development run1caf1c5827dd ended partial / INCONCLUSIVE with no model analysis or scoring. Candidate cross-module routing compatibility has offline regression coverage; no complete correctness pass claimed. GPT refresh failure is unresolved. Source acquisition and prior integration skips are resolved.
+Current result:354 console offline backend passed /0 skipped with the exact Docker pin and explicitly identified candidate;18 frontend passed. Latest combined pipeline suite:303 passed /0 skipped. Development e459ff0f30c9 received6 model analysis responses then stopped on HTTP429; partial/INCONCLUSIVE, scoring skipped. Full correctness passes remain0/16 development and0/16 live. GPT authentication remains unresolved. Further Itera calls are stopped pending actionable rate/capacity recovery guidance.
 
 Sections below preserve the chronological evidence and earlier snapshots; later terminal outcomes supersede pending states. The broader goal remains incomplete.
 
@@ -27,11 +27,11 @@ Each row covers both builds. DEV/LIVE BLOCKED means no full run has started, not
 
 | Chain | Development trace adapter in source | Hash | Dev / live status | Stage outcomes / verdict / persistence | Timing / evidence |
 | --- | --- | --- | --- | --- | --- |
-| eth | Blockscout instance; RPC trace | 0x2606d459a50ca4920722a111745c2eeced1d8a01ff25ee762e22d5d4b1595739 | DEV BLOCKED / LIVE 2 FAILED PREFLIGHT | all analysis stages skipped; INCONCLUSIVE; both reports reopened | L-ETH-001 / L-ETH-002 below; no current on-chain verification |
-| bsc | RPC trace required | unset | BLOCKED / BLOCKED | not run | provider trace capability pending |
+| eth | Blockscout instance; RPC trace | setup0xa17fdb804728f226fcd10e78eae5247abd984e0f03301312315b89cae25aa517; original cashout2606 below | DEV3 unsuccessful / LIVE2 failed preflight | latest dev partial429;0 scores/cards; history reopened | D-ETH-001..003; setup34 frames and cashout5 frames identity checked |
+| bsc | RPC trace required | 0xebf83628ba893d35b496121fb8201666b8e09f3cbadf0e269162baa72efe3b8b | BLOCKED / BLOCKED | no full run; RPC identity/receipt checked | chain56,block21957793; tested official dataseed trace fails missing trie node |
 | polygon | RPC trace required | unset | BLOCKED / BLOCKED | not run | free route unverified |
 | arbitrum | RPC trace required | unset | BLOCKED / BLOCKED | not run | free route unverified |
-| optimism | Blockscout instance; RPC trace | unset | BLOCKED / BLOCKED | not run | current endpoint capability unverified |
+| optimism | Blockscout instance; RPC trace | 0x3f53165786698b8f11c4a50636a3d8d2f6013b17711eba119f76a95ff33f3546 | MODEL BLOCKED / LIVE NOT RUN | no full run; RPC identity/receipt and37-frame trace checked | chain10,block118585730; public Optimism RPC + keyless explorer |
 | avalanche | RPC trace required | unset | BLOCKED / BLOCKED | not run | free route unverified |
 | base | RPC trace required | unset | BLOCKED / BLOCKED | not run | source excludes PRO free route; current plan not verified |
 | fantom | RPC trace required | unset | BLOCKED / BLOCKED | not run | free route unverified |
@@ -42,7 +42,7 @@ Each row covers both builds. DEV/LIVE BLOCKED means no full run has started, not
 | celo | Blockscout PRO adapter; RPC trace | unset | BLOCKED / BLOCKED | not run | no PRO variable listed in Render |
 | cronos | RPC trace required | unset | BLOCKED / BLOCKED | not run | free route unverified |
 | moonbeam | RPC trace required | unset | BLOCKED / BLOCKED | not run | free route unverified |
-| aurora | Blockscout instance; RPC trace | unset | BLOCKED / BLOCKED | not run | current endpoint capability unverified |
+| aurora | Blockscout instance; RPC trace | 0xc413c63fd0a4224c3883ed2a906f80337e256759612951866f6b2134e4b6791f | MODEL BLOCKED / LIVE NOT RUN | no full run; RPC identity/receipt and24-frame trace checked | chain1313161554,block222859221; official RPC + keyless explorer |
 
 Explorer adapters are present only in development. Source presence is not provider availability proof, trace completeness proof or a correctness pass. Ground truth remains unassessed for all rows. Exact per-run console/pipeline SHA, model route, hash, stage outcomes, timing and artifact paths will be recorded when a real run is authorized by verified free-route limits and configured access.
 
@@ -603,3 +603,80 @@ instead of3; selector-only memo dedup skips the same selector on a different
 address. Separate work is isolated from candidate6a5b0be so this real run's
 source revision stays attributable. Further Itera calls remain stopped after429;
 GPT proxy authentication remains unresolved. No full analysis passes yet.
+
+## Offline follow-through after the429 (2026-11-03)
+
+Cloud policy fixed separately in b5624b29683b4dc628fab6319761f2f1c1537f6c,
+draft https://github.com/NamelessMonsterr/FaultSeeker-/pull/8,base main.
+Three initial failures/8 controls passed; final full standalone pipeline suite
+212 passed,0 skipped in15.02s. Actual loop and prompt regressions use the live
+provider registry, including replacement; no model calls. Existing local limits
+remain unchanged. CI2/2 checks passed.
+
+Target memo fixed separately in fac4a517d86cb2b65f8d9527755282cfd6635149,
+draft https://github.com/NamelessMonsterr/FaultSeeker-/pull/9,base main.
+Four initial failures/2 controls passed. Final standalone suite207 passed,
+0 skipped in14.79s. Actual FunctionRanker→review preserves distinct addresses,
+deduplicates exact pairs across groups, and preserves underscores/function case.
+Synthetic schema tests do not establish on-chain findings.
+
+Both patches applied to the local combined candidate without changing queued
+branches or merging PRs. Combined commit e9d7166ba9362e5fbaeeb349158d0649efc5632d
+remains local only. `python -B tests/run_offline_depth.py tests`:303 passed,
+0 skipped in40.15s. Console command above rerun with explicit candidate SHA
+e9d7166ba9362e5fbaeeb349158d0649efc5632d:345 passed,0 skipped in60.49s.
+The exact Docker pin remains clean fb57c3fad63784b7a63dc7fdf1845364c76ce0b7;
+no real analysis has used e9d7166 yet. UI fix ebe1ea4 pushed to console PR5;
+main/main1 remain unchanged, no deployment.
+
+Optimism readiness probe: PublicNode's documented public endpoint returned403
+on eth_chainId. The separately documented public https://mainnet.optimism.io
+returned chain10, matching candidate hash/receipt at block118585730, selector
+0x627dd56a,status0x1. Keyless https://explorer.optimism.io raw trace yielded37
+frames with RPC root identity and tree consistency checked. Completeness is
+explorer-reported, not proven; ABI/benign-or-exploit ground truth unverified.
+No model calls/full pass. Public artifacts in the local validation directory:
+optimism-candidate.identity-probe.json (403) and
+optimism-official-candidate.identity-probe.json (verified identity/trace).
+Endpoint references: https://optimism.publicnode.com/ and
+https://www.alchemy.com/docs/choosing-a-web3-network .
+
+BSC readiness probe used the existing BSC Token Hub preset, not a fabricated
+hash. Official public https://bsc-dataseed.bnbchain.org verified chain56,
+hash/receipt/block21957793 and selector0x84013b6a. One callTracer request failed
+JSON-RPC -32000,missing trie node. This tested endpoint lacks the necessary
+historical state for that trace; other free routes remain unverified, not
+declared impossible. Artifact:bsc-token-hub.identity-probe.json. Source:
+https://docs.bnbchain.org/bnb-smart-chain/developers/json_rpc/json-rpc-endpoint/ .
+
+Itera docs rechecked:429 recovery requires reading error.code; monthly,TPM and
+capacity codes differ, and provider_rate_limit does not distinguish full queues
+from queue timeouts. The current sanitized failure discarded this code and
+Retry-After metadata, so this historical429 cannot be assigned a specific cause
+or reset time. No new model attempt made. Source:
+https://iteracompute.com/docs.html .
+
+Aurora readiness: one explorer transaction-list GET supplied a successful,
+non-transfer candidate (explorer label sweep,not ABI-verified), then official
+https://mainnet.aurora.dev verified chain1313161554,matching hash/receipt at
+block222859221,selector0x9857ba36,status0x1. Keyless explorer returned24 frames
+whose root matches RPC identity and tree checks. This is not the earlier
+OutOfFund candidate and is not a model/correctness pass. Artifacts:
+aurora-candidate-discovery.json and aurora-sweep.identity-probe.json in local
+validation history. Source:https://doc.aurora.dev/dev-reference/network-endpoints/ .
+
+Provider log review (no inference call) correlated failed request
+8388d813-3415-4d44-a395-85ec4f6d3d84 at2026-11-03T07:32:09.560Z;
+expanded details provide no error.code or Retry-After. Precise429 cause stays
+unknown. Safe recovery metadata fix now retains only the three documented
+allowlisted limit codes, bounded numeric retry seconds or normalized HTTP-date;
+arbitrary codes,body messages,types and headers are excluded. Automatic429
+retry/rotation remains disabled. UI distinguishes reported monthly,TPM and
+capacity codes, and labels retry hints as original failure-time information.
+Historical reports are not retroactively rewritten or assigned a code.
+
+Regression first:4 backend failures/5 controls passed; final9 focused passed.
+Frontend first3 failures/15 controls passed; final18 passed,0 skipped.
+Full offline command with exact pin and explicit candidate e9d7166:
+`python -B tests/run_offline.py --tb=line -rs`:354 passed,0 skipped in61.77s.
+Static sync/diff checks passed. No live request has used this metadata fix yet.

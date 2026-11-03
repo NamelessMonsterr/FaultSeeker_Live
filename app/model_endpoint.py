@@ -1,6 +1,8 @@
 """Run-scoped model transport policy. No provider bodies or credentials escape it."""
 import threading
 import time
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 
 import httpx
 
@@ -11,10 +13,14 @@ except ImportError:  # app/server.py invoked directly
 
 
 class ModelEndpointFailure(RuntimeError):
-    def __init__(self, kind, status_code=None, phase="analysis"):
+    def __init__(self, kind, status_code=None, phase="analysis", *, provider_code=None,
+                 retry_after_seconds=None, retry_after_utc=None):
         self.kind = kind
         self.status_code = status_code
         self.phase = phase
+        self.provider_code = provider_code
+        self.retry_after_seconds = retry_after_seconds
+        self.retry_after_utc = retry_after_utc
         messages = {
             "authentication": "Model endpoint rejected authentication or access.",
             "model_unavailable": "The configured model is unavailable at this endpoint.",
@@ -34,9 +40,45 @@ class ModelEndpointFailure(RuntimeError):
         super().__init__(message)
 
     def as_dict(self):
-        return {"kind": self.kind, "http_status": self.status_code,
+        result = {"kind": self.kind, "http_status": self.status_code,
                 "phase": self.phase, "message": str(self),
                 "scope": "credential" if self.kind == "authentication" else ("provider_limit" if self.kind == "rate_limited" else "endpoint")}
+        for name in ("provider_code", "retry_after_seconds", "retry_after_utc"):
+            value = getattr(self, name)
+            if value is not None:
+                result[name] = value
+        return result
+
+
+def _rate_limit_metadata(error):
+    """Keep finite recovery codes/timing, never messages or arbitrary headers."""
+    allowed = {"free_model_monthly_limit", "free_model_tpm_limit", "provider_rate_limit"}
+    body = getattr(error, "body", None)
+    nested = body.get("error", body) if isinstance(body, dict) else None
+    candidates = (getattr(error, "code", None),
+                  nested.get("code") if isinstance(nested, dict) else None)
+    result = {}
+    for code in candidates:
+        if isinstance(code, str) and code in allowed:
+            result["provider_code"] = code
+            break
+    response = getattr(error, "response", None)
+    value = getattr(response, "headers", {}).get("retry-after", "")
+    if not isinstance(value, str) or len(value) > 128:
+        return result
+    value = value.strip()
+    if value.isascii() and value.isdigit() and len(value) <= 9:
+        seconds = int(value)
+        if seconds <= 365 * 24 * 60 * 60:
+            result["retry_after_seconds"] = seconds
+    else:
+        try:
+            deadline = parsedate_to_datetime(value)
+            if deadline.tzinfo is not None:
+                result["retry_after_utc"] = deadline.astimezone(timezone.utc).isoformat()
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return result
 
 
 def classify(error, phase):
@@ -53,7 +95,8 @@ def classify(error, phase):
     if status == 429:
         # Usage/rate limits are an operator action, not a transient retry signal.
         # Do not multiply a provider quota response into more requests.
-        return ModelEndpointFailure("rate_limited", status, phase), False
+        return ModelEndpointFailure("rate_limited", status, phase,
+                                    **_rate_limit_metadata(error)), False
     if isinstance(status, int) and 500 <= status <= 599:
         return ModelEndpointFailure("upstream_http", status, phase), True
     if isinstance(status, int) and 400 <= status <= 499:

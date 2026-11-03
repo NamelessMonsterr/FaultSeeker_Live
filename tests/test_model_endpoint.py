@@ -71,6 +71,47 @@ def test_timeout_is_bounded_and_classified():
     assert "SECRET" not in str(failure.value)
 
 
+@pytest.mark.parametrize("code", ["free_model_monthly_limit", "free_model_tpm_limit", "provider_rate_limit"])
+def test_429_preserves_only_recognized_recovery_metadata_without_retry(code):
+    response = httpx.Response(429, headers={"Retry-After": "120", "X-Request-ID": "PRIVATE_SECRET"},
+        json={"error": {"code": code, "message": "PRIVATE_SECRET", "type": "PRIVATE_SECRET"}})
+    m, session, factory, calls, events, _ = setup([response])
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.preflight(factory, MODEL, timeout=20)
+    details = failure.value.as_dict()
+    assert details["provider_code"] == code
+    assert details["retry_after_seconds"] == 120
+    assert session.summary()["failure"] == details
+    assert len(calls) == 1 and session.retries_left == 2
+    assert "PRIVATE_SECRET" not in json.dumps(events) + json.dumps(details)
+
+
+@pytest.mark.parametrize("code,retry", [("PRIVATE_SECRET", "PRIVATE_SECRET"),
+    ({"secret": "PRIVATE_SECRET"}, "<html>PRIVATE_SECRET</html>"),
+    (None, "-1"), (None, "nan"), (None, "999999999999999999999999")])
+def test_429_unrecognized_metadata_is_not_persisted(code, retry):
+    response = httpx.Response(429, headers={"Retry-After": retry},
+        json={"error": {"code": code, "message": "PRIVATE_SECRET"}})
+    m, session, factory, calls, events, _ = setup([response])
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.preflight(factory, MODEL, timeout=20)
+    details = failure.value.as_dict()
+    assert "provider_code" not in details and "retry_after_seconds" not in details
+    assert "retry_after_utc" not in details
+    assert len(calls) == 1
+    assert "PRIVATE_SECRET" not in json.dumps(events) + json.dumps(details)
+
+
+def test_429_http_date_is_normalized_without_copying_raw_headers():
+    response = httpx.Response(429, headers={"Retry-After": "Wed, 04 Nov 2026 00:00:00 GMT"},
+                              json={"error": {"code": "provider_rate_limit"}})
+    m, session, factory, calls, events, _ = setup([response])
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.preflight(factory, MODEL, timeout=20)
+    assert failure.value.as_dict()["retry_after_utc"] == "2026-11-04T00:00:00+00:00"
+    assert len(calls) == 1 and session.retries_left == 2
+
+
 def test_expired_absolute_deadline_fails_before_factory_or_network():
     m, session, factory, calls, _, clock = setup([])
     made = []

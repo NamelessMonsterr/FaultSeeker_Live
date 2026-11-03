@@ -110,6 +110,16 @@ test('partial endpoint-failure report visibly lists failed and skipped sections'
 });
 
 
+for (const [code,explanation] of [['free_model_monthly_limit','monthly allowance'],['free_model_tpm_limit','token-rate'],['provider_rate_limit','capacity']]) {
+ test(`rate-limit report exposes recognized recovery category ${code}`,async()=>{
+  const report={transaction_hash:'0x123',analysis_status:'partial',sections:{function_analysis:'failed',scoring:'skipped'},model_endpoint:{failure:{kind:'rate_limited',http_status:429,provider_code:code,retry_after_seconds:120}}};
+  const app=boot({'/console/api/config':{data:config},'/console/api/capture':{data:report}});await settle();await app.elements['capture-button'].onclick();
+  const content=collect(app.elements.results);
+  assert.match(content,/INCONCLUSIVE/);assert.ok(content.includes(`Provider code: ${code}`));
+  assert.ok(content.includes(explanation));assert.match(content,/Retry-After at failure: 120 seconds/);
+ });
+}
+
 test('unknown measurements do not appear as zero scores or a successful verdict',async()=>{
  const report={transaction_hash:'0x123',analysis_status:'completed',classification:{rule_verdict:'INCONCLUSIVE',priority_score:null,reentrancy:{score:null},signals:{profit_extraction_eth:null,large_transfer_to_eoa:null}}};
  const app=boot({'/console/api/config':{data:config},'/console/api/analyze':{data:{run_id:'unknowns'}},'/console/api/result/unknowns':{data:report}});await settle();
