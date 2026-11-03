@@ -790,3 +790,24 @@ def test_foreign_url_object_compatibility_contract_simulated():
     assert session.preflight(ForeignClient, MODEL).choices[0].message.content == "OK"
     assert calls == ["Bearer invalid-key", "Bearer valid-key"]
     assert session.failure is None
+
+
+@pytest.mark.parametrize("choices,problem", [
+    ([], "missing_choices"),
+    ([{"index": 0, "message": None, "finish_reason": "stop"}], "missing_message"),
+    ([{"index": 0, "message": {"role": "assistant", "content": None}, "finish_reason": "stop"}], "non_text_content"),
+    ([{"index": 0, "message": {"role": "assistant", "content": "  "}, "finish_reason": "stop"}], "empty_content"),
+])
+def test_invalid_completion_has_safe_structure_and_usage_without_retry(choices, problem):
+    body = {**OK, "choices": choices,
+            "private_field": "PRIVATE_RAW_RESPONSE",
+            "usage": {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12}}
+    m, session, factory, calls, events, _ = setup([httpx.Response(200, json=body)])
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.call(factory, {"model": MODEL, "messages": []}, MODEL)
+    assert failure.value.kind == "invalid_response"
+    assert failure.value.as_dict()["completion_problem"] == problem
+    assert session.summary()["tokens"] == {"prompt": 5, "completion": 7, "reasoning": 0}
+    assert len(calls) == 1 and session.retries_left == 2
+    assert not any(event.get("state") == "model_endpoint_ready" for event in events)
+    assert "PRIVATE_RAW_RESPONSE" not in json.dumps(events) + str(failure.value)

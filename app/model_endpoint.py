@@ -14,7 +14,7 @@ except ImportError:  # app/server.py invoked directly
 
 class ModelEndpointFailure(RuntimeError):
     def __init__(self, kind, status_code=None, phase="analysis", *, provider_code=None,
-                 retry_after_seconds=None, retry_after_utc=None, completion_finish_reason=None):
+                 retry_after_seconds=None, retry_after_utc=None, completion_finish_reason=None, completion_problem=None):
         self.kind = kind
         self.status_code = status_code
         self.phase = phase
@@ -22,6 +22,8 @@ class ModelEndpointFailure(RuntimeError):
         self.retry_after_seconds = retry_after_seconds
         self.retry_after_utc = retry_after_utc
         self.completion_finish_reason = completion_finish_reason
+        self.completion_problem = completion_problem if completion_problem in {
+            "missing_choices", "missing_message", "non_text_content", "empty_content"} else None
         messages = {
             "authentication": "Model endpoint rejected authentication or access.",
             "model_unavailable": "The configured model is unavailable at this endpoint.",
@@ -45,7 +47,7 @@ class ModelEndpointFailure(RuntimeError):
         result = {"kind": self.kind, "http_status": self.status_code,
                 "phase": self.phase, "message": str(self),
                 "scope": "credential" if self.kind == "authentication" else ("provider_limit" if self.kind == "rate_limited" else "endpoint")}
-        for name in ("provider_code", "retry_after_seconds", "retry_after_utc", "completion_finish_reason"):
+        for name in ("provider_code", "retry_after_seconds", "retry_after_utc", "completion_finish_reason", "completion_problem"):
             value = getattr(self, name)
             if value is not None:
                 result[name] = value
@@ -335,17 +337,23 @@ class ModelEndpointSession:
                 self.emit({"state": "waiting_on_model_endpoint", "phase": phase,
                            "attempt": attempt_number, "model": model, "retry_in_seconds": 0})
                 completion = bounded.chat.completions.create(**adapt_request(model, kwargs, phase=phase))
+                # Usage belongs to the HTTP response, even if its answer is unusable.
+                with self.state_lock:
+                    self._count_tokens(completion)
                 choices = getattr(completion, "choices", None)
                 if choices and getattr(choices[0], "finish_reason", None) in (
                         "length", "content_filter", "tool_calls", "function_call"):
                     # An unfinished answer can still contain parseable JSON.
                     # Retain its reported usage, but never treat it as analysis.
-                    with self.state_lock:
-                        self._count_tokens(completion)
                     raise ModelEndpointFailure("incomplete_response", phase=phase,
                         completion_finish_reason=choices[0].finish_reason)
-                if not choices or not isinstance(getattr(choices[0].message, "content", None), str) or not choices[0].message.content.strip():
-                    raise ModelEndpointFailure("invalid_response", phase=phase)
+                message = getattr(choices[0], "message", None) if choices else None
+                content = getattr(message, "content", None)
+                problem = ("missing_choices" if not choices else "missing_message" if message is None
+                           else "non_text_content" if not isinstance(content, str)
+                           else "empty_content" if not content.strip() else None)
+                if problem:
+                    raise ModelEndpointFailure("invalid_response", phase=phase, completion_problem=problem)
             except Exception as exc:
                 if isinstance(exc, ModelEndpointFailure) and exc.kind == "request_deadline_exceeded":
                     error, retryable = exc, False
@@ -403,8 +411,6 @@ class ModelEndpointSession:
                     if self.failure is not None:
                         raise self.failure
                     deadline_exceeded = self.clock() > request_deadline
-                    if not deadline_exceeded:
-                        self._count_tokens(completion)
                 if deadline_exceeded:
                     # A late successful response is a request deadline miss, not
                     # a stale prior retry's error or a shared-budget failure.
