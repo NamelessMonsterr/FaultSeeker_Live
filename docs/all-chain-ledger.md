@@ -859,3 +859,31 @@ https://github.com/SunWeb3Sec/DeFiHackLabs/blob/main/src/test/2025-05/Nalakuvara
 - Test-first reproduction: `python -B -m pytest tests/test_inception_route.py -q --tb=short`:2failed,14passed before implementation (temperature/default budget assertions).
 - Verification: exact pin `fb57c3fad63784b7a63dc7fdf1845364c76ce0b7`, candidate `e9d7166ba9362e5fbaeeb349158d0649efc5632d`; `python -B tests/run_offline.py --tb=line -rs`:378passed,0failed,0skipped (14.72s). `node tests/run_frontend_offline.cjs`:18passed,0failed,0skipped. `python -B tools/sync_static.py --check` and `git diff --check`:passed.
 - Kluster tools unavailable; no Kluster verification claimed. No live generation performed for this profile yet; running server still uses previous code. No deployment, merge or protected-branch change. Development/live complete coverage remains0/16 each.
+
+
+### Development ETH008 — completed transport, correctness NOT passed
+
+- Run `190539aa32a8`, console `62f965ee03eb2830375bbd4ce968150f62b1dea2`, candidate pipeline `e9d7166ba9362e5fbaeeb349158d0649efc5632d`, model `inception/mercury-3`. Started2026-11-03T13:24:29Z; terminal event13:28:58.9Z. Same verified Hedgey setup hash `0xa17fdb804728f226fcd10e78eae5247abd984e0f03301312315b89cae25aa517`, Ethereum.
+- Real report and events persisted under local validation directory as `190539aa32a8.json` and `.events.jsonl`. Trace provenance matches requested hash/chain,34frames, Blockscout keyless raw trace with independent RPC identity check; ABI/source unverified.
+-53HTTPattempts, preflight1ok, analysis52ok/0failed, transport249.311s of600shared budget; prompt177711, completion78704 (reasoning61034 is a subset), no retry consumed. Pipeline function controller started/completed1; report analysis_status completed, verdict remains INCONCLUSIVE.
+-2scored functions and2evidence cards. History entry completed and report reopened through browser. Screenshot `dev-eth-008-completed-review.jpg` in session visualizations directory.
+- Correctness NOT passed: output prioritizes callback/oracle-manipulation claims rather than established Hedgey allowance-revocation root cause. Trace targets include Hedgey selectors, but final scored entries are attacker callback and Balancer supply call. Requires tracing evidence selection/model reasoning; not yet a proven cache or provenance mismatch.
+- Confirmed UI duplication: renderer concatenates scored_functions and evidence_cards into4findings even though both represent2targets. Also observed-call fallback presents these scored targets as unanalysed. Investigate and regression-test assembly before next model run. Calibration reports99.83% with weak source evidence; validity remains unverified, not accepted as accuracy proof.
+- Full correctness coverage stays0/16development,0/16live. No merge, deployment or protected-branch push.
+
+
+### ETH008 report-display follow-through
+
+- Confirmed from pipeline `core/pipeline.py`: each scored function generates its own evidence card. Renderer previously concatenated both arrays as independent findings. Matching function/address pairs now show one entry containing both scored data and full evidence cards; different addresses remain separate, unmatched records retained. Observed-call list excludes already-scored identities. Raw report/download unchanged.
+- Synthetic schema regression first failed (18passed/1failed), then19frontendtests passed. Added versioned JavaScript asset reference after real browser verification initially loaded cached renderer. Reopening actual saved run190539aa32a8 now shows2findings and0unanalysed observation headings.
+- Persisted transaction_understanding itself identifies Hedgey selectors as oracle functions and asserts a flash-loan reentrancy/price-arbitrage root cause without verified ABI. This establishes the conflicting explanation exists upstream of rendering; does not yet establish whether prompting, data aggregation or another pipeline behavior caused it. Do not accept99.83% calibration as correctness evidence.
+- No additional model requests, deployment or merge in this follow-through. Kluster remains unavailable.
+
+
+### Confirmed pipeline target-descendant counting defect
+
+- `_prepare_children_call_memo` counted recursively inside each depth-path step, including ancestors/siblings and multiplying descendant counts. Reproduced before fix:1failed/1passed synthetic tests, no model or network. Moved counting after traversal; preserved repeated genuine descendant occurrences and function names containing underscores.
+- Actual saved34frame Hedgey setup replay: selector0xefd86b62 count101old/12correct, selector0xf412e4c7 count95old/6correct; each target occurs once. Replay transforms saved raw trace to the memo method schema, verifies topology/counting only, not full normalization or model correctness.
+- New pipeline branch `fix/target-descendant-counts` based on development mainfca6b99. Commits `d6fff6b9391e5c5cb4e2be6d00b4986577ddc2d5` and `6d91501be60ef1ce715f538553f53602b24d5e07`. Verified trace fixture includes original trace provenance and source-artifactSHA256; no invented on-chain data.
+- Standalone `python -B tests/run_offline_descendants.py tests`:204passed,0failed/skipped (4.30s), network blocked. Earlier combined candidate with synthetic regression:305passed. Console pin+candidate suite after first patch:378passed,0failed/skipped (13.74s). Final combined fixture suite pending at this ledger entry.
+- This fixes demonstrably distorted model context. It does NOT prove this was the sole cause of the prior wrong exploit explanation. No fresh model call yet; server has not been restarted onto new candidate. No push, merge or deployment. Kluster unavailable.

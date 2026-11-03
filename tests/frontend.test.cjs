@@ -145,3 +145,17 @@ test('replay gaps remain visible even when EventSource inherits an old ID',async
  assert.match(collect(app.elements.activity),/Older technical logs expired/);
  app.streams[0].emit('heartbeat',{},'5');assert.match(app.elements.connection.textContent,/Connected/);
 });
+
+
+test('paired scored targets and evidence cards render once without hiding distinct evidence',async()=>{
+ const report={transaction_hash:'0x123',analysis_status:'completed',
+ scored_functions:[{function:'0x12345678',address:'0xAbC',evidence:['score evidence']}],
+ evidence_cards:[{function_signature:{function:'0x12345678',address:'0xabc'},evidence:['card evidence']},
+ {function_signature:{function:'0x12345678',address:'0xdef'},evidence:['other address evidence']}],
+ function_analysis:{functions_to_inspect:{function_name_with_hash:[{function:'0x12345678',address:'0xabc'},{function:'0x99999999',address:'0xabc'}]}}};
+ const app=boot({'/console/api/config':{data:config},'/console/api/capture':{data:report}});await settle();await app.elements['capture-button'].onclick();
+ const content=collect(app.elements.results);
+ assert.match(content,/Functions and evidence \(2\)/);
+ assert.match(content,/Observed calls \/ unanalysed candidates \(1\)/);
+ for(const marker of ['score evidence','card evidence','other address evidence']) assert.ok(content.includes(marker));
+});
