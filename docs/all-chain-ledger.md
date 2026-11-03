@@ -177,3 +177,28 @@ git diff --check
 Results: **325 executed, 325 passed, 0 failed, 0 skipped**, 18.57 seconds; frontend **13 executed/passed, 0 failed/skipped**; diff check passed. Python 3.11.9, OpenAI2.36.0, HTTPX0.28.1. External sockets blocked, dummy keys and temporary run storage; no live model/RPC calls or installs. The previously skipped pinned tests are now actually executed, but remain controlled-boundary integrations, not real all-chain correctness passes.
 
 Current pipeline main was independently checked as fca6b998fa0a01f3832be6a0f1aa1d768306da8f. Its calibration block has the same historical reporting defect as the Docker pin: it replaces confidence.overall after scoring without refreshing level or explanation. The original heuristic explanation therefore survives alongside calibrated overall. A separate fix/calibrated-confidence-reporting worktree was created at C:\Users\91701\Downloads\faultseeker-demo-console-main\faultseeker-pipeline-calibration-fix, based on that verified current main, with origin NamelessMonsterr/FaultSeeker-. The pinned checkout remains unchanged. Pipeline fix/testing is pending; no calibrated metric, paper content or historical report rewritten.
+
+### Calibration reporting fix published for review
+
+Pipeline draft PR: https://github.com/NamelessMonsterr/FaultSeeker-/pull/3, base main,
+head c58bc699429e37e3a959ddc971b5b8c1713cb530 on fix/calibrated-confidence-reporting.
+Two pre-fix regressions reproduced the stale level/explanation and partial
+mutation on a later calibration failure through analyze_transaction with controlled
+upstream stages. The fix derives labels from the stored probability, preserves the
+original heuristic separately, rejects invalid probabilities and publishes all
+calibrated results atomically. Components remain heuristic inputs.
+
+`python -B tests/run_offline_calibration.py`: 47 executed, 47 passed, 0 failed,
+0 skipped (23 new cases plus 24 existing confidence tests), 11.75 seconds.
+`git diff --check` passed. No installs or live RPC/model calls. Installed pyreadline3
+emitted an ignored Windows-handle error during interpreter shutdown; exit zero.
+These tests exercise reporting/evidence-card ordering with controlled boundaries,
+not on-chain provenance, trained-calibrator accuracy or full real analyses.
+
+Before publication, Render settings still showed console main1 auto-deploy On
+Commit, PR previews Off, deployed SHA 947db7d508f5b93eb603e075b77a77408a91779d.
+Pipeline CI contains tests, no deploy step. Only fix refs were published; pipeline
+main remained fca6b998fa0a01f3832be6a0f1aa1d768306da8f. No merge, deployment,
+Docker pin update, paper edit or historical report change. GPT owner reauthentication
+and the Qwen timeout remain unresolved; real correctness passes remain 0/16 for
+development and 0/16 for live.
