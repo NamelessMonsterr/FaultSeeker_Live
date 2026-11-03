@@ -4,7 +4,7 @@
 
 Draft PR: https://github.com/NamelessMonsterr/FaultSeeker_Live/pull/5, base development main, head fix/all-chain-validation. Created and verified at head 1980a692638c6bdccbc398dbd8e63da1a02f7ac4; subsequent ledger updates stay on that fix branch. Repository/base were checked in GitHub before creation. Render was rechecked immediately before publication: main1 auto-deploy On Commit, PR previews Off. No merge or deployment; Instinct review and user repo/base/deployment approvals remain outstanding.
 
-Current result: 325 offline backend passed / 0 skipped against the exact pinned pipeline; 13 frontend passed. Two live Ethereum attempts failed in preflight and persisted honestly; zero full analyses or correctness passes across 16 chains on either build. No active run. GPT is blocked by current OAuth refresh_token_reused evidence; Qwen had one timeout with cause unverified. User explicitly approved the exact pipeline download; source acquisition and the previous 31 integration skips are now resolved.
+Current result: 330 offline backend passed / 0 skipped against the exact pinned pipeline; 13 frontend passed. Two live Ethereum attempts failed in preflight and persisted honestly; zero full analyses or correctness passes across 16 chains on either build. No active run. GPT is blocked by current OAuth refresh_token_reused evidence; Qwen had one timeout with cause unverified. User explicitly approved the exact pipeline download; source acquisition and the previous 31 integration skips are now resolved. The corrected development process has no configured Itera key; no corrected live inference is claimed.
 
 Sections below preserve the chronological evidence and earlier snapshots; later terminal outcomes supersede pending states. The broader goal remains incomplete.
 
@@ -261,3 +261,15 @@ no corrected live request was made. Explicit deployed limits may still override
 the new defaults. Render rechecked main1 On Commit / previews Off and live SHA
 947db7d508f5b93eb603e075b77a77408a91779d before publishing only the fix ref.
 Provider recovery and full corrected-development/live flow remain unverified.
+
+## Exact-pin path probe and transaction candidates (2026-11-03)
+
+Executed `python -B tools/probe_local_pipeline.py --repo C:\Users\91701\AppData\Local\Temp\faultseeker-all-chain-pipeline`, exit zero. Reported exact_pin=true at fb57c3fad63784b7a63dc7fdf1845364c76ce0b7, synthetic inputs, network_calls=0. Creation via geth normalization, real sequencer, flattening and ranker preserved the expected created target; coverage ends before function/model analysis. Visitor RPC registry refreshed. All six tested depth-1024 operations returned (normalization, guard deepcopy, both conversions, TraceNode and JSON), with imported recursion limit 20000. This does not prove arbitrary-depth or complete forensic/model execution.
+
+The same probe reproduced Parity creation address_matches=false and input_matches=false on the exact pin, resolving the old source-availability uncertainty. A separate pipeline fix is being isolated; no source fixture or ground truth was invented. The raw upstream RPC helper forwarded a synthetic private destination into a mocked opener; this does not bypass the console's visitor relay protections.
+
+Optimism candidate, not a current-chain/full-analysis verification:
+https://optimistic.etherscan.io/tx/0x3f53165786698b8f11c4a50636a3d8d2f6013b17711eba119f76a95ff33f3546
+The indexed official explorer page records success at block118585730, 2024-04-10 17:30:37 UTC, swap(bytes) selector0x627dd56a to 0xCf32c5bB41F7A302298a2D2072155800871BaaD3, with swap logs. Direct page retrieval cache-missed; evidence came from exact-hash indexed explorer content. Needs current receipt, complete trace, source mapping, real console run and ground-truth assessment before promotion to a pass. Coverage-table hash stays unset until current on-chain verification.
+
+Aurora example 0x36e2339784004c5dd40df74e663f1fe6683705a8ad665a05a9ad0aa4e11b559b is excluded: official https://doc.aurora.dev/blog/demystifying-transaction-failures/ diagnoses OutOfFund before execution. No suitable Aurora candidate was verified in the bounded research. Truncated hashes and inaccessible transaction pages were not promoted as evidence.
