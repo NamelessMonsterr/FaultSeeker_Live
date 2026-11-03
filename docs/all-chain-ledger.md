@@ -887,3 +887,11 @@ https://github.com/SunWeb3Sec/DeFiHackLabs/blob/main/src/test/2025-05/Nalakuvara
 - New pipeline branch `fix/target-descendant-counts` based on development mainfca6b99. Commits `d6fff6b9391e5c5cb4e2be6d00b4986577ddc2d5` and `6d91501be60ef1ce715f538553f53602b24d5e07`. Verified trace fixture includes original trace provenance and source-artifactSHA256; no invented on-chain data.
 - Standalone `python -B tests/run_offline_descendants.py tests`:204passed,0failed/skipped (4.30s), network blocked. Earlier combined candidate with synthetic regression:305passed. Console pin+candidate suite after first patch:378passed,0failed/skipped (13.74s). Final combined fixture suite pending at this ledger entry.
 - This fixes demonstrably distorted model context. It does NOT prove this was the sole cause of the prior wrong exploit explanation. No fresh model call yet; server has not been restarted onto new candidate. No push, merge or deployment. Kluster unavailable.
+
+
+### Address-scoped retrieval correction and next validation candidate
+
+- Confirmed `_retrieve_function_calls` and `_retrieve_children_calls` reused current summary based only on selector, returning addressA data for requested addressB. Synthetic regression3failed/1control passed before change. Summary now requires function+case-insensitive address match; addressless group summaries use address-scoped trace memo. No claim that a specific HTTP model request in ETH008 exercised this defect.
+- Pipeline fix branch `fix/target-address-context`, based on mainfca6b99, commit `2d1afb862243a5ec63895d9313af3b64565f2f44`. `python -B tests/run_offline_address_context.py tests`:205passed,0failed/skipped (5.08s).
+- Combined candidate `893fe1a8067c2b2f6fdcbc0899afa4622db76ac0` includes both descendant count and address retrieval fixes. `python -B tests/run_offline_depth.py tests`:310passed,0failed/skipped (13.63s); previous candidatebf13a95 with verified trace fixture passed306tests (13.97s). No installs/live calls, blocked network.
+- Next real run must use restarted launcher and record this candidateSHA. Prior completed ETH008 remains preserved and incorrect/unverified, not counted as a pass. No protected-branch change or deployment.
