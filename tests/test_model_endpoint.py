@@ -71,6 +71,64 @@ def test_timeout_is_bounded_and_classified():
     assert "SECRET" not in str(failure.value)
 
 
+@pytest.mark.parametrize("reason", ["length", "content_filter", "tool_calls", "function_call"])
+def test_explicitly_incomplete_completion_cannot_be_accepted_as_analysis(reason):
+    body = {**OK, "choices": [{"index": 0, "finish_reason": reason,
+        "message": {"role": "assistant", "content": '{"result":"PRIVATE"}'}}],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12,
+                  "completion_tokens_details": {"reasoning_tokens": 3}}}
+    m, session, factory, calls, events, _ = setup([httpx.Response(200, json=body)])
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.call(factory, {"model": MODEL, "messages": []}, MODEL)
+    assert failure.value.kind == "incomplete_response"
+    assert failure.value.as_dict()["completion_finish_reason"] == reason
+    assert len(calls) == 1 and session.retries_left == 2
+    assert session.summary()["tokens"] == {"prompt": 5, "completion": 7, "reasoning": 3}
+    assert not any(event.get("state") == "model_endpoint_ready" for event in events)
+    assert "PRIVATE" not in str(failure.value) + json.dumps(events)
+
+
+@pytest.mark.parametrize("code", ["free_model_monthly_limit", "free_model_tpm_limit", "provider_rate_limit"])
+def test_429_preserves_only_recognized_recovery_metadata_without_retry(code):
+    response = httpx.Response(429, headers={"Retry-After": "120", "X-Request-ID": "PRIVATE_SECRET"},
+        json={"error": {"code": code, "message": "PRIVATE_SECRET", "type": "PRIVATE_SECRET"}})
+    m, session, factory, calls, events, _ = setup([response])
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.preflight(factory, MODEL, timeout=20)
+    details = failure.value.as_dict()
+    assert details["provider_code"] == code
+    assert details["retry_after_seconds"] == 120
+    assert session.summary()["failure"] == details
+    assert len(calls) == 1 and session.retries_left == 2
+    assert "PRIVATE_SECRET" not in json.dumps(events) + json.dumps(details)
+
+
+@pytest.mark.parametrize("code,retry", [("PRIVATE_SECRET", "PRIVATE_SECRET"),
+    ({"secret": "PRIVATE_SECRET"}, "<html>PRIVATE_SECRET</html>"),
+    (None, "-1"), (None, "nan"), (None, "999999999999999999999999")])
+def test_429_unrecognized_metadata_is_not_persisted(code, retry):
+    response = httpx.Response(429, headers={"Retry-After": retry},
+        json={"error": {"code": code, "message": "PRIVATE_SECRET"}})
+    m, session, factory, calls, events, _ = setup([response])
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.preflight(factory, MODEL, timeout=20)
+    details = failure.value.as_dict()
+    assert "provider_code" not in details and "retry_after_seconds" not in details
+    assert "retry_after_utc" not in details
+    assert len(calls) == 1
+    assert "PRIVATE_SECRET" not in json.dumps(events) + json.dumps(details)
+
+
+def test_429_http_date_is_normalized_without_copying_raw_headers():
+    response = httpx.Response(429, headers={"Retry-After": "Wed, 04 Nov 2026 00:00:00 GMT"},
+                              json={"error": {"code": "provider_rate_limit"}})
+    m, session, factory, calls, events, _ = setup([response])
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.preflight(factory, MODEL, timeout=20)
+    assert failure.value.as_dict()["retry_after_utc"] == "2026-11-04T00:00:00+00:00"
+    assert len(calls) == 1 and session.retries_left == 2
+
+
 def test_expired_absolute_deadline_fails_before_factory_or_network():
     m, session, factory, calls, _, clock = setup([])
     made = []
@@ -732,3 +790,24 @@ def test_foreign_url_object_compatibility_contract_simulated():
     assert session.preflight(ForeignClient, MODEL).choices[0].message.content == "OK"
     assert calls == ["Bearer invalid-key", "Bearer valid-key"]
     assert session.failure is None
+
+
+@pytest.mark.parametrize("choices,problem", [
+    ([], "missing_choices"),
+    ([{"index": 0, "message": None, "finish_reason": "stop"}], "missing_message"),
+    ([{"index": 0, "message": {"role": "assistant", "content": None}, "finish_reason": "stop"}], "non_text_content"),
+    ([{"index": 0, "message": {"role": "assistant", "content": "  "}, "finish_reason": "stop"}], "empty_content"),
+])
+def test_invalid_completion_has_safe_structure_and_usage_without_retry(choices, problem):
+    body = {**OK, "choices": choices,
+            "private_field": "PRIVATE_RAW_RESPONSE",
+            "usage": {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12}}
+    m, session, factory, calls, events, _ = setup([httpx.Response(200, json=body)])
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.call(factory, {"model": MODEL, "messages": []}, MODEL)
+    assert failure.value.kind == "invalid_response"
+    assert failure.value.as_dict()["completion_problem"] == problem
+    assert session.summary()["tokens"] == {"prompt": 5, "completion": 7, "reasoning": 0}
+    assert len(calls) == 1 and session.retries_left == 2
+    assert not any(event.get("state") == "model_endpoint_ready" for event in events)
+    assert "PRIVATE_RAW_RESPONSE" not in json.dumps(events) + str(failure.value)

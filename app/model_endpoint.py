@@ -1,6 +1,8 @@
 """Run-scoped model transport policy. No provider bodies or credentials escape it."""
 import threading
 import time
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 
 import httpx
 
@@ -11,10 +13,17 @@ except ImportError:  # app/server.py invoked directly
 
 
 class ModelEndpointFailure(RuntimeError):
-    def __init__(self, kind, status_code=None, phase="analysis"):
+    def __init__(self, kind, status_code=None, phase="analysis", *, provider_code=None,
+                 retry_after_seconds=None, retry_after_utc=None, completion_finish_reason=None, completion_problem=None):
         self.kind = kind
         self.status_code = status_code
         self.phase = phase
+        self.provider_code = provider_code
+        self.retry_after_seconds = retry_after_seconds
+        self.retry_after_utc = retry_after_utc
+        self.completion_finish_reason = completion_finish_reason
+        self.completion_problem = completion_problem if completion_problem in {
+            "missing_choices", "missing_message", "non_text_content", "empty_content"} else None
         messages = {
             "authentication": "Model endpoint rejected authentication or access.",
             "model_unavailable": "The configured model is unavailable at this endpoint.",
@@ -24,6 +33,7 @@ class ModelEndpointFailure(RuntimeError):
             "rate_limited": "Model endpoint rate limit was reached.",
             "invalid_request": "Model endpoint rejected the request.",
             "invalid_response": "Model endpoint returned an invalid completion response.",
+            "incomplete_response": "Model endpoint did not finish the requested completion.",
             "budget_exhausted": "The shared model-endpoint time budget was exhausted.",
             "request_deadline_exceeded": "This model request exceeded its entry-time deadline.",
             "endpoint_error": "Model endpoint request failed.",
@@ -34,9 +44,45 @@ class ModelEndpointFailure(RuntimeError):
         super().__init__(message)
 
     def as_dict(self):
-        return {"kind": self.kind, "http_status": self.status_code,
+        result = {"kind": self.kind, "http_status": self.status_code,
                 "phase": self.phase, "message": str(self),
                 "scope": "credential" if self.kind == "authentication" else ("provider_limit" if self.kind == "rate_limited" else "endpoint")}
+        for name in ("provider_code", "retry_after_seconds", "retry_after_utc", "completion_finish_reason", "completion_problem"):
+            value = getattr(self, name)
+            if value is not None:
+                result[name] = value
+        return result
+
+
+def _rate_limit_metadata(error):
+    """Keep finite recovery codes/timing, never messages or arbitrary headers."""
+    allowed = {"free_model_monthly_limit", "free_model_tpm_limit", "provider_rate_limit"}
+    body = getattr(error, "body", None)
+    nested = body.get("error", body) if isinstance(body, dict) else None
+    candidates = (getattr(error, "code", None),
+                  nested.get("code") if isinstance(nested, dict) else None)
+    result = {}
+    for code in candidates:
+        if isinstance(code, str) and code in allowed:
+            result["provider_code"] = code
+            break
+    response = getattr(error, "response", None)
+    value = getattr(response, "headers", {}).get("retry-after", "")
+    if not isinstance(value, str) or len(value) > 128:
+        return result
+    value = value.strip()
+    if value.isascii() and value.isdigit() and len(value) <= 9:
+        seconds = int(value)
+        if seconds <= 365 * 24 * 60 * 60:
+            result["retry_after_seconds"] = seconds
+    else:
+        try:
+            deadline = parsedate_to_datetime(value)
+            if deadline.tzinfo is not None:
+                result["retry_after_utc"] = deadline.astimezone(timezone.utc).isoformat()
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return result
 
 
 def classify(error, phase):
@@ -53,7 +99,8 @@ def classify(error, phase):
     if status == 429:
         # Usage/rate limits are an operator action, not a transient retry signal.
         # Do not multiply a provider quota response into more requests.
-        return ModelEndpointFailure("rate_limited", status, phase), False
+        return ModelEndpointFailure("rate_limited", status, phase,
+                                    **_rate_limit_metadata(error)), False
     if isinstance(status, int) and 500 <= status <= 599:
         return ModelEndpointFailure("upstream_http", status, phase), True
     if isinstance(status, int) and 400 <= status <= 499:
@@ -89,6 +136,7 @@ class ModelEndpointSession:
         self.condition = threading.Condition(self.state_lock)
         self.key_pools = {}
         self.model_routes = {}
+        self.model_timeouts = {}
         self.route_policy = None
         self.tokens = {"prompt": 0, "completion": 0, "reasoning": 0}
 
@@ -230,7 +278,8 @@ class ModelEndpointSession:
                 else:
                     now = self.clock()
                     left = request_deadline - now
-                    reservation = min(self.call_timeout, available, left)
+                    attempt_timeout = min(self.call_timeout, self.model_timeouts.get(model, self.call_timeout))
+                    reservation = min(attempt_timeout, available, left)
                     if reservation <= 0:
                         self._deadline_or_budget_failure(phase, request_deadline, last_error, explicit_tighter)
                     self.reserved += reservation
@@ -287,10 +336,24 @@ class ModelEndpointSession:
                            "queue_wait_seconds": round(max(0.0, started - queued_at), 3)})
                 self.emit({"state": "waiting_on_model_endpoint", "phase": phase,
                            "attempt": attempt_number, "model": model, "retry_in_seconds": 0})
-                completion = bounded.chat.completions.create(**adapt_request(model, kwargs))
+                completion = bounded.chat.completions.create(**adapt_request(model, kwargs, phase=phase))
+                # Usage belongs to the HTTP response, even if its answer is unusable.
+                with self.state_lock:
+                    self._count_tokens(completion)
                 choices = getattr(completion, "choices", None)
-                if not choices or not isinstance(getattr(choices[0].message, "content", None), str) or not choices[0].message.content.strip():
-                    raise ModelEndpointFailure("invalid_response", phase=phase)
+                if choices and getattr(choices[0], "finish_reason", None) in (
+                        "length", "content_filter", "tool_calls", "function_call"):
+                    # An unfinished answer can still contain parseable JSON.
+                    # Retain its reported usage, but never treat it as analysis.
+                    raise ModelEndpointFailure("incomplete_response", phase=phase,
+                        completion_finish_reason=choices[0].finish_reason)
+                message = getattr(choices[0], "message", None) if choices else None
+                content = getattr(message, "content", None)
+                problem = ("missing_choices" if not choices else "missing_message" if message is None
+                           else "non_text_content" if not isinstance(content, str)
+                           else "empty_content" if not content.strip() else None)
+                if problem:
+                    raise ModelEndpointFailure("invalid_response", phase=phase, completion_problem=problem)
             except Exception as exc:
                 if isinstance(exc, ModelEndpointFailure) and exc.kind == "request_deadline_exceeded":
                     error, retryable = exc, False
@@ -348,8 +411,6 @@ class ModelEndpointSession:
                     if self.failure is not None:
                         raise self.failure
                     deadline_exceeded = self.clock() > request_deadline
-                    if not deadline_exceeded:
-                        self._count_tokens(completion)
                 if deadline_exceeded:
                     # A late successful response is a request deadline miss, not
                     # a stale prior retry's error or a shared-budget failure.

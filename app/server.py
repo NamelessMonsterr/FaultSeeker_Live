@@ -16,14 +16,14 @@ from contextlib import asynccontextmanager
 from urllib.parse import urlsplit, quote
 
 try:
-    from .model_routes import adapt_request, resolve_route
+    from .model_routes import adapt_request, resolve_route, model_call_timeout, model_preflight_timeout
     from .rpc_transport import PublicRPCRelay, parse_endpoint
 except ImportError:
     try:
-        from app.model_routes import adapt_request, resolve_route
+        from app.model_routes import adapt_request, resolve_route, model_call_timeout, model_preflight_timeout
         from app.rpc_transport import PublicRPCRelay, parse_endpoint
     except ModuleNotFoundError:
-        from model_routes import adapt_request, resolve_route
+        from model_routes import adapt_request, resolve_route, model_call_timeout, model_preflight_timeout
         from rpc_transport import PublicRPCRelay, parse_endpoint
 
 from datetime import datetime, timezone
@@ -339,6 +339,7 @@ MODELS = [
     {"id": "laguna-s-2.1", "label": "Laguna S 2.1 (NaraRouter free)", "keyEnv": "NARAROUTER_API_KEY"},
     {"id": "qwen/qwen3.8-27b", "label": "Qwen 3.8 27B (Groq)", "keyEnv": "GROQ_API_KEY"},
     {"id": "itera/qwen3.8-27b", "label": "Qwen 3.8 27B (Itera free)", "keyEnv": "ITERA_API_KEY"},
+    {"id": "inception/mercury-3", "label": "Mercury 3 (Inception free allowance)", "keyEnv": "INCEPTION_API_KEY"},
     {"id": "no-llm", "label": "No LLM - deterministic Stage 1 (free RPC)", "keyEnv": None},
 ]
 
@@ -626,7 +627,7 @@ def llm_selftest(model: str = "gemini-3.8-flash", max_keys: int = 1,
     for i, k in enumerate(keys[:min(max(1, max_keys), 3)]):
         client = None
         try:
-            client = _oai.OpenAI(api_key=k, base_url=base_url, timeout=(120 if model.startswith("itera/") else 30), max_retries=0)
+            client = _oai.OpenAI(api_key=k, base_url=base_url, timeout=(model_call_timeout([model]) if model.startswith("itera/") else 30), max_retries=0)
             r = client.chat.completions.create(**adapt_request(model, dict(
                 model=model,
                 messages=[{"role": "user", "content": "Reply with the single word: ok"}],
@@ -782,7 +783,7 @@ def worker(run_id, req, q):
         mode = req.get("mode", "no-llm")
         # Groq's free tier caps output tokens/min hard; parallel Stage 2 workers
         # blow through it together. Serialize unless the caller overrides.
-        _groqish = (req.get("mode") or "").startswith(("qwen/", "itera/", "openai/gpt-oss", "allam-", "llama-", "z-ai/", "deepseek-ai/", "nvidia/", "gpt-"))
+        _groqish = (req.get("mode") or "").startswith(("qwen/", "itera/", "inception/", "openai/gpt-oss", "allam-", "llama-", "z-ai/", "deepseek-ai/", "nvidia/", "gpt-"))
         s2w = str(req.get("stage2_workers") or ("1" if _groqish else "")).strip()
         if s2w:
             env_prior["FAULTSEEKER_STAGE2_WORKERS"] = os.environ.get("FAULTSEEKER_STAGE2_WORKERS")
@@ -847,7 +848,7 @@ def worker(run_id, req, q):
             runtime.model_keys = {mode: keys}
             if forensics != mode:
                 runtime.model_keys[forensics] = f_keys
-            runtime.preflight([mode, forensics], timeout=float(os.environ.get("FAULTSEEKER_MODEL_PREFLIGHT_SECS", "120")))
+            runtime.preflight([mode, forensics], timeout=model_preflight_timeout([mode, forensics]))
             from faultseeker.main import main as fs_main
             # Credential rotation belongs to the shared transport session. Never
             # rerun expensive transaction analysis after its circuit has opened.

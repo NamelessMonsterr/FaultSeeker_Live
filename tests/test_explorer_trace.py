@@ -51,6 +51,23 @@ def test_eth_adapter_refuses_non_list_and_empty():
             et.rows_from_parity(bad, ETH_TX, TX)
 
 
+@pytest.mark.parametrize("field", ["transactionHash", "blockHash"])
+@pytest.mark.parametrize("frame", [0, 1])
+def test_explorer_cannot_overwrite_conflicting_frame_provenance(field, frame):
+    raw = copy.deepcopy(BS_ETH)
+    raw[frame][field] = "0x" + "ab" * 32
+    with pytest.raises(ti.TraceIdentityError, match="provenance"):
+        et.rows_from_parity(raw, ETH_TX, TX, chain_id=1)
+
+
+def test_explorer_accepts_matching_explicit_frame_provenance():
+    raw = copy.deepcopy(BS_ETH)
+    for row in raw:
+        row.update(transactionHash=TX.upper(), blockHash=ETH_TX["blockHash"].upper())
+    rows = et.rows_from_parity(raw, ETH_TX, TX, chain_id=1)
+    assert all(row["transactionHash"] == TX and row["blockHash"] == ETH_TX["blockHash"] for row in rows)
+
+
 def test_optimism_calltracer_tree_becomes_verified_parity_rows():
     rows = et.rows_from_calltracer(copy.deepcopy(OP["raw_trace"]), OP["tx"], OP_HASH, chain_id=10)
     assert len(rows) == 66 and rows[0]["traceAddress"] == []

@@ -18,7 +18,7 @@ def _fork_src():
     p = Path(REPO) / "faultseeker/function_analysis/function_analyzer.py"
     if not REPO or not p.exists():
         pytest.skip("pinned pipeline checkout required: set FAULTSEEKER_TEST_PIPELINE_REPO")
-    return p.read_text()
+    return p.read_text(encoding="utf-8")
 
 
 def test_constants_pinned_to_fork_source():

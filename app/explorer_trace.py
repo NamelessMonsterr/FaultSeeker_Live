@@ -77,6 +77,11 @@ def rows_from_parity(raw_rows, tx, tx_hash, chain_id=None):
             raise TraceIdentityError("Explorer trace row is not a parity call frame.")
         if row.get("type") != "call":
             raise TraceIdentityError("Explorer trace contains a non-call frame; whole-trace identity is unverified.")
+        # Some explorers include identity fields; never replace contradictory
+        # provider provenance with the RPC identity and make it look verified.
+        for field in ("transactionHash", "blockHash"):
+            if row.get(field) is not None and not _same(row[field], ident[field]):
+                raise TraceIdentityError("Explorer frame provenance differs from the RPC transaction.")
         key = tuple(row["traceAddress"])
         if key in seen:
             raise TraceIdentityError("Explorer trace has a duplicate frame location.")
