@@ -4,7 +4,7 @@
 
 Draft PR: https://github.com/NamelessMonsterr/FaultSeeker_Live/pull/5, base development main, head fix/all-chain-validation. Created and verified at head 1980a692638c6bdccbc398dbd8e63da1a02f7ac4; subsequent ledger updates stay on that fix branch. Repository/base were checked in GitHub before creation. Render was rechecked immediately before publication: main1 auto-deploy On Commit, PR previews Off. No merge or deployment; Instinct review and user repo/base/deployment approvals remain outstanding.
 
-Current result: 330 offline backend passed / 0 skipped against the exact pinned pipeline; 13 frontend passed. Two live Ethereum attempts failed in preflight and persisted honestly; zero full analyses or correctness passes across 16 chains on either build. No active run. GPT is blocked by current OAuth refresh_token_reused evidence; Qwen had one timeout with cause unverified. User explicitly approved the exact pipeline download; source acquisition and the previous 31 integration skips are now resolved. The corrected development process has no configured Itera key; no corrected live inference is claimed.
+Current result: 330 console offline backend passed / 0 skipped against the exact pinned pipeline; 13 frontend passed. Latest local combined pipeline suite:278 passed /0skipped. Two old live Ethereum attempts failed in preflight; one current development run passed Qwen preflight then failed RPC403, with zero complete analyses/correctness passes across16chains. No active analysis. GPT refresh failure is unresolved; Qwen now has one successful authenticated preflight, not a full analysis pass. Current Ethereum identity and a five-frame keyless explorer trace are verified below. Source acquisition and prior integration skips are resolved.
 
 Sections below preserve the chronological evidence and earlier snapshots; later terminal outcomes supersede pending states. The broader goal remains incomplete.
 
@@ -370,3 +370,82 @@ Completion requirements still unproven:
 
 The goal remains incomplete. Offline tests, candidate explorer pages and CI
 checks do not substitute for these requirements.
+
+## Development run D-ETH-001:50c53ee29ba1 (2026-11-03)
+
+The user submitted this existing local run; it was inspected without duplicating
+it. Console source13140e27e859cde7b6e7f0257ab8ce72b8e03b27, combined pipeline
+d899c0f1d503e69c1e92834e38e46a0684b678ba, Ethereum Hedgey hash as above,
+itera/qwen3.8-27b. Started11:08:30+05:30, ended11:11:48+05:30, duration198.0s.
+
+Persisted endpoint summary:1attempt, preflight ok1/failed0, transport168.266s,
+prompt15/completion2/reasoning0 reported tokens, retries_remaining3,
+shared budget6000s, no endpoint failure. This verifies one real Qwen response
+with corrected request settings; it does not establish general service health,
+billing, old timeout cause or completed transaction analysis.
+
+Terminal failure was RuntimeError from eth_getTransactionByHash: all attempted
+RPC providers failed, last HTTP403 auth error. Deterministic/function/scoring
+sections skipped; failed/INCONCLUSIVE. History persisted error and independently
+reopened the same run as error/INCONCLUSIVE with skipped sections. The initial
+stream displayed the RPC403 cause; reopening retains the generic recorded-error
+limitation rather than the original stream message. No success inferred.
+
+Bounded free diagnostics on the official PublicNode endpoint established chain1
+and returned the exact transaction, block19687890, target
+0xc793113f1548b97e37c409f39244ee44241bf2b3 and selector0xe32a9a37. Same
+transaction read at https://ethereum.publicnode.com: default Python urllib
+User-Agent -> HTTP403; explicit FaultSeeker-validation/1 -> transaction returned;
+the final truthful product-only FaultSeeker header also returned the transaction.
+One attempt per diagnostic variant, no keys, no model calls or blind retries.
+Official endpoint evidence: https://ethereum.publicnode.com/ publishes
+https://ethereum-rpc.publicnode.com as its free Ethereum RPC endpoint.
+
+Current keyless Blockscout trace validated against RPC identity:5frames,
+0frame errors, same root target and calldata. Provider block hash
+0xadc062e388f2cb069f54f398a7b26c41c8484004deba471c78864a5c732363d3.
+ABI unverified; completeness is explorer-reported and internally consistent,
+not independently proven. Public evidence artifact:
+C:\Users\91701\AppData\Local\Temp\faultseeker-local-validation-0745f5b807564267a7519daaaa694ea5\50c53ee29ba1.identity-probe.json.
+
+Header fix990854cceb69a86e1a7063e279be1e35b51ee5b1 changes only _http_post's
+truthful application User-Agent. Focused44tests passed; parent live comparison
+verified that exact header. Incorporated locally into candidate
+745ac7435b142a22c0eece81dac43a6cdb5f427c; full combined suite278passed,
+0failed/skipped,67.45s; diff check passed. Installed pyreadline3 ignored shutdown
+warning; exit0. No endpoint/auth/retry/timeout policy change in this header fix.
+
+Only the local server was restarted, using preserved temporary history, public
+ETH_RPC_URL=https://ethereum-rpc.publicnode.com and explicit keyless explorer
+direct mode. The form cleared its API key after the first run as intended.
+The next click was blocked by native required-field validation; no second
+analyze request or model call started. Awaiting private key reentry, not another
+approval to use it. Render/main1 unchanged; no merge/deploy.
+
+Header draft published and repository/base verified in GitHub:
+https://github.com/NamelessMonsterr/FaultSeeker-/pull/6, base pipeline main,
+head990854cceb69a86e1a7063e279be1e35b51ee5b1. No protected branch changed.
+
+### Hedgey multi-transaction ground-truth boundary
+
+Protocol-authored postmortem:
+https://medium.com/hedgey/hedgey-exploit-post-mortem-784e9860fd8d
+and original Verichains analysis:
+https://blog.verichains.io/p/approval-error-vulnerability-analyzing
+identify two related transactions. The supplied2606d459... hash is the later
+USDC cashout; the earlier setup flash transaction is
+0xa17fdb804728f226fcd10e78eae5247abd984e0f03301312315b89cae25aa517.
+The documented allowance bug involves createLockedCampaign/cancelCampaign
+at0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511. Do not treat those functions as
+observed in the later five-frame cashout trace: its targets are the attack
+contract, USDC proxy and USDC implementation, not the vulnerable campaign contract.
+This is a scope boundary, not permission to invent missing trace frames.
+
+The earlier setup hash was independently resolved on Ethereum through free RPC
+and keyless Blockscout. Validated trace has34frames and calls the documented
+vulnerable contract with observed selectors0xf412e4c7 and0xefd86b62. Human-readable
+selector mapping/execution-block ABI verification is still unproven. Artifact:
+C:\Users\91701\AppData\Local\Temp\faultseeker-local-validation-0745f5b807564267a7519daaaa694ea5\hedgey-setup.identity-probe.json.
+This is a suitable additional function-analysis candidate, not a completed model
+analysis or correctness pass. No supplied preset, expected result or fixture was
+changed to force a match. Original2606 input investigation remains preserved.
