@@ -202,3 +202,33 @@ main remained fca6b998fa0a01f3832be6a0f1aa1d768306da8f. No merge, deployment,
 Docker pin update, paper edit or historical report change. GPT owner reauthentication
 and the Qwen timeout remain unresolved; real correctness passes remain 0/16 for
 development and 0/16 for live.
+
+## Itera documented request contract (2026-11-03)
+
+Official https://iteracompute.com/docs.html first-free-call examples specify
+qwen/qwen3.8-27b, Chat Completions, reasoning=false and a 180-second client
+timeout. The rate-limit section documents up to 120 seconds of queue waiting,
+with provider_rate_limit shared between capacity refusals and queue timeout.
+The public docs do not establish reasoning_effort=none as the Qwen control.
+
+A new regression through the real SDK and MockTransport failed before the fix:
+the preflight serialized reasoning_effort=none and omitted reasoning=false.
+The adapter now emits the documented field and removes conflicting effort
+fields only for the isolated Itera route. Other providers stay unchanged.
+Existing route, self-test and pinned provider-agent assertions were updated to
+the documented contract. This is not evidence that inference now succeeds.
+
+Validation with the clean exact-pinned pipeline checkout:
+`python -B tests/run_offline.py --tb=short -rs` with
+FAULTSEEKER_TEST_PIPELINE_REPO set to that checkout: **326 executed/passed,
+0 failed, 0 skipped**, 20.20 seconds. Frontend command
+`node tests/run_frontend_offline.cjs`: **13 executed/passed, 0 failed/skipped**.
+`git diff --check` passed. A sandboxed backend attempt stopped emitting output
+and was explicitly interrupted; it is not counted as a pass. The subsequent
+socket-blocked run outside the Windows sandbox completed with exit zero.
+
+The 120-second preflight deadline versus the documented 180-second example is
+a separate compatibility concern. No timeout configuration was changed here.
+The historical timeout had no HTTP status or provider error code; queueing is
+consistent with timing but remains unproven. No new model request, payment,
+credential change or deployment was performed. Real-chain passes remain zero.

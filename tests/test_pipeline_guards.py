@@ -527,7 +527,7 @@ def test_offline_fixture_real_factory_hook_phase_and_status_path(pinned_fork, mo
             runtime.close()
         assert agent.PROVIDER_CONFIG is before
         assert seen and seen[0]["auth"] == "Bearer fixture-key-not-real"
-        assert seen[0]["body"]["extra_body"]["reasoning_effort"] == "none" if "extra_body" in seen[0]["body"] else seen[0]["body"].get("reasoning_effort") == "none"
+        assert seen[0]["body"]["extra_body"]["reasoning"] is False if "extra_body" in seen[0]["body"] else seen[0]["body"].get("reasoning") is False
         assert session.summary()["calls"]["analysis"]["ok"] == expect_ok
         if result is not None:
             if expect_ok:

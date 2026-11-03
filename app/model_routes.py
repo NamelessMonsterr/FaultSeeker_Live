@@ -14,15 +14,18 @@ def adapt_request(model, kwargs):
 
     The console model id carries an ``itera/`` alias so it can never share a route
     or credential with the Groq ``qwen/`` models. Itera's free Qwen is a reasoning
-    model: without ``reasoning_effort=none`` it spends the whole completion budget
-    on reasoning and returns an empty answer. Other models are returned unchanged.
+    model. Use its documented ``reasoning=false`` control for a visible answer;
+    reasoning parameters for other providers are not interchangeable. Other models
+    are returned unchanged. See https://iteracompute.com/docs.html.
     """
     if not str(model).startswith(ITERA_PREFIX):
         return kwargs
     adapted = dict(kwargs)
     adapted["model"] = ITERA_UPSTREAM_MODELS.get(str(model), str(model)[len(ITERA_PREFIX):])
     extra = dict(adapted.get("extra_body") or {})
-    extra["reasoning_effort"] = "none"
+    adapted.pop("reasoning_effort", None)
+    extra.pop("reasoning_effort", None)
+    extra["reasoning"] = False
     adapted["extra_body"] = extra
     return adapted
 

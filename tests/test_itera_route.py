@@ -45,14 +45,14 @@ def test_adapt_request_rewrites_only_itera_and_disables_reasoning():
     base = {"model": ITERA, "messages": [{"role": "user", "content": "x"}], "max_tokens": 5}
     out = m.adapt_request(ITERA, base)
     assert out["model"] == "qwen/qwen3.8-27b"
-    assert out["extra_body"] == {"reasoning_effort": "none"}
+    assert out["extra_body"] == {"reasoning": False}
     assert base["model"] == ITERA and "extra_body" not in base  # input is not mutated
     other = {"model": "qwen/qwen3.8-27b", "messages": []}
     assert m.adapt_request("qwen/qwen3.8-27b", other) is other
     sol = {"model": "gpt-6.1-sol-low", "messages": []}
     assert m.adapt_request("gpt-6.1-sol-low", sol) is sol
     keep = m.adapt_request(ITERA, {**base, "extra_body": {"x": 1}})
-    assert keep["extra_body"] == {"x": 1, "reasoning_effort": "none"}
+    assert keep["extra_body"] == {"x": 1, "reasoning": False}
 
 
 def session(responses, seen):
@@ -89,7 +89,7 @@ def test_request_payload_credential_and_token_accounting():
     assert seen[0]["host"] == "api.iteracompute.com"
     assert seen[0]["auth"] == "Bearer itera-key-1"          # only the Itera key, never the SDK default
     assert seen[0]["body"]["model"] == "qwen/qwen3.8-27b"
-    assert seen[0]["body"]["reasoning_effort"] == "none"
+    assert seen[0]["body"]["reasoning"] is False
     assert s.summary()["tokens"] == {"prompt": 10, "completion": 7, "reasoning": 0}
     assert "itera-key-1" not in json.dumps(s.summary())
 
@@ -101,6 +101,18 @@ def test_empty_answer_is_a_failure_not_a_result():
         s.call(factory, {"model": ITERA, "messages": [], "max_tokens": 50}, ITERA)
     assert failure.value.kind == "invalid_response"
     assert "itera-key-1" not in str(failure.value)
+
+
+def test_itera_http_payload_uses_documented_thinking_control():
+    """Contract: https://iteracompute.com/docs.html, first free Qwen call.
+
+    This checks serialized SDK HTTP, not provider availability or inference.
+    """
+    seen = []
+    _m, s, factory = session([ok("Ready")], seen)
+    s.preflight(factory, ITERA, timeout=5)
+    assert seen[0]["body"].get("reasoning") is False
+    assert "reasoning_effort" not in seen[0]["body"]
 
 
 def test_itera_model_is_listed_with_its_own_credential_env():
@@ -148,6 +160,6 @@ def test_selftest_uses_adapted_payload(monkeypatch):
     monkeypatch.setenv("ITERA_API_KEY", "k")
     out = srv.llm_selftest(model="itera/qwen3.8-27b")
     assert seen["model"] == "qwen/qwen3.8-27b"
-    assert seen["extra_body"] == {"reasoning_effort": "none"}
+    assert seen["extra_body"] == {"reasoning": False}
     assert out["keys"][0]["ok"] is True
     assert seen["timeout"] == 120
