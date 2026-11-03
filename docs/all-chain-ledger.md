@@ -554,7 +554,7 @@ Result345 passed,0 failed,0 skipped in13.29seconds, exit0. Candidate modules
 are isolated/restored separately from the immutable pin. Frontend13 passed,
 0 skipped; git diff --check passed. Pipeline PR7 CI:2/2 checks passed.
 
-## D-ETH-003:e459ff0f30c9 (active)
+## D-ETH-003:e459ff0f30c9 (terminal partial / HTTP429)
 
 Exactly one new real development analysis accepted after the routing and shared
 transport corrections. Ethereum setup transaction
@@ -571,3 +571,35 @@ real analysis transport is now exercised, not completion of function findings
 or correctness. Run remains active; no duplicate request submitted.
 Persist events/result under the same local validation history directory with
 run prefix e459ff0f30c9. Do not restart or duplicate while this run is active.
+
+Terminal evidence supersedes the in-progress observations above: partial /
+INCONCLUSIVE, deterministic_checks and address_classification completed,
+function_analysis failed, scoring skipped. Eight HTTP attempts total:
+preflight1 success; analysis6 successes,1 HTTP429 failure. No retry or key
+rotation followed429; all3 shared retries remained unused. Transport430.625s;
+persisted event span444.9s. Tokens7006 prompt/738 completion/0 reasoning.
+Scored functions0,evidence cards0; function controller started1/completed0.
+No Retry-After/reset guidance persisted; rate/capacity cause is not proven
+beyond429. Further affected model calls stopped, with no duplicate submission.
+This is not a complete transaction or correctness pass.
+
+Terminal rendered report shows partial/INCONCLUSIVE, HTTP429 and skipped
+scoring. Its legacy candidate fallback incorrectly labelled34 observed trace
+calls as function findings despite0 scored functions/cards. Two synthetic UI
+schema regressions reproduced2 failures/13 passes; corrected rendering keeps
+actual findings separate from observed calls/unanalysed candidates, preserving
+pagination and full JSON. Frontend15 passed,0 failed/skipped; static sync and
+diff checks passed. Corrected rendered history verified: stored run reopens as
+error/INCONCLUSIVE (run lifecycle error, persisted report partial), HTTP429,
+function analysis failed/scoring skipped, Functions and evidence(0), separate
+Observed calls / unanalysed candidates(34), explicitly not model findings.
+Preview: dev-eth-003-observations-separated.jpg in the task visualization folder.
+Post-fix offline backend rerun with both exact pin and explicit candidate:
+345 passed,0 failed/skipped in41.90seconds; frontend15 passed,0 skipped.
+
+Remaining independent defects reproduced offline, not yet fixed: Itera's
+registered cloud prefix gets local prompt variants and8 function iterations
+instead of3; selector-only memo dedup skips the same selector on a different
+address. Separate work is isolated from candidate6a5b0be so this real run's
+source revision stays attributable. Further Itera calls remain stopped after429;
+GPT proxy authentication remains unresolved. No full analysis passes yet.

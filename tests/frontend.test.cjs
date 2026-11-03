@@ -63,6 +63,34 @@ test('large forensic reports paginate findings without dropping downloadable rep
  const button=nodes.find(n=>n.textContent==='Show 20 more findings');button.onclick();nodes=walk(app.elements.results);assert.equal(nodes.filter(n=>n.tagName==='article').length,40);assert.match(collect(app.elements.results),/Showing 40 of 803 findings/);
 });
 
+test('partial report keeps observed calls separate from absent function findings',async()=>{
+ // Synthetic UI-schema reproduction of a partial report; not an on-chain fixture.
+ const calls=Array.from({length:34},(_,i)=>({function:'observed_'+i,address:'0x'+String(i).padStart(40,'0'),params:'calldata_'+i}));
+ const report={transaction_hash:'0x123',analysis_status:'partial',sections:{function_analysis:'failed',scoring:'skipped'},scored_functions:[],evidence_cards:[],function_analysis:{functions_to_inspect:{function_name_with_hash:calls}},model_endpoint:{failure:{kind:'rate_limited',http_status:429}}};
+ const app=boot({'/console/api/config':{data:config},'/console/api/analyze':{data:{run_id:'partialcalls'}},'/console/api/result/partialcalls':{data:report}});await settle();
+ await app.elements['analysis-form'].listeners.submit({preventDefault(){}});app.streams[0].emit('error','Model endpoint returned HTTP 429','1');app.streams[0].emit('end',{},'2');await settle();
+ const walk=el=>[el,...el.children.flatMap(walk)];let nodes=walk(app.elements.results);let content=collect(app.elements.results);
+ assert.match(content,/Functions and evidence \(0\)/);assert.match(content,/Observed calls \/ unanalysed candidates \(34\)/);assert.match(content,/INCONCLUSIVE/);
+ assert.equal(nodes.filter(n=>n.className==='finding').length,0);assert.equal(nodes.filter(n=>n.className==='observed-call').length,20);
+ assert.doesNotMatch(content,/Full finding and evidence/);assert.match(content,/Showing 20 of 34 observed calls/);
+ const more=nodes.find(n=>n.textContent==='Show 20 more observed calls');more.onclick();nodes=walk(app.elements.results);content=collect(app.elements.results);
+ assert.equal(nodes.filter(n=>n.className==='observed-call').length,34);assert.match(content,/Showing 34 of 34 observed calls/);assert.equal(more.hidden,true);
+ assert.ok(nodes.some(n=>n.tagName==='pre'&&n.textContent.includes('"function_name_with_hash"')&&n.textContent.includes('observed_33')));
+ assert.ok(nodes.some(n=>n.textContent==='Download report JSON'));
+});
+
+test('scored findings do not hide separately labelled observed calls',async()=>{
+ // Synthetic UI schema: a genuine scored entry and an unanalysed candidate coexist.
+ const report={transaction_hash:'0x123',analysis_status:'completed',scored_functions:[{function:'scored_fn',evidence:['Scored evidence']}],evidence_cards:[],function_analysis:{functions_to_inspect:{function_name_with_hash:[{function:'candidate_only'}]}}};
+ const app=boot({'/console/api/config':{data:config},'/console/api/capture':{data:report}});await settle();await app.elements['capture-button'].onclick();
+ const walk=el=>[el,...el.children.flatMap(walk)],nodes=walk(app.elements.results),content=collect(app.elements.results);
+ assert.match(content,/Functions and evidence \(1\)/);assert.match(content,/Observed calls \/ unanalysed candidates \(1\)/);
+ assert.equal(nodes.filter(n=>n.className==='finding').length,1);assert.equal(nodes.filter(n=>n.className==='observed-call').length,1);
+ const finding=nodes.find(n=>n.className==='finding'),observation=nodes.find(n=>n.className==='observed-call');
+ assert.match(collect(finding),/scored_fn/);assert.doesNotMatch(collect(finding),/candidate_only/);assert.match(collect(observation),/candidate_only/);
+ assert.doesNotMatch(collect(observation),/Full finding and evidence/);
+});
+
 test('model retry status explicitly pauses analysis and never completes pending stages',async()=>{
  const app=boot({'/console/api/config':{data:config},'/console/api/analyze':{data:{run_id:'retryrun'}}});await settle();
  await app.elements['analysis-form'].listeners.submit({preventDefault(){}});
