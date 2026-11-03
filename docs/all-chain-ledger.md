@@ -333,3 +333,40 @@ analyze_transaction controlled around that path. It does not execute complete
 forensic/function/model reasoning. Separate Parity/calibration drafts are not
 folded in; future merge resolution must preserve all three. Pipeline main and
 console Docker pin unchanged. No merge/deploy, real-chain passes still0/16.
+
+## Combined development rehearsal (2026-11-03)
+
+Local pipeline branch fix/pipeline-integration-validation at
+d899c0f1d503e69c1e92834e38e46a0684b678ba combines the three queued patches
+on main fca6b998 in a separate worktree; component branches and PRs unchanged.
+No PR or protected branch merged. The rpc_provider.py patch overlap was
+resolved by retaining iterative normalization plus the Parity creation helper,
+tree metadata and guarded result.output. Independent read-only review found
+neither fix lost. This validation branch is local, not published or deployed.
+
+`python -B tests/run_offline_depth.py tests`: **269 executed/passed,
+0failed/skipped**,15.17s; diff check passed. Added synthetic cross-patch coverage
+for1024 Parity CREATE frames, target/initcode preservation, object conversion
+and calibrated-report consistency. Sockets blocked, no installs/live calls.
+Do not add this count to component counts as independent coverage; tests overlap.
+The pipeline depth draft's GitHub UI now shows2/2 checks passed; observed directly.
+
+Credential presence check: local ITERA_API_KEY absent; OPENAI_API_KEY present
+but CODEX_PROXY_BASE_URL and OPENAI_BASE_URL absent. The latter key's intended
+destination is not established; it was not sent to an assumed proxy. No values
+printed, rotated or changed. The request for an approved local Itera route or
+owner-restored GPT authentication remains unanswered.
+
+Completion requirements still unproven:
+
+| Requirement | Current evidence / blocker |
+| --- | --- |
+| Corrected development full real analysis on all16chains | 0passes; approved local model access missing, current trace/receipt/ground-truth checks incomplete |
+| Corrected rendered console flow, scoring, evidence and saved/reopened history | Offline boundaries tested; full real development flow not verified |
+| Approved live build and all16 real analyses | Live remains947db7d; two preflight failures,0passes; no deployment authorized |
+| Actual deployed pipeline revision | Docker configured pinfb57c3f; runtime revision not independently attested |
+| Instinct review and user repo/base check before merge | Instinct capability unavailable in this session; user review pending |
+| Deployment approval, rollback tag and post-deploy verification | Not authorized or performed; no live changes |
+
+The goal remains incomplete. Offline tests, candidate explorer pages and CI
+checks do not substitute for these requirements.
