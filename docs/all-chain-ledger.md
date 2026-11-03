@@ -273,3 +273,31 @@ https://optimistic.etherscan.io/tx/0x3f53165786698b8f11c4a50636a3d8d2f6013b17711
 The indexed official explorer page records success at block118585730, 2024-04-10 17:30:37 UTC, swap(bytes) selector0x627dd56a to 0xCf32c5bB41F7A302298a2D2072155800871BaaD3, with swap logs. Direct page retrieval cache-missed; evidence came from exact-hash indexed explorer content. Needs current receipt, complete trace, source mapping, real console run and ground-truth assessment before promotion to a pass. Coverage-table hash stays unset until current on-chain verification.
 
 Aurora example 0x36e2339784004c5dd40df74e663f1fe6683705a8ad665a05a9ad0aa4e11b559b is excluded: official https://doc.aurora.dev/blog/demystifying-transaction-failures/ diagnoses OutOfFund before execution. No suitable Aurora candidate was verified in the bounded research. Truncated hashes and inaccessible transaction pages were not promoted as evidence.
+
+### Parity fix review and newer-main depth limitation
+
+Pipeline draft https://github.com/NamelessMonsterr/FaultSeeker-/pull/4 targets
+pipeline main, head c076a4cec07b35d022020653dc17f6e505cdaf96 on
+fix/parity-creation-normalization. Direct and tree normalization now preserve
+CREATE/CREATE2 action.init, result.address and provider type/error metadata.
+No missing creation target is replaced with initcode. Independent read-only
+review found no confirmed regression in the changed paths.
+
+Parent independently executed:
+`python -B tests/run_offline_parity.py tests/test_parity_creation_normalization.py tests/test_reentrancy_state_signals.py tests/test_pipeline_parse.py`
+in that pipeline worktree: **48 executed/passed, 0 failed/skipped**, 5.32 seconds;
+diff check passed. The installed pyreadline3 shutdown warning remains ignored
+by Python; exit0. Controlled real replay fallback covers nested creation; no
+live provider or on-chain ground-truth verification. Parent console probe at
+that exact fix SHA reports Parity address/input preserved and the synthetic
+creation sequencer/flattening/ranker target preserved. Docker pin unchanged.
+
+Separate limitation discovered by the same probe: newer pipeline main uses
+recursion limit1000, unlike exact pin's20000. At depth1024, normalization,
+deepcopy, upstream conversion, TraceNode and JSON raise RecursionError; console
+iterative conversion returns. Read-only base comparison confirms preexisting
+behavior: fca6b998 has no recursionlimit setting, while fb57c3f function_analyzer.py:28
+sets20000; isolated base and fix geth normalizers both raise at depth1024/limit1000.
+The Parity patch does not introduce or resolve this depth limitation. A future
+pipeline-pin update must account for it; do not claim current-main full-flow
+depth support from the older pin's passing probe.
