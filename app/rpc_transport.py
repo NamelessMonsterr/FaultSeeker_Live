@@ -18,7 +18,9 @@ MAX_BODY = 32 * 1024 * 1024
 
 
 class RPCDestinationError(ValueError):
-    pass
+    def __init__(self, message, *, status_code=None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 def public_address(value):
@@ -91,12 +93,13 @@ def public_post(url, body, timeout=60):
         path = parsed.path or "/"
         if parsed.query:
             path += "?" + parsed.query
-        connection.request("POST", path, body=body, headers={"Content-Type": "application/json"})
+        connection.request("POST", path, body=body, headers={"Content-Type": "application/json",
+                            "User-Agent": "FaultSeeker/1.0 (transaction-forensics)"})
         response = connection.getresponse()
         if 300 <= response.status < 400:
             raise RPCDestinationError("RPC redirects are not accepted; configure the final public endpoint.")
         if not 200 <= response.status < 300:
-            raise RPCDestinationError("RPC endpoint returned HTTP %s." % response.status)
+            raise RPCDestinationError("RPC endpoint returned HTTP %s." % response.status, status_code=response.status)
         payload = response.read(MAX_BODY + 1)
         if len(payload) > MAX_BODY:
             raise RPCDestinationError("RPC response exceeded the size limit.")

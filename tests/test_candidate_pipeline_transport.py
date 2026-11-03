@@ -197,3 +197,30 @@ def test_candidate_mid_run_failure_is_latched_not_swallowed(candidate, monkeypat
         assert "dummy-first" not in json.dumps(events)
     finally:
         runtime.close()
+
+
+def test_verified_abi_context_reaches_real_function_summary(candidate, monkeypatch):
+    import types
+    import networkx as nx
+    from faultseeker.function_analysis.function_analyzer import FunctionAnalyzer
+    address, selector = '0x' + '1' * 40, '0xa9059cbb'
+    runtime = PipelineRuntime('0x' + 'a' * 64, 'eth').install()
+    runtime.sequence = {'trace': {'function': selector, 'address': address, 'children': []}}
+    seen=[]
+    def lookup(addr, fn):
+        seen.append((addr,fn))
+        return {'status':'verified','signature':'transfer(address,uint256)','scope':'block_end_state'}
+    runtime.abi_context=types.SimpleNamespace(lookup=lookup)
+    try:
+        obj=FunctionAnalyzer.__new__(FunctionAnalyzer)
+        obj.fundflow_analysis={'balance_change':{}}
+        obj.txn_seq={'address_calls':{address:[selector]}}
+        obj.address_relation=nx.DiGraph()
+        obj._retrieve_source_code=lambda *args: []
+        result=obj._retrieve_related_info(address,selector)
+        assert result['verified_abi_context']['signature']=='transfer(address,uint256)'
+        assert result['address_calls']==[selector]
+        obj._retrieve_related_info('0x'+'2'*40,selector)
+        assert seen==[(address,selector)]  # unobserved target cannot consume lookup budget
+    finally:
+        runtime.close()

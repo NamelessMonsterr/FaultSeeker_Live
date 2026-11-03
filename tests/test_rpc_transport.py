@@ -29,7 +29,9 @@ def test_connection_pins_checked_dns_and_rechecks_next_request(monkeypatch):
     class Connection:
         def __init__(self, host, port, timeout, context):
             tls.append((host, context.check_hostname, context.verify_mode))
-        def request(self, *a, **k): self._create_connection(("rpc.invalid", 443))
+        def request(self, *a, **k):
+            assert k["headers"]["User-Agent"].startswith("FaultSeeker/")
+            self._create_connection(("rpc.invalid", 443))
         def getresponse(self): return type("Response", (), {"status":200, "read":lambda self,n:b'{"result":"0x1"}'})()
         def close(self): pass
     monkeypatch.setattr(socket, "getaddrinfo", resolve)

@@ -8,6 +8,7 @@ from copy import deepcopy
 import os
 import re
 import time
+import threading
 
 try:
     from .model_endpoint import ModelEndpointSession
@@ -45,6 +46,9 @@ class PipelineRuntime:
         self.partial = None
         self.sequence = None
         self.ranked_targets = []
+        self.abi_context = None
+        self.abi_lock = threading.RLock()
+        self.abi_observations = {}
         self.restorers = []
         self.source = None
         self.model_keys = {}
@@ -292,6 +296,31 @@ class PipelineRuntime:
             return result
         self.replace(FunctionRanker, "rank", checked_rank)
 
+        original_related = FunctionAnalyzer._retrieve_related_info
+        def with_verified_abi(analyzer, address, function_name):
+            result = original_related(analyzer, address, function_name)
+            allowed = {(str(n.get("address", "")).lower(), n.get("function"))
+                       for n in walk(self.sequence["trace"])} if self.sequence else set()
+            target = (str(address).lower(), function_name)
+            if target not in allowed:
+                return result
+            with self.abi_lock:
+                if self.abi_context is None:
+                    try:
+                        from .verified_abi_context import VerifiedABIContext
+                    except ImportError:
+                        from verified_abi_context import VerifiedABIContext
+                    endpoint = (os.getenv(f"{self.chain.upper()}_ABI_RPC_URL")
+                                or os.getenv("FAULTSEEKER_ABI_RPC_URL"))
+                    block = (self.sequence.get("trace_provenance") or {}).get("block_number")
+                    self.abi_context = VerifiedABIContext(CHAIN_IDS[self.chain], block, endpoint)
+                context = self.abi_context.lookup(address, function_name)
+                self.abi_observations[target] = deepcopy(context)
+            if context.get("status") != "disabled":
+                result["verified_abi_context"] = context
+            return result
+        self.replace(FunctionAnalyzer, "_retrieve_related_info", with_verified_abi)
+
         original_analyze = FunctionAnalyzer.run
         def checked_analysis(analyzer, *args, **kwargs):
             self.assert_healthy()
@@ -365,6 +394,8 @@ class PipelineRuntime:
                 unsupported.append(f"{sig.get('function', '?')}@{sig.get('address', '?')}")
         result["analysis_integrity"] = {"function_identity": "calldata_selector", "abi_verified": False,
                                         "ranked_targets": self.ranked_targets, "unverified_targets": unsupported}
+        result["verified_abi_context"] = [{"address": address, "selector": selector, **deepcopy(context)}
+            for (address, selector), context in self.abi_observations.items() if context.get("status") != "disabled"]
         result["trace_provenance"] = deepcopy((self.sequence or {}).get("trace_provenance", {}))
         result.setdefault("limitations", []).append("Function identities use observed calldata selectors. Human-readable names require verified ABI/source at the execution context; selector-database labels are not proof.")
         if unsupported:
@@ -479,6 +510,8 @@ class PipelineRuntime:
             result["failure"] = {"kind": "trace_identity", "message": str(error)}
         elif error is not None:
             result["failure"] = {"kind": getattr(error, "kind", type(error).__name__)}
+        result["verified_abi_context"] = [{"address": address, "selector": selector, **deepcopy(context)}
+            for (address, selector), context in self.abi_observations.items() if context.get("status") != "disabled"]
         result["trace_provenance"] = deepcopy((self.sequence or {}).get("trace_provenance", {}))
         return result
 
