@@ -817,3 +817,34 @@ Provider HTTP success is not a full-analysis pass. No secret values read from
 the dashboard. A new optional allowlisted completion_finish_reason field now
 preserves the known non-final marker; its4 regression cases first failed then
 passed. No automatic retry added and no output cap raised without diagnosis.
+
+## D-ETH-006:a5c4f7294193 (instrumented reproduction; terminal partial)
+
+Same verified setup hash,Inception mercury-3,same4096 cap; console
+81ac9c2d35dcc5bf7db157ec5aef4d7d8a1a9f0a,pipelinee9d7166. The worker was
+freshly spawned against this checkout; existing parent server had unchanged
+server configuration. This was one targeted reproduction,not an automatic
+retry/parallel copy. First event2026-11-03T13:01:14Z,end13:01:41.2Z,27.2s span.
+Five HTTP requests:preflight1 success,analysis3 successes/1 failure.
+Transport18.953s;1377 prompt/6256 completion tokens,6203 reasoning subset.
+All3 retries unused. Captured completion_finish_reason=length confirms output
+budget exhaustion for this run. Deterministic checks completed,address
+classification failed,function/scoring skipped,0 scores/cards;no full pass.
+
+The initial conservative4096 cap was inadequate for this reasoning model.
+Mercury's documented example uses8192 max_completion_tokens. Console default/
+maximum now8192 for Inception only;preflight remains8 with instant reasoning,
+analysis remainslow,serialStage2 and shared time/retry budgets unchanged.
+Two new/updated route contract failures reproduced the4096 mismatch; final
+full offline suite with exact pin plus candidatee9d7166:377 passed,0 skipped
+in14.56s. Unfinished-response rejection remains enabled,not weakened to pass.
+The next real run must establish whether8192 actually completes the work.
+
+Additional Base readiness: official Base RPC verified the primary PoC's
+Nalakuvara attack hash0x16a99aef4fab36c84ba4616668a03a5b37caa12e2fc48923dba4e711d2094699,
+chain8453,block30001613,non-creation root selector0x598e2171. Candidate-list
+GET to base.blockscout.com returned403; one raw-trace attempt failedHTTPError
+(status not preserved by current explorer helper). Probe-only instance
+registration did not change project support. Artifact:base-nalakuvara.identity-probe.json.
+No model run/full Base pass. Source:
+https://github.com/SunWeb3Sec/DeFiHackLabs/blob/main/src/test/2025-05/Nalakuvara_LotteryTicket50_exp.sol .

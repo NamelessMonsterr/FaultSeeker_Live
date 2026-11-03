@@ -39,6 +39,12 @@ def test_inception_preserves_valid_explicit_options_without_mutating_request():
     assert result["reasoning_effort"] == "high" and request == original
 
 
+def test_inception_supports_documented_8192_reasoning_and_answer_budget():
+    result = adapt_request(MODEL, {"model": MODEL, "max_completion_tokens": 8192})
+    assert result["max_completion_tokens"] == 8192
+    assert result["reasoning_effort"] == "low"
+
+
 @pytest.mark.parametrize("options", [{"temperature": float("nan")}, {"temperature": 2},
     {"max_completion_tokens": 0}, {"max_completion_tokens": 999999},
     {"max_tokens": 10, "max_completion_tokens": 20}, {"reasoning_effort": "unsupported"}])
@@ -74,7 +80,7 @@ def test_inception_preflight_and_analysis_use_documented_request_contract():
     assert preflight["model"] == analysis["model"] == "mercury-3"
     assert preflight["temperature"] == analysis["temperature"] == 0.5
     assert preflight["reasoning_effort"] == "instant" and preflight["max_completion_tokens"] == 8
-    assert analysis["reasoning_effort"] == "low" and analysis["max_completion_tokens"] == 4096
+    assert analysis["reasoning_effort"] == "low" and analysis["max_completion_tokens"] == 8192
     assert all("max_tokens" not in row and "reasoning" not in row for row in requests)
     assert session.summary()["calls"] == {"preflight": {"ok": 1, "failed": 0}, "analysis": {"ok": 1, "failed": 0}}
 

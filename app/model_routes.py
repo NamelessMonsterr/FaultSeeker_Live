@@ -47,9 +47,11 @@ def adapt_request(model, kwargs, *, phase="analysis"):
         adapted["temperature"] = max(0.5, temperature)
         if "max_tokens" in adapted and "max_completion_tokens" in adapted:
             raise ValueError("Conflicting Inception output-token limits.")
-        limit = adapted.pop("max_tokens", adapted.get("max_completion_tokens", 4096))
-        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 4096:
-            raise ValueError("Inception output-token limit must be between 1 and 4096.")
+        # The documented 8192 example budgets for reasoning plus visible output;
+        # real runs exhausted4096 in reasoning before completing their answers.
+        limit = adapted.pop("max_tokens", adapted.get("max_completion_tokens", 8192))
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 8192:
+            raise ValueError("Inception output-token limit must be between 1 and 8192.")
         adapted["max_completion_tokens"] = limit
         effort = adapted.setdefault("reasoning_effort", "instant" if phase == "preflight" else "low")
         if effort not in ("instant", "low", "medium", "high"):
