@@ -71,6 +71,22 @@ def test_timeout_is_bounded_and_classified():
     assert "SECRET" not in str(failure.value)
 
 
+@pytest.mark.parametrize("reason", ["length", "content_filter", "tool_calls", "function_call"])
+def test_explicitly_incomplete_completion_cannot_be_accepted_as_analysis(reason):
+    body = {**OK, "choices": [{"index": 0, "finish_reason": reason,
+        "message": {"role": "assistant", "content": '{"result":"PRIVATE"}'}}],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12,
+                  "completion_tokens_details": {"reasoning_tokens": 3}}}
+    m, session, factory, calls, events, _ = setup([httpx.Response(200, json=body)])
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.call(factory, {"model": MODEL, "messages": []}, MODEL)
+    assert failure.value.kind == "incomplete_response"
+    assert len(calls) == 1 and session.retries_left == 2
+    assert session.summary()["tokens"] == {"prompt": 5, "completion": 7, "reasoning": 3}
+    assert not any(event.get("state") == "model_endpoint_ready" for event in events)
+    assert "PRIVATE" not in str(failure.value) + json.dumps(events)
+
+
 @pytest.mark.parametrize("code", ["free_model_monthly_limit", "free_model_tpm_limit", "provider_rate_limit"])
 def test_429_preserves_only_recognized_recovery_metadata_without_retry(code):
     response = httpx.Response(429, headers={"Retry-After": "120", "X-Request-ID": "PRIVATE_SECRET"},

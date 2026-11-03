@@ -1,5 +1,6 @@
 """Operator-selected model routes; visitor keys never choose a destination."""
 import os
+import math
 from urllib.parse import urlsplit
 
 
@@ -7,6 +8,9 @@ ITERA_PREFIX = "itera/"
 ITERA_DEFAULT_BASE_URL = "https://api.iteracompute.com/v1"
 # Console alias -> Itera's published model id (the free tier model; verified via GET /v1/models).
 ITERA_UPSTREAM_MODELS = {"itera/qwen3.8-27b": "qwen/qwen3.8-27b"}
+INCEPTION_PREFIX = "inception/"
+INCEPTION_DEFAULT_BASE_URL = "https://api.inceptionlabs.ai/v1"
+INCEPTION_UPSTREAM_MODELS = {"inception/mercury-3": "mercury-3"}
 
 
 def model_call_timeout(models=()):
@@ -21,8 +25,8 @@ def model_preflight_timeout(models=()):
     return float(os.getenv("FAULTSEEKER_MODEL_PREFLIGHT_SECS", default))
 
 
-def adapt_request(model, kwargs):
-    """Rewrite a request for the operator-selected Itera route.
+def adapt_request(model, kwargs, *, phase="analysis"):
+    """Adapt requests to explicit operator-selected provider contracts.
 
     The console model id carries an ``itera/`` alias so it can never share a route
     or credential with the Groq ``qwen/`` models. Itera's free Qwen is a reasoning
@@ -30,6 +34,27 @@ def adapt_request(model, kwargs):
     reasoning parameters for other providers are not interchangeable. Other models
     are returned unchanged. See https://iteracompute.com/docs.html.
     """
+    if str(model).startswith(INCEPTION_PREFIX):
+        if model not in INCEPTION_UPSTREAM_MODELS:
+            raise ValueError("The selected Inception model is not configured.")
+        adapted = dict(kwargs)
+        adapted["model"] = INCEPTION_UPSTREAM_MODELS[model]
+        # Mercury chat accepts 0.5..1.0; legacy agents request temperature0.
+        temperature = adapted.get("temperature", 0)
+        if (not isinstance(temperature, (int, float)) or isinstance(temperature, bool)
+                or not math.isfinite(temperature) or not 0 <= temperature <= 1):
+            raise ValueError("Inception temperature must be between 0 and 1.")
+        adapted["temperature"] = max(0.5, temperature)
+        if "max_tokens" in adapted and "max_completion_tokens" in adapted:
+            raise ValueError("Conflicting Inception output-token limits.")
+        limit = adapted.pop("max_tokens", adapted.get("max_completion_tokens", 4096))
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 4096:
+            raise ValueError("Inception output-token limit must be between 1 and 4096.")
+        adapted["max_completion_tokens"] = limit
+        effort = adapted.setdefault("reasoning_effort", "instant" if phase == "preflight" else "low")
+        if effort not in ("instant", "low", "medium", "high"):
+            raise ValueError("Unsupported Inception reasoning effort.")
+        return adapted
     if not str(model).startswith(ITERA_PREFIX):
         return kwargs
     adapted = dict(kwargs)
@@ -43,7 +68,11 @@ def adapt_request(model, kwargs):
 
 
 def resolve_route(model, provider_url=None, provider_env="OPENAI_API_KEY"):
-    if model.startswith(ITERA_PREFIX):
+    if model.startswith(INCEPTION_PREFIX):
+        endpoint = os.getenv("INCEPTION_BASE_URL") or INCEPTION_DEFAULT_BASE_URL
+        key_env = "INCEPTION_API_KEY"
+        setting = "INCEPTION_BASE_URL"
+    elif model.startswith(ITERA_PREFIX):
         # Operator-set endpoint only; visitor input never chooses the destination.
         endpoint = os.getenv("ITERA_BASE_URL") or ITERA_DEFAULT_BASE_URL
         key_env = "ITERA_API_KEY"

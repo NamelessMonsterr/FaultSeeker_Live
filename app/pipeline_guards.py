@@ -11,11 +11,11 @@ import time
 
 try:
     from .model_endpoint import ModelEndpointSession
-    from .model_routes import ITERA_DEFAULT_BASE_URL, resolve_route, model_call_timeout
+    from .model_routes import ITERA_DEFAULT_BASE_URL, INCEPTION_DEFAULT_BASE_URL, resolve_route, model_call_timeout
     from .trace_identity import TraceIdentityError, canonical_to_legacy, check_structured, validate_trace_root
 except ImportError:  # app/server.py invoked directly
     from model_endpoint import ModelEndpointSession
-    from model_routes import ITERA_DEFAULT_BASE_URL, resolve_route, model_call_timeout
+    from model_routes import ITERA_DEFAULT_BASE_URL, INCEPTION_DEFAULT_BASE_URL, resolve_route, model_call_timeout
     from trace_identity import TraceIdentityError, canonical_to_legacy, check_structured, validate_trace_root
 
 
@@ -81,6 +81,10 @@ class PipelineRuntime:
             # OpenAI-compatible agent whose calls the shared transport owns.
             self.replace(agent_module, "PROVIDER_CONFIG",
                          {**config, "itera/": (ITERA_DEFAULT_BASE_URL, "ITERA_API_KEY")})
+        config = getattr(agent_module, "PROVIDER_CONFIG", None)
+        if isinstance(config, dict) and "inception/" not in config:
+            self.replace(agent_module, "PROVIDER_CONFIG",
+                         {**config, "inception/": (INCEPTION_DEFAULT_BASE_URL, "INCEPTION_API_KEY")})
         for agent_class in {agent_module.GPTAgent, agent_module.UniversalAgent}:
             original = agent_class._send_message
             if legacy_transport:

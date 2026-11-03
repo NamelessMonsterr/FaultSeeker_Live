@@ -680,3 +680,113 @@ Frontend first3 failures/15 controls passed; final18 passed,0 skipped.
 Full offline command with exact pin and explicit candidate e9d7166:
 `python -B tests/run_offline.py --tb=line -rs`:354 passed,0 skipped in61.77s.
 Static sync/diff checks passed. No live request has used this metadata fix yet.
+
+## D-ETH-004:8aa518128b22 (terminal partial / provider capacity)
+
+After several hours without model calls following the429, exactly one new run
+was accepted on the same approved free Itera route and existing encrypted local
+key. This tests the newly corrected cloud policy/target identity and preserves
+actionable metadata if preflight is rejected; no429 retry or parallel copy is
+allowed. Ethereum setup hash remains
+0xa17fdb804728f226fcd10e78eae5247abd984e0f03301312315b89cae25aa517.
+Console c4fdbd2cca589e32d3f50e60dcabc736a118c555; pipeline
+e9d7166ba9362e5fbaeeb349158d0649efc5632d. Local server PID20568,session77009,
+127.0.0.1:8765. UI confirms accepted run8aa518128b22; no stage/finding pass
+inferred. Monitor this same run through its terminal state; do not resubmit.
+
+Terminal outcome supersedes acceptance above: partial/INCONCLUSIVE. Preflight1
+success; analysis1 success/1 failure;3 total requests; transport370.687seconds.
+Tokens403 prompt/4 completion/0 reasoning. All3 shared retries remained unused.
+The real HTTP429 reported provider_code=provider_rate_limit and Retry-After2s;
+the new sanitized metadata was retained and rendered. Per provider docs this
+is a capacity refusal, not its monthly/TPM-specific code; queue-full versus
+queue-timeout remains indistinguishable. No further model request submitted.
+Deterministic checks completed; address classification failed; function
+analysis/scoring skipped. Scored functions0,evidence cards0. No full pass.
+Initial report and history reopening verified: partial then run lifecycle
+error/INCONCLUSIVE; provider capacity explanation and original2-second retry
+hint remain visible. Screenshot:dev-eth-004-capacity-reopened.jpg.
+UI creation time2026-11-03T11:12:51Z; first persisted event11:13:14.5Z.
+Terminal end2026-11-03T11:19:35.2Z; event span380.7seconds,56 events.
+Function controller started0/completed0, so the new function-loop/target fixes
+were not exercised by this failed real run.
+
+## Read-only proxy bootstrap investigation
+
+Signed-in source inspection confirmed entrypoint.sh at the last attested proxy
+deployment commit070d9d61d3bd9140a5ea71707582781a32ce65f3 unconditionally writes
+CODEX_AUTH_JSON over the XDG auth.json on every start. A local isolated Git Bash
+test executed those six source lines with a stub proxy and dummy generation
+markers: first start read seed,stub wrote rotated; second start again read seed.
+This proves startup overwrites newer file state. No real auth,secret,provider
+request or proxy change was used. Artifact:proxy-bootstrap-reproduction.json.
+
+Upstream documentation describes a rotating credential file; device auth admin
+routes are Workers-only and cannot be assumed present on this Render build.
+The bootstrap overwrite is a confirmed persistence flaw. Whether it caused the
+historical refresh_token_reused/401 is still unproven; actual upstream build
+revision/token history is not attested. A durable rotating credential source
+and fresh owner login are needed for reliable recovery; merely restoring an
+environment seed can become stale again. Deferred outside console/pipeline
+fixes: owner credential changes/proxy restart and durable store require separate
+authority/review. No wrapper repo edits or credential changes performed.
+Sources: signed-in NamelessMonsterr/codex-proxy-render entrypoint at070d9d6;
+https://github.com/dvcrn/codex-oauth-proxy#authentication .
+
+## User retires proxy route; Inception API preparation
+
+User reports no longer having the GPT proxy and directs reliance on APIs.
+Proxy recovery is no longer pursued; read-only findings above remain historical,
+not authorization to change that service. No proxy credentials/restarts made.
+Existing Render API-variable names inspected without values:GOOGLE_API_KEY,
+ITERA_API_KEY,OPENAI_API_KEY,XAI_API_KEY. Presence is not proof of validity or
+free access; no generation request sent through those other variables.
+
+User supplied Inception as the alternate API, states its key has100M free
+tokens, and supplied a rate-limit screenshot:1000 requests/min,3M input
+tokens/min,100k output tokens/min. Official FAQ confirms a one-time100M token
+credit shared across models,not a recurring per-model allowance. No payment,
+upgrade or new account required/performed. No repeated credit-dashboard checks.
+Source:https://docs.inceptionlabs.ai/resources/faq .
+
+Owner entered the key into a masked native prompt. It is saved at
+C:\Users\91701\AppData\Local\FaultSeeker\inception-key.dpapi using existing
+Windows DPAPI/owner+SYSTEM protection,outside Git. No plaintext key or value
+printed,committed or transferred to Render. Dummy roundtrip/no-plaintext/
+no-overwrite checks passed; actual key decryptability checked without output.
+Local launcher now optionally loads it into process memory and clears it on
+exit. Dummy launcher test verifies provider isolation,loopback-only binding
+and environment cleanup; no network call in that test.
+
+Explicit new alias inception/mercury-3 routes only to the operator-configured
+Inception endpoint (default https://api.inceptionlabs.ai/v1) and its own
+INCEPTION_API_KEY. No fallback to another provider/model. Upstream IDmercury-3,
+documented temperature0.5..1.0 (legacy0 mapped to0.5),low reasoning for analysis,
+instant reasoning for tiny preflight,max_completion_tokens capped4096 (8 for
+preflight). SDK retries remain0; same run-wide retry/time budget; default
+Stage2 workers1. Shared registry classifies the candidate's agents as cloud.
+Sources:https://docs.inceptionlabs.ai/get-started/models and
+https://docs.inceptionlabs.ai/capabilities/reasoning-efforts .
+
+Offline Inception route tests first10 failed/4 controls passed; final14 passed.
+The SDK retry assertion checks actual HTTP retry headers rather than the original
+client because the session sends through a bounded clone. Three server-policy
+tests reproduced failure before adding the explicit model entry. Actual
+candidate six-agent transport test uses mocked HTTP and the explicit candidate
+SHA; not a provider inference claim.
+
+Four further regressions proved nonempty but explicitly unfinished completions
+(length,content_filter,tool_calls,function_call) were previously accepted.
+They now fail incomplete_response without retry or model_endpoint_ready,
+retaining reported usage without exposing response content. No unfinished
+answer can be counted as successful analysis through this shared boundary.
+
+Final offline backend command with unchanged exact pin plus candidatee9d7166:
+`python -B tests/run_offline.py --tb=line -rs`:376 passed,0 skipped in19.44s.
+Frontend18 passed,0 skipped; static sync/diff checks passed. Tested local
+Python3.11.9,OpenAI2.36.0,HTTPX0.28.1; no installs.
+
+One authenticated,non-generation GET /v1/models confirmed mercury-3 available
+to the saved key. Artifact:inception-model-catalog.json in local validation
+history. This is catalog access,not inference/preflight/full-analysis success.
+No Inception generation request has started at this checkpoint.

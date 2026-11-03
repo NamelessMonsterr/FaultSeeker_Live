@@ -30,6 +30,7 @@ class ModelEndpointFailure(RuntimeError):
             "rate_limited": "Model endpoint rate limit was reached.",
             "invalid_request": "Model endpoint rejected the request.",
             "invalid_response": "Model endpoint returned an invalid completion response.",
+            "incomplete_response": "Model endpoint did not finish the requested completion.",
             "budget_exhausted": "The shared model-endpoint time budget was exhausted.",
             "request_deadline_exceeded": "This model request exceeded its entry-time deadline.",
             "endpoint_error": "Model endpoint request failed.",
@@ -332,8 +333,15 @@ class ModelEndpointSession:
                            "queue_wait_seconds": round(max(0.0, started - queued_at), 3)})
                 self.emit({"state": "waiting_on_model_endpoint", "phase": phase,
                            "attempt": attempt_number, "model": model, "retry_in_seconds": 0})
-                completion = bounded.chat.completions.create(**adapt_request(model, kwargs))
+                completion = bounded.chat.completions.create(**adapt_request(model, kwargs, phase=phase))
                 choices = getattr(completion, "choices", None)
+                if choices and getattr(choices[0], "finish_reason", None) in (
+                        "length", "content_filter", "tool_calls", "function_call"):
+                    # An unfinished answer can still contain parseable JSON.
+                    # Retain its reported usage, but never treat it as analysis.
+                    with self.state_lock:
+                        self._count_tokens(completion)
+                    raise ModelEndpointFailure("incomplete_response", phase=phase)
                 if not choices or not isinstance(getattr(choices[0].message, "content", None), str) or not choices[0].message.content.strip():
                     raise ModelEndpointFailure("invalid_response", phase=phase)
             except Exception as exc:

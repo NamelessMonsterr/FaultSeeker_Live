@@ -21,6 +21,44 @@ MODEL = "itera/qwen3.8-27b"
 TX = "0x" + "a" * 64
 
 
+def test_candidate_inception_agents_use_registered_cloud_policy_and_shared_transport(candidate, monkeypatch):
+    model = "inception/mercury-3"
+    monkeypatch.setenv("INCEPTION_API_KEY", "dummy-inception-key")
+    monkeypatch.setenv("INCEPTION_BASE_URL", "https://inception-fixture.invalid/v1")
+    requests = []
+    def respond(request):
+        assert str(request.url) == "https://inception-fixture.invalid/v1/chat/completions"
+        assert request.headers["authorization"] == "Bearer dummy-inception-key"
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={"id": "mock", "object": "chat.completion", "created": 0,
+            "model": "mercury-3", "choices": [{"index": 0, "finish_reason": "stop",
+            "message": {"role": "assistant", "content": "OK"}}]})
+    def factory(**kwargs):
+        return OpenAI(**kwargs, http_client=httpx.Client(transport=httpx.MockTransport(respond)))
+    monkeypatch.setattr(candidate, "OpenAI", factory)
+    monkeypatch.setattr(candidate, "chat", lambda **kwargs: pytest.fail("Inception was sent to Ollama"))
+    runtime = PipelineRuntime(TX, "eth", session=ModelEndpointSession(retry_limit=0)).install()
+    runtime.model_keys = {model: ["dummy-inception-key"]}
+    try:
+        runtime.preflight([model])
+        analyzer = importlib.import_module("faultseeker.function_analysis.function_analyzer").FunctionAnalyzer(model=model)
+        prompts = importlib.import_module("faultseeker.prompts.local_model_prompts")
+        assert not prompts.is_local_model(model)
+        assert type(analyzer.function_prompts) is prompts.WorkerPrompts
+        for name in ("reasoning_agent", "generation_agent", "processing_agent", "organization_agent",
+                     "children_call_filtering_agent", "agent"):
+            instance = getattr(analyzer, name)
+            assert isinstance(instance, candidate.UniversalAgent)
+            assert instance.query("Controlled routing contract", format="str") == "OK"
+        assert len(requests) == 7
+        assert requests[0]["reasoning_effort"] == "instant"
+        assert all(row["model"] == "mercury-3" and row["temperature"] == 0.5 for row in requests)
+        assert all(row["reasoning_effort"] == "low" and row["max_completion_tokens"] == 4096 for row in requests[1:])
+        assert runtime.session.summary()["calls"]["analysis"] == {"ok": 6, "failed": 0}
+    finally:
+        runtime.close()
+
+
 @pytest.fixture
 def candidate(monkeypatch, tmp_path):
     location = os.getenv("FAULTSEEKER_TEST_CANDIDATE_REPO")
