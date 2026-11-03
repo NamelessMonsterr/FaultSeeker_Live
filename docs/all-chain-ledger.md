@@ -549,7 +549,25 @@ Final offline command (both distinct checkouts, no substitution of the pin):
 FAULTSEEKER_TEST_PIPELINE_REPO=C:\Users\91701\AppData\Local\Temp\faultseeker-all-chain-pipeline
 FAULTSEEKER_TEST_CANDIDATE_REPO=C:\Users\91701\Downloads\faultseeker-demo-console-main\faultseeker-pipeline-integration
 FAULTSEEKER_TEST_CANDIDATE_SHA=6a5b0befeb85bf1c19fcdf35fddb5967e58fdb96
-python -B tests/run_offline.py --tb=short -rs
+python -B tests/run_offline.py --tb=line -rs
 Result345 passed,0 failed,0 skipped in13.29seconds, exit0. Candidate modules
 are isolated/restored separately from the immutable pin. Frontend13 passed,
 0 skipped; git diff --check passed. Pipeline PR7 CI:2/2 checks passed.
+
+## D-ETH-003:e459ff0f30c9 (active)
+
+Exactly one new real development analysis accepted after the routing and shared
+transport corrections. Ethereum setup transaction
+0xa17fdb804728f226fcd10e78eae5247abd984e0f03301312315b89cae25aa517,
+itera/qwen3.8-27b, configured encrypted local key, no caller RPC/key override.
+Console aac41c553c681c10bc52ac7c38114fe57bc6004c; combined pipeline
+6a5b0befeb85bf1c19fcdf35fddb5967e58fdb96. Local server PID11180 / tool
+session96730,127.0.0.1:8765. UI confirms Waiting on model endpoint / request
+in progress. No stage, score, evidence or correctness completion inferred yet.
+First persisted event2026-11-03T07:26:51.8Z (12:56:51.8+05:30).
+Subsequent events confirm preflight ready and two analysis responses ready
+through the shared session; fourth overall request is in progress. This proves
+real analysis transport is now exercised, not completion of function findings
+or correctness. Run remains active; no duplicate request submitted.
+Persist events/result under the same local validation history directory with
+run prefix e459ff0f30c9. Do not restart or duplicate while this run is active.
