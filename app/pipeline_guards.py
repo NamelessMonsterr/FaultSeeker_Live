@@ -4,6 +4,7 @@ Hooks are installed per worker before main() is entered, and removed on exit.
 The upstream checkout is not edited. This keeps local and Docker execution on
 the same transport/identity policy while retaining the pinned source revision.
 """
+import threading
 from copy import deepcopy
 import os
 import sys
@@ -352,6 +353,7 @@ class PipelineRuntime:
         self.ranked_targets = []
         self.narrowdown_capture = []
         self.function_verdicts = []  # per-analyzer deep-analysis proposals + rejections
+        self._verdicts_lock = threading.Lock()
         self.restorers = []
         self.source = None
         self.model_keys = {}
@@ -632,11 +634,22 @@ class PipelineRuntime:
                 pvf = res.get("potentially_vulnerable_functions") or {}
                 if isinstance(pvf, dict) and pvf:
                     proposals[bucket] = list(pvf.keys())
-            self.function_verdicts.append({
-                "known_buckets": list(buckets.keys()),
-                "proposals": proposals,
-                "rejected_findings": deepcopy(getattr(analyzer, "rejected_findings", None) or []),
-            })
+            # Sanitized rejection capture (R24 data classification): ids and
+            # reasons only; model-generated evidence strings are capped so
+            # the artifact never persists large copied fragments.
+            rejected = []
+            for _r in (getattr(analyzer, "rejected_findings", None) or []):
+                if isinstance(_r, dict):
+                    rejected.append({k: (str(v)[:200] if isinstance(v, str) else v)
+                                     for k, v in _r.items()})
+                else:
+                    rejected.append(str(_r)[:200])
+            with self._verdicts_lock:
+                self.function_verdicts.append({
+                    "known_buckets": list(buckets.keys()),
+                    "proposals": proposals,
+                    "rejected_findings": rejected,
+                })
         except Exception:
             pass
 
@@ -677,7 +690,8 @@ class PipelineRuntime:
             if isinstance(dbg, dict):
                 dbg["ranked_targets"] = list(self.ranked_targets)
                 dbg["narrowdown_capture"] = deepcopy(self.narrowdown_capture)
-                dbg["function_verdicts"] = deepcopy(self.function_verdicts)
+                with self._verdicts_lock:
+                    dbg["function_verdicts"] = deepcopy(self.function_verdicts)
                 dbg["dispatched_configs"] = self._dispatched_configs()
         allowed = {(str(n.get("address", "")).lower(), n["function"].lower()) for n in walk(self.sequence["trace"])} if self.sequence else set()
         unsupported = []

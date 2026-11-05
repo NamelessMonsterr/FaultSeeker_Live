@@ -526,8 +526,8 @@ def test_summary_exposes_abstention_counters_on_real_dispatch():
     assert entry["seq"] == 1 and entry["phase"] == "analysis"
     assert entry["model"] == "mercury-3" and entry["augmented"] is True
     assert entry["targeting_mismatch"] is False
-    assert entry["contract_on_wire"] is True
-    assert len(entry["wire_messages_sha256_16"]) == 16
+    assert entry["contract_in_adapted_payload"] is True
+    assert len(entry["adapted_messages_sha256_16"]) == 16
     # an ordinary prompt neither augments nor flags drift
     session.call(factory, {"model": "mercury-3",
                            "messages": [{"role": "user", "content": "rank these"}]}, "mercury-3")
@@ -536,4 +536,4 @@ def test_summary_exposes_abstention_counters_on_real_dispatch():
     assert summary["abstention_targeting_mismatches"] == 0
     assert len(summary["abstention_calls"]) == 2
     assert summary["abstention_calls"][1]["augmented"] is False
-    assert "contract_on_wire" not in summary["abstention_calls"][1]
+    assert "contract_in_adapted_payload" not in summary["abstention_calls"][1]

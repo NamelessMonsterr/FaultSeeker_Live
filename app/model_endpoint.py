@@ -413,29 +413,46 @@ class ModelEndpointSession:
                         pending_blank_reask = False
                     adapted = adapt_request(model, kwargs)
                     if phase == "analysis":
-                        entry = {"seq": call_seq, "phase": phase, "model": model,
-                                 "attempt": self.attempts,
-                                 "augmented": abstention_augmented,
-                                 "targeting_mismatch": abstention_mismatch}
-                        wire_messages = adapted.get("messages")
-                        if isinstance(wire_messages, list):
-                            import hashlib as _hl, json as _js
-                            entry["wire_messages_sha256_16"] = _hl.sha256(
-                                _js.dumps(wire_messages, sort_keys=True,
-                                          default=str).encode()).hexdigest()[:16]
-                            _last_user = next(
-                                (m.get("content") for m in reversed(wire_messages)
-                                 if isinstance(m, dict) and m.get("role") == "user"
-                                 and isinstance(m.get("content"), str)), None)
-                            if abstention_augmented:
-                                # Observability only: confirms the contract
-                                # survived adapt_request onto the wire. Never
-                                # feeds targeting decisions (structural state
-                                # above remains the sole authority).
-                                entry["contract_on_wire"] = bool(
-                                    _last_user
-                                    and ABSTENTION_CONTRACT.strip()[-40:] in _last_user)
-                        self.abstention_call_log.append(entry)
+                        # Observability capture. Fail-safe by contract: a
+                        # capture failure must NEVER prevent dispatch or alter
+                        # session state (R24-F1).
+                        try:
+                            entry = {"seq": call_seq, "phase": phase, "model": model,
+                                     "attempt": self.attempts,
+                                     "augmented": abstention_augmented,
+                                     "targeting_mismatch": abstention_mismatch}
+                            adapted_messages = adapted.get("messages")
+                            if isinstance(adapted_messages, list):
+                                import hashlib as _hl, json as _js
+                                # Canonicalized hash of the ADAPTED payload
+                                # (sorted/local JSON), not a byte-for-byte wire
+                                # hash: SDK serialization is not represented
+                                # (R24-F3). Establishes payload identity across
+                                # calls, not transmission bytes.
+                                entry["adapted_messages_sha256_16"] = _hl.sha256(
+                                    _js.dumps(adapted_messages, sort_keys=True,
+                                              default=str).encode()).hexdigest()[:16]
+                                if abstention_augmented:
+                                    # Temporal correctness (R24-F2): the actual
+                                    # LAST user message, regardless of content
+                                    # type; the presence check applies only
+                                    # when its content is a plain string.
+                                    _last_user_msg = next(
+                                        (m for m in reversed(adapted_messages)
+                                         if isinstance(m, dict) and m.get("role") == "user"),
+                                        None)
+                                    _last_user = (_last_user_msg.get("content")
+                                                  if isinstance(_last_user_msg, dict) else None)
+                                    # Observability only: structural presence
+                                    # of the contract in the adapted payload,
+                                    # NOT proof of transmission. Never feeds
+                                    # targeting decisions.
+                                    entry["contract_in_adapted_payload"] = bool(
+                                        isinstance(_last_user, str)
+                                        and ABSTENTION_CONTRACT.strip()[-40:] in _last_user)
+                            self.abstention_call_log.append(entry)
+                        except Exception:
+                            pass
                     self._record_dispatched(model, adapted, phase)
                     completion = bounded.chat.completions.create(**adapted)
                     # Token accounting happens at receipt, before any validation can
