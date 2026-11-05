@@ -44,6 +44,11 @@ ABSTENTION_CONTRACT = (
 # augmentation) rather than silently mistargeting it.
 _VULN_PROMPT_TOPICS = ("potentially vulnerable", "identify any vulnerable functions")
 _VULN_PROMPT_SCHEMA = "confidence_score"
+# Third signature element: the prompt's literal JSON key shape. All three are
+# matched case-insensitively; co-occurrence is a heuristic boundary, not proof
+# of prompt identity - wording drift disables the repair loudly instead of
+# mistargeting it.
+_VULN_PROMPT_KEYSHAPE = "<functionname>_<address>"
 _DISABLE_VALUES = ("0", "false", "no", "off", "disabled")
 
 
@@ -70,13 +75,14 @@ def augment_vulnerability_prompt(kwargs, phase):
             continue
         lowered = content.lower()
         if (any(topic in lowered for topic in _VULN_PROMPT_TOPICS)
-                and _VULN_PROMPT_SCHEMA in content):
+                and _VULN_PROMPT_SCHEMA in lowered
+                and _VULN_PROMPT_KEYSHAPE in lowered):
             idx = i
             break
     if idx is None or ABSTENTION_SENTINEL in messages[idx]["content"]:
         return kwargs, False
     kwargs = dict(kwargs)
-    messages = [dict(m) for m in messages]
+    messages = [dict(m) if isinstance(m, dict) else m for m in messages]
     messages[idx]["content"] += ABSTENTION_CONTRACT
     kwargs["messages"] = messages
     return kwargs, True

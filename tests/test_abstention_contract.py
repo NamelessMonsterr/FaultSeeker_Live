@@ -6,10 +6,10 @@ import pytest
 me = importlib.import_module("app.model_endpoint")
 
 VULN_PROMPT = ("Based on the current understanding of the transaction, decide if any "
-               "function implementation is potentially vulnerable. Return JSON with "
-               '"confidence_score": <float>.')
+               "function implementation is potentially vulnerable. Return JSON keyed by "
+               '"<functionname>_<address>" with "confidence_score": <float>.')
 LOCAL_VULN_PROMPT = ('Identify any vulnerable functions from the analysis below. '
-                     '"confidence_score": <float 0.0-1.0>')
+                     'Keys are "<functionname>_<address>" with "confidence_score": <float>.')
 
 
 def kwargs_with(content, role="user"):
@@ -27,7 +27,8 @@ def test_vuln_prompt_is_augmented():
 
 
 def test_local_variant_marker_is_augmented_case_insensitive():
-    kw = kwargs_with("IDENTIFY ANY VULNERABLE FUNCTIONS from the analysis below. confidence_score")
+    kw = kwargs_with("IDENTIFY ANY VULNERABLE FUNCTIONS from the analysis below. "
+                     "CONFIDENCE_SCORE and <FUNCTIONNAME>_<ADDRESS>")
     out, augmented = me.augment_vulnerability_prompt(kw, "analysis")
     assert augmented
 
@@ -90,3 +91,64 @@ def test_env_disable(monkeypatch, value):
     kw = kwargs_with(VULN_PROMPT)
     out, augmented = me.augment_vulnerability_prompt(kw, "analysis")
     assert not augmented and out is kw
+
+
+# --- Dispatch-level integration through ModelEndpointSession.call ----------
+
+import json as _json
+
+import httpx as _httpx
+from openai import OpenAI as _OpenAI
+
+_EP = importlib.import_module("app.model_endpoint")
+VULN_CALL = {"model": "mercury-3",
+             "messages": [{"role": "user", "content": VULN_PROMPT}]}
+_BLANK = {"id": "m", "object": "chat.completion", "created": 0, "model": "mercury-3",
+          "choices": [{"index": 0, "message": {"role": "assistant", "content": ""}, "finish_reason": "stop"}]}
+_OK = {"id": "m", "object": "chat.completion", "created": 0, "model": "mercury-3",
+       "choices": [{"index": 0, "message": {"role": "assistant", "content": "{}"}, "finish_reason": "stop"}]}
+
+
+def _session_with(responses):
+    calls = []
+    it = iter(responses)
+    def handle(request):
+        calls.append(_json.loads(request.content))
+        return next(it)
+    def factory():
+        return _OpenAI(api_key="k", base_url="https://model.invalid/v1",
+                       http_client=_httpx.Client(transport=_httpx.MockTransport(handle)))
+    session = _EP.ModelEndpointSession(retry_limit=0, time_budget=60, call_timeout=10)
+    return session, factory, calls
+
+
+def test_dispatch_carries_contract_and_blank_reask_preserves_it():
+    session, factory, calls = _session_with(
+        [_httpx.Response(200, json=_BLANK), _httpx.Response(200, json=_OK)])
+    out = session.call(factory, dict(VULN_CALL), "mercury-3")
+    assert out.choices[0].message.content == "{}"
+    assert len(calls) == 2  # blank answer + the one granted re-ask
+    for payload in calls:
+        content = payload["messages"][-1]["content"]
+        assert content.count(me.ABSTENTION_SENTINEL) == 1  # preserved, never duplicated
+    assert session.abstention_augmented_calls == 1  # augmented once per call; the re-ask reuses the same augmented prompt
+    assert session.blank_answer_retries == 1
+    # caller's kwargs were never mutated by augmentation
+    assert me.ABSTENTION_SENTINEL not in VULN_CALL["messages"][0]["content"]
+
+
+def test_dispatch_without_switch_sends_unmodified_prompt(monkeypatch):
+    monkeypatch.setenv("FAULTSEEKER_ABSTENTION_CONTRACT", "off")
+    session, factory, calls = _session_with([_httpx.Response(200, json=_OK)])
+    session.call(factory, dict(VULN_CALL), "mercury-3")
+    assert me.ABSTENTION_SENTINEL not in calls[0]["messages"][-1]["content"]
+    assert session.abstention_augmented_calls == 0
+
+
+def test_non_vuln_dispatch_untouched():
+    session, factory, calls = _session_with([_httpx.Response(200, json=_OK)])
+    session.call(factory, {"model": "mercury-3",
+                           "messages": [{"role": "user", "content": "Rank these functions."}]},
+                 "mercury-3")
+    assert me.ABSTENTION_SENTINEL not in calls[0]["messages"][-1]["content"]
+    assert session.abstention_augmented_calls == 0
