@@ -683,13 +683,15 @@ class PipelineRuntime:
         n = len(text)
         while i < n:
             m = re.match(r"(contract|library|interface)\s+(\w+)[^{;]*\{", text[i:])
-            if m and scope is None and (i == 0 or text[i - 1] == "\n"):
+            if m and scope is None and (i == 0 or not (text[i - 1].isalnum() or text[i - 1] in "_$")):
                 scope, scope_start = m.group(2), i
+                decls.setdefault(scope, []).append((scope, None))
+                kinds[scope] = m.group(1)
                 i += m.end()
                 depth = 1
                 continue
             m = re.match(r"(struct|enum)\s+(\w+)\s*\{", text[i:])
-            if m and (i == 0 or text[i - 1] in "\n "):
+            if m and (i == 0 or not (text[i - 1].isalnum() or text[i - 1] in "_$")):
                 kind, name = m.group(1), m.group(2)
                 qualified = f"{scope}.{name}" if scope else name
                 decls.setdefault(name, []).append((qualified, scope))
@@ -741,6 +743,8 @@ class PipelineRuntime:
         own scope and the file level cannot prove it. Enclosing-contract
         declarations win over file-level ones; anything else (other contracts,
         imports, inheritance) is ambiguity and fails closed."""
+        if fn_scope is None:
+            return None  # unknown enclosing scope: import/inheritance ambiguity
         entries = (decl_index or {}).get("decls", {}).get(base) or []
         scoped = [q for q, sc in entries if sc is not None and sc == fn_scope]
         if len(scoped) == 1:
@@ -808,6 +812,15 @@ class PipelineRuntime:
                     return None
                 if resolved != it_name:
                     return False
+            if decl_index is not None:
+                # Kind identity: a matched NAME is not a matched TYPE when the
+                # declaration kinds differ (struct vs enum vs contract).
+                kinds_map = decl_index.get("kinds") or {}
+                if resolved in kinds_map:
+                    if kinds_map[resolved] != kind:
+                        return False     # proven kind mismatch
+                else:
+                    return None          # declaration not established here: kind unproven
             abi_arr = canon_abi
             while abi_arr.endswith("]"):
                 abi_arr = abi_arr[:abi_arr.rindex("[")]
@@ -827,7 +840,7 @@ class PipelineRuntime:
                             return None      # non-elementary field: unsupported depth
                         if decl_fields != comp:
                             return False     # same name, different layout
-                    elif resolved in (decl_index.get("decls") or {}).values():
+                    elif any(resolved == q for es in (decl_index.get("decls") or {}).values() for q, _ in es):
                         return None          # declared here but layout unparseable
         return True
 

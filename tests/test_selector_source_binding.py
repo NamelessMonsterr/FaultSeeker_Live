@@ -492,6 +492,9 @@ def test_overloaded_source_units_disambiguated_or_fail(pinned_fork):
         decl_index = {"decls": {"Campaign": [("ClaimCampaigns.Campaign", "ClaimCampaigns")],
                                 "ClaimLockup": [("ClaimCampaigns.ClaimLockup", "ClaimCampaigns")],
                                 "Donation": [("ClaimCampaigns.Donation", "ClaimCampaigns")]},
+                      "kinds": {"ClaimCampaigns.Campaign": "struct",
+                                "ClaimCampaigns.ClaimLockup": "struct",
+                                "ClaimCampaigns.Donation": "struct"},
                       "fields": {"ClaimCampaigns.Campaign": ["address", "address", "uint256", "uint256", "uint8", "bytes32"],
                                  "ClaimCampaigns.ClaimLockup": ["address", "uint256", "uint256", "uint256", "uint256"],
                                  "ClaimCampaigns.Donation": ["address", "uint256", "uint256", "uint256", "uint256"]},
@@ -510,7 +513,8 @@ def test_overloaded_source_units_disambiguated_or_fail(pinned_fork):
         assert out4u == []
         assert rt.selector_resolution_log[-1]["reason"] == "type_identity_unsupported"
         # A same-named struct with a DIFFERENT layout is a mismatch, not a bind.
-        bad_fields = {"decls": decl_index["decls"],
+        bad_fields = {"decls": decl_index["decls"], "kinds": decl_index["kinds"],
+                      "scopes": decl_index["scopes"],
                       "fields": {**decl_index["fields"],
                                  "ClaimCampaigns.Campaign": ["address", "address", "uint256", "uint256", "uint8", "uint128"]}}
         stub4b, FA4b = _analyzer_stub({addr: {"createLockedCampaign": [
@@ -701,6 +705,64 @@ def test_declaration_scope_provenance(pinned_fork):
     v = P._header_matches_abi(body_b, ["(address,uint256)"], ["struct A.Item"],
                               [["address", "uint256"]], idx, fn_scope="B")
     assert v is False  # B.Item != A.Item: proven mismatch, not a bind
+
+
+def test_declaration_kind_identity(pinned_fork):
+    """A matched NAME is not a matched TYPE when declaration kinds differ:
+    ABI enum vs source struct of the same qualified name is a proven mismatch;
+    unknown kind is unresolved; contract-typed params resolve via contract decls."""
+    m = importlib.import_module("app.pipeline_guards")
+    P = m.PipelineRuntime
+    src = ("contract Vault {\n"
+           "  struct Campaign { uint256 amount; }\n"
+           "  function execute(Campaign calldata c, Vault v) external {}\n"
+           "}\n")
+    idx = P._declaration_index(src)
+    assert idx["kinds"]["Vault.Campaign"] == "struct"
+    assert idx["kinds"]["Vault"] == "contract"
+    body = "function execute(Campaign calldata c, Vault v) external {}"
+    # ABI says enum Vault.Campaign: proven kind mismatch
+    assert P._header_matches_abi(body, ["uint8", "address"],
+                                 ["enum Vault.Campaign", "contract Vault"],
+                                 [None, None], idx, fn_scope="Vault") is False
+    # ABI says struct: kinds agree, layout checked
+    assert P._header_matches_abi(body, ["(uint256)", "address"],
+                                 ["struct Vault.Campaign", "contract Vault"],
+                                 [["uint256"]], idx, fn_scope="Vault") is True
+    # declaration context present but kind not established -> unresolved
+    idx_nk = {"decls": {"Campaign": [("Vault.Campaign", "Vault")]}, "kinds": {},
+              "fields": {}, "scopes": [("Vault", 0, 999)]}
+    assert P._header_matches_abi(body, ["(uint256)", "address"],
+                                 ["struct Vault.Campaign", "contract Vault"],
+                                 [["uint256"]], idx_nk, fn_scope="Vault") is None
+    # unknown enclosing scope: unique file-level declaration still unproven
+    src2 = "struct Top { address a; }\ncontract C { function h(Top memory t) external {} }\n"
+    idx2 = P._declaration_index(src2)
+    assert P._resolve_decl(idx2, "Top", None) is None
+    assert P._resolve_decl(idx2, "Top", "C") == "Top"
+
+
+def test_indented_contract_scope_provenance(pinned_fork):
+    """Indented contract declarations still establish scope; a same-name struct
+    in a DIFFERENT indented contract never proves the name."""
+    m = importlib.import_module("app.pipeline_guards")
+    P = m.PipelineRuntime
+    src = ("    contract A {\n"
+           "      struct Item { address a; uint256 b; }\n"
+           "      function f(Item memory x) external {}\n"
+           "    }\n"
+           "\tcontract B {\n"
+           "\t  struct Item { address a; }\n"
+           "\t}\n")
+    idx = P._declaration_index(src)
+    assert idx["decls"]["Item"] == [("A.Item", "A"), ("B.Item", "B")]
+    assert P._resolve_decl(idx, "Item", "A") == "A.Item"
+    assert P._resolve_decl(idx, "Item", "B") == "B.Item"
+    body = "function f(Item memory x) external {}"
+    assert P._header_matches_abi(body, ["(address,uint256)"], ["struct A.Item"],
+                                 [["address", "uint256"]], idx, fn_scope="A") is True
+    assert P._header_matches_abi(body, ["(address)"], ["struct B.Item"],
+                                 [["address"]], idx, fn_scope="A") is False
 
 
 @pytest.mark.skipif(os.getenv("FAULTSEEKER_LIVE_NETWORK") != "1",
