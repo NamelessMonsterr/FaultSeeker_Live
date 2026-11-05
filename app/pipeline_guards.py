@@ -960,7 +960,9 @@ class PipelineRuntime:
         partial regardless), bound_source_unverified_outbound (source-bearing key present
         but no bound source located, OR any bound source exists for the run but is not
         found in the over-cap request).
-        At/under cap, or over cap with no bound source and no source-bearing key: (message, None)."""
+        Over cap with neither a bound source nor a source-bearing key: still over_cap_request_rejected (source_located False).
+        At/under cap: (message, None). SCOPE: this guard gives TRUNCATION protection only; it does NOT guarantee
+        that an under-cap request carries its bound source."""
         if not isinstance(message, str) or len(message) <= cap:
             return message, None
         P = PipelineRuntime
@@ -973,11 +975,13 @@ class PipelineRuntime:
                 # source-bearing key, whose over-cap request does not contain the
                 # bound source text cannot be shown to carry verified source.
                 return message, {**base, "status": "bound_source_unverified_outbound"}
-            return message, None
+            # no source and no source-bearing key does NOT prove the rest holds no required evidence:
+            # every over-cap request is rejected (the engine would silently cut it).
+            return message, {**base, "status": "over_cap_request_rejected", "source_chars": 0, "source_located": False}
         head, tail = P.ENGINE_KEEP_HEAD, P.ENGINE_KEEP_TAIL
         kept = all(b <= head or a >= len(message) - tail for a, b in spans)
         return message, {**base, "status": "over_cap_request_rejected",
-                         "source_chars": sum(b - a for a, b in spans),
+                         "source_chars": sum(b - a for a, b in spans), "source_located": True,
                          "source_text_match_in_retained_region": kept}  # informational substring-location only; never a preservation guarantee
 
     def _install_selector_source_binding(self):

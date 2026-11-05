@@ -1042,12 +1042,13 @@ def test_outbound_source_fit_component(pinned_fork):
             m_ = "{" + k + ': "body"}' + ("y" * 12000)
             o_, e_ = P._check_outbound_source_fit(m_, emp, cap)
             assert o_ is m_ and e_["status"] == "bound_source_unverified_outbound", (k, emp)
-    assert P._check_outbound_source_fit("resource sources are fine " + "y" * 12000, [], cap) == ("resource sources are fine " + "y" * 12000, None)
     alt_key = '{"source": "?"}' + ("y" * 12000)
     assert P._check_outbound_source_fit(alt_key, [src], cap)[1]["status"] == "bound_source_unverified_outbound"
-    # no bound source at all and no source-bearing key: nothing to protect -> no event
-    assert P._check_outbound_source_fit(plain, [], cap) == (plain, None)
-    assert P._check_outbound_source_fit(plain, None, cap) == (plain, None)
+    # no bound source and no source-bearing key: STILL rejected (cannot prove the rest holds no required evidence)
+    for emp in ([], None):
+        o_, e_ = P._check_outbound_source_fit(plain, emp, cap)
+        assert o_ is plain and e_["status"] == "over_cap_request_rejected" and e_["source_located"] is False
+    assert P._check_outbound_source_fit("x" * 10000, [], cap) == ("x" * 10000, None)
     # non-string input is passed through
     assert P._check_outbound_source_fit(None, [src], cap) == (None, None)
 
@@ -1369,9 +1370,14 @@ def test_hook_rejects_oversized_source_key_request_with_empty_bound_set(pinned_f
                     agent._send_message("{" + key + ': "body"}' + ("k" * 10500))
                 assert len(sent) == n
             rt.outbound_rejection = None
-            plain = "p" * 12000                      # no source key, no bound source: engine behavior stands
-            agent._send_message(plain)
-            assert len(sent) == n + 1 and "middle truncated" in sent[-1]
+            rt.outbound_rejection = None
+            with pytest.raises(m.OutboundRequestRejected):   # no source key, no bound source: STILL rejected
+                agent._send_message("p" * 12000)
+            assert len(sent) == n and rt.source_retention_events[-1]["status"] == "over_cap_request_rejected"
+            rt.outbound_rejection = None
+            exact = "p" * 10000
+            agent._send_message(exact)
+            assert sent[-1] == exact and len(sent) == n + 1
             small = '{"source-code": "x"}' + "s" * 100
             agent._send_message(small)
             assert sent[-1] == small
