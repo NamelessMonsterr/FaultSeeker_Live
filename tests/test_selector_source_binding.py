@@ -1122,6 +1122,13 @@ def test_outbound_boundary_retention_with_real_engine_truncation(pinned_fork, tm
         agent._send_message(evidence_a + esc + ("e" * 9500))
         assert rt.source_retention_events[-1]["status"] == "required_evidence_unfit"
         assert "middle truncated" in sent[-1]
+        # empty source collection + oversized source-bearing prompt through the real hook
+        saved = list(rt.bound_source_texts)
+        rt.bound_source_texts[:] = []
+        agent._send_message('{"function_source_code": [{"source_code": "unknown"}]}' + ("k" * 10000))
+        assert rt.source_retention_events[-1]["status"] == "bound_source_unverified_outbound"
+        assert "middle truncated" in sent[-1]
+        rt.bound_source_texts[:] = saved
         # oversized source
         huge = "function g() {\n" + "  y();\n" * 1700 + "}\n"
         rt.bound_source_texts.append(huge)

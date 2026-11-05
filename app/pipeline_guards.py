@@ -1324,17 +1324,16 @@ class PipelineRuntime:
             original = agent_class._send_message
             def checked_send(agent, *args, _original=original, **kwargs):
                 self.assert_healthy()
-                if self.bound_source_texts:
-                    if args and isinstance(args[0], str):
-                        _msg, _ev = self._preserve_bound_sources(args[0], self.bound_source_texts, self.model_texts, self.PROMPT_CAP)
-                        args = (_msg,) + tuple(args[1:])
-                    elif isinstance(kwargs.get("user_message"), str):
-                        _msg, _ev = self._preserve_bound_sources(kwargs["user_message"], self.bound_source_texts, self.model_texts, self.PROMPT_CAP)
-                        kwargs = {**kwargs, "user_message": _msg}
-                    else:
-                        _ev = None
-                    if _ev:
-                        self.source_retention_events.append(_ev)
+                if args and isinstance(args[0], str):
+                    _msg, _ev = self._preserve_bound_sources(args[0], self.bound_source_texts, self.model_texts, self.PROMPT_CAP)
+                    args = (_msg,) + tuple(args[1:])
+                elif isinstance(kwargs.get("user_message"), str):
+                    _msg, _ev = self._preserve_bound_sources(kwargs["user_message"], self.bound_source_texts, self.model_texts, self.PROMPT_CAP)
+                    kwargs = {**kwargs, "user_message": _msg}
+                else:
+                    _ev = None
+                if _ev:
+                    self.source_retention_events.append(_ev)
                 try:
                     result = _original(agent, *args, **kwargs)
                 except Exception:
