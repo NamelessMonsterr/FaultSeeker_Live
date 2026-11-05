@@ -814,3 +814,36 @@ def test_annotation_tolerates_list_shaped_entries(pinned_fork):
     assert lst[0]["implementation_unverified"] is True
     d = res.functions_to_be_inspected["0xdeadbeef_0xc1"]
     assert "possible_signature" not in d and "possible_signature" not in d["calls"][0]
+
+
+def test_calibrated_confidence_presentation_is_reconciled():
+    """Upstream Stage 3 overwrites confidence.overall with the calibrated
+    probability but leaves level/explanation from the pre-calibration proxy
+    (observed live: overall 0.9975 rendered as "62.4% (moderate)"). The fork
+    reconciles: level classifies the final score, explanation matches, proxy
+    stays disclosed."""
+    m = importlib.import_module("app.pipeline_guards")
+    identity = importlib.import_module("app.trace_identity")
+    seq = identity.sequence_from_parity(FIXTURE["responses"]["trace_transaction"], TX, "eth")
+    runtime = m.PipelineRuntime(TX, "eth")
+    runtime.sequence = seq
+    root = seq["trace"]
+    value = runtime.annotate_result({
+        "transaction_hash": TX, "chain": "eth", "analysis_status": "completed",
+        "scored_functions": [{"address": root["address"], "function": root["function"],
+                              "confidence": {"overall": 0.9975, "level": "moderate", "calibrated": True,
+                                             "components": {"pattern_match": 0.8},
+                                             "explanation": ["Overall confidence: 62.4% (moderate) — Further analysis recommended"]}}]})
+    conf = value["scored_functions"][0]["confidence"]
+    assert conf["overall"] == 0.9975
+    assert conf["level"] == "very_high", conf["level"]
+    assert "99.8% (very_high)" in conf["explanation"][0]
+    assert conf["proxy_overall"] == 0.624 and conf["proxy_level"] == "moderate"
+    # Non-calibrated entries are left untouched.
+    value2 = runtime.annotate_result({
+        "transaction_hash": TX, "chain": "eth", "analysis_status": "completed",
+        "scored_functions": [{"address": root["address"], "function": root["function"],
+                              "confidence": {"overall": 0.62, "level": "moderate",
+                                             "explanation": ["Overall confidence: 62.0% (moderate) — Further analysis recommended"]}}]})
+    conf2 = value2["scored_functions"][0]["confidence"]
+    assert conf2["level"] == "moderate" and "proxy_overall" not in conf2

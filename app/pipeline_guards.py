@@ -295,6 +295,43 @@ def walk(node):
         pending.extend(reversed(current.get("children", [])))
 
 
+def reconcile_calibrated_confidence(result):
+    """Upstream Stage 3 (engine pipeline.py) replaces confidence.overall with
+    the logistic-calibrated probability but leaves confidence.level and the
+    first explanation line computed from the PRE-calibration 4-factor proxy -
+    e.g. overall 0.9975 rendered next to "62.4% (moderate)". Reconcile the
+    presentation at the fork layer (engine stays pinned): level classifies the
+    FINAL reported score, the explanation's first line matches it, and the
+    proxy value remains disclosed as proxy_overall/proxy_level."""
+    try:
+        from faultseeker.core.confidence_scorer import CONFIDENCE_LEVELS
+    except Exception:
+        CONFIDENCE_LEVELS = [(0.9, "very_high", "Immediate remediation recommended"),
+                             (0.7, "high", "Priority investigation warranted"),
+                             (0.5, "moderate", "Further analysis recommended"),
+                             (0.3, "low", "Review for false positive"),
+                             (0.0, "very_low", "Likely false positive")]
+    import re
+    for sf in (result.get("scored_functions") or []):
+        conf = sf.get("confidence") if isinstance(sf, dict) else None
+        if not isinstance(conf, dict) or not conf.get("calibrated"):
+            continue
+        overall = conf.get("overall")
+        if not isinstance(overall, (int, float)) or isinstance(overall, bool):
+            continue
+        level, desc = next(((lv, d) for t, lv, d in CONFIDENCE_LEVELS if overall >= t),
+                           ("very_low", "Likely false positive"))
+        expl = list(conf.get("explanation") or [])
+        if expl:
+            m = re.search(r"Overall confidence: ([0-9.]+)% \((\w+)\)", str(expl[0]))
+            if m:
+                conf.setdefault("proxy_overall", round(float(m.group(1)) / 100.0, 4))
+                conf.setdefault("proxy_level", m.group(2))
+            expl[0] = f"Overall confidence: {overall:.1%} ({level}) - {desc}"
+            conf["explanation"] = expl
+        conf["level"] = level
+
+
 class NarrowdownCaptureStop(Exception):
     """Intentional diagnostic stop (FAULTSEEKER_STOP_AFTER_NARROWDOWN=1): the
     narrow-down selection boundary has been captured and the run halts before
@@ -606,6 +643,7 @@ class PipelineRuntime:
     def annotate_result(self, value):
         self.assert_healthy()
         result = deepcopy(value)
+        reconcile_calibrated_confidence(result)
         if self.narrowdown_capture or self.ranked_targets:
             dbg = result.setdefault("_debug", {})
             if isinstance(dbg, dict):
