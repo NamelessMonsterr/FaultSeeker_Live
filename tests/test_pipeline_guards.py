@@ -635,47 +635,73 @@ def test_selector_identities_activate_price_read_write_detection(pinned_fork):
     assert ex.signals.price_read_before_write is True
 
 
-def test_ranker_filter_covers_standard_selectors(pinned_fork):
-    # Standard ERC-20/DEX reads as selectors must be filtered like their names,
-    # so custom functions are not crowded out of the ranked targets.
+def test_staticcall_standard_reads_pruned_from_patterns(pinned_fork):
+    # Standard read selectors observed as STATICCALL (EVM-enforced read-only,
+    # as getReserves x15 in the real BSC trace) are noise and pruned; custom
+    # functions survive. Nothing is excluded on 4 bytes alone.
     m = importlib.import_module("app.pipeline_guards")
     from types import SimpleNamespace
     from faultseeker.function_analysis.function_ranker import FunctionRanker
     ranker = FunctionRanker()
-    m.extend_ranker_filters(ranker)
-    assert "0x70a08231" in ranker.filtered_functions  # balanceOf
-    assert "0x0902f1ac" in ranker.filtered_functions  # getReserves
     forensics = SimpleNamespace(address_calls_with_created_contract=[], functions_to_be_inspected={})
     tx_analysis = {"function_call_loc_memo": {}, "repeated_patterns": {"0xa": [
-        {"pattern": [{"function": "0x70a08231", "address": "0xa"}, {"function": "0x70a08231", "address": "0xa"}], "repeats": 2},
-        {"pattern": [{"function": "0x70a08231", "address": "0xa"}, {"function": "0x52f18fc3", "address": "0xb"}], "repeats": 2},
+        {"pattern": [{"function": "0x0902f1ac", "address": "0xa", "call_type": "staticcall"},
+                     {"function": "0x52f18fc3", "address": "0xb", "call_type": "call"}], "repeats": 2},
     ]}}
     out = ranker.rank(forensics, tx_analysis)
+    out = m.prune_static_readonly_selectors(out)
     kept = [c["function"] for p in out.repeated_patterns for c in p["pattern"]]
-    assert "0x70a08231" not in kept      # standard read filtered out
-    assert "0x52f18fc3" in kept          # custom function survives
+    assert "0x0902f1ac" not in kept   # staticcall getReserves pruned
+    assert "0x52f18fc3" in kept       # custom function survives
 
 
-def test_malicious_standard_selector_impl_stays_discoverable(pinned_fork):
-    # Selector identity is not behavioral proof: a custom/malicious contract
-    # can implement the ERC-20 surface with exploit logic, so state-changing
-    # token selectors (transfer/transferFrom/approve) must NEVER be filtered
-    # out of ranked targets; only read-only standard reads are noise.
+def test_statecapable_standard_selectors_stay_discoverable(pinned_fork):
+    # A selector is not behavioral proof: a custom/malicious contract can
+    # implement balanceOf/getReserves/transfer with exploit logic. The real
+    # ETH trace even shows balanceOf via DELEGATECALL. Any standard selector
+    # invoked through a state-capable call type must remain in ranked targets;
+    # functions_to_be_inspected is never pruned at all.
     m = importlib.import_module("app.pipeline_guards")
     from types import SimpleNamespace
     from faultseeker.function_analysis.function_ranker import FunctionRanker
     ranker = FunctionRanker()
-    m.extend_ranker_filters(ranker)
-    for sel in ("0xa9059cbb", "0x23b872dd", "0x095ea7b3"):
-        assert sel not in ranker.filtered_functions, sel
-    forensics = SimpleNamespace(address_calls_with_created_contract=[], functions_to_be_inspected={})
+    forensics = SimpleNamespace(address_calls_with_created_contract=[], functions_to_be_inspected={
+        "k": [{"function": "0x70a08231", "address": "0xmal", "gas": "0x1", "params": "0x", "depth": "1"}],
+    })
     tx_analysis = {"function_call_loc_memo": {}, "repeated_patterns": {"0xmal": [
-        {"pattern": [{"function": "0x0902f1ac", "address": "0xmal"}, {"function": "0xa9059cbb", "address": "0xmal"}], "repeats": 2},
+        {"pattern": [{"function": "0x0902f1ac", "address": "0xmal", "call_type": "call"},
+                     {"function": "0x70a08231", "address": "0xmal", "call_type": "delegatecall"},
+                     {"function": "0xa9059cbb", "address": "0xmal", "call_type": "call"}], "repeats": 2},
     ]}}
     out = ranker.rank(forensics, tx_analysis)
+    out = m.prune_static_readonly_selectors(out)
     kept = [c["function"] for p in out.repeated_patterns for c in p["pattern"]]
-    assert "0xa9059cbb" in kept       # malicious transfer impl survives
-    assert "0x0902f1ac" not in kept   # read-only getReserves still filtered
+    assert "0x0902f1ac" in kept       # getReserves via CALL retained (unknown impl)
+    assert "0x70a08231" in kept       # balanceOf via DELEGATECALL retained
+    assert "0xa9059cbb" in kept       # transfer always retained
+    assert "0x70a08231_0xmal" in out.functions_to_be_inspected  # never pruned
+
+
+def test_benign_read_write_read_is_observation_not_mechanism(pinned_fork):
+    # A benign getReserves->swap->getReserves sequence must register as an
+    # OBSERVATION while the rule layer declines to classify a mechanism:
+    # price_manipulation requires >=2 sequences AND >=15% verified delta.
+    m = importlib.import_module("app.pipeline_guards")
+    from faultseeker.forensics import signal_extractor as sig
+    from faultseeker.forensics import rule_classifier
+    m.extend_signal_sets(sig)
+    pair = "0xa08c4571b3000000000000000000000000000000"
+    flat = [
+        {"function": "0x0902f1ac", "address": pair, "call_type": "staticcall"},
+        {"function": "0x022c0d9f", "address": pair, "call_type": "call"},
+        {"function": "0x0902f1ac", "address": pair, "call_type": "staticcall"},
+    ]
+    ex = sig.SignalExtractor({}, {"flatten_trace": flat}, TX, "bsc")
+    ex._check_price_manipulation()
+    assert ex.signals.price_read_write_sequences >= 1   # observation present
+    verdict, confidence, matched_rule, _ = rule_classifier.classify(ex.signals)
+    assert verdict != "EXPLOIT", (verdict, matched_rule)
+    assert "price" not in matched_rule, matched_rule
 
 
 def test_canonical_flash_callbacks_detected_as_selectors(pinned_fork):

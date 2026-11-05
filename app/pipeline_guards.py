@@ -28,10 +28,11 @@ CHAIN_IDS = {"eth": 1, "bsc": 56, "polygon": 137, "arbitrum": 42161,
 # decoded cast-text traces; on canonical traces the function identity is the
 # calldata SELECTOR, so name-only sets silently never match. Extending the
 # sets with selectors revives the upstream logic for both identity forms.
-# Read-only standard calls only. transfer/transferFrom/approve selectors are
-# deliberately NOT here: a 4-byte selector is not behavioral proof - a custom
-# or malicious contract can implement the ERC-20 surface with exploit logic,
-# so state-changing token functions must stay discoverable in ranked targets.
+# Standard read selectors. These are NOT added to the upstream name filter:
+# a 4-byte selector is not behavioral proof - arbitrary EVM code can mutate or
+# reenter under any selector. They are pruned from ranked patterns only when
+# the trace itself shows a staticcall (EVM-enforced read-only); see
+# prune_static_readonly_selectors.
 SEL_ERC20_READS = {
     "0x70a08231",  # balanceOf(address)
     "0xdd62ed3e",  # allowance(address,address)
@@ -76,16 +77,31 @@ def extend_signal_sets(sig_module):
     sig_module._STATE_WRITE |= SEL_STATE_WRITES
 
 
-def extend_ranker_filters(ranker):
-    """The upstream "standard safe function" filter lists names only; under
-    selector identity it never matched, so ERC-20 read noise crowded custom
-    functions out of the ranked targets. Only read-only standard selectors are
-    added: state-changing token functions stay ranked even as selectors,
-    because a custom implementation can hide exploit logic behind them."""
-    for attr in ("filtered_functions", "extended_filtered_functions"):
-        current = getattr(ranker, attr, None)
-        if isinstance(current, list):
-            setattr(ranker, attr, sorted(set(current) | SEL_ERC20_READS | SEL_DEX_READS))
+SEL_STANDARD_READS = SEL_ERC20_READS | SEL_DEX_READS
+
+
+def prune_static_readonly_selectors(result):
+    """Prune standard read selectors from ranked repeated patterns ONLY when
+    the trace itself shows the call was a staticcall (EVM-enforced read-only
+    context). The same selector invoked via call/delegatecall - e.g. a custom
+    or malicious contract implementing the ERC-20 surface with exploit logic -
+    stays in the ranked targets. functions_to_be_inspected and
+    created-contract calls are never pruned here: the forensics orchestrator
+    only admits non-staticcall calls into them, so every entry there is a
+    state-capable invocation by construction and must remain discoverable."""
+    kept_patterns = []
+    for pattern in result.repeated_patterns:
+        entries = [
+            e for e in pattern["pattern"]
+            if not (isinstance(e.get("function"), str)
+                    and e["function"].lower() in SEL_STANDARD_READS
+                    and str(e.get("call_type") or "").lower() == "staticcall")
+        ]
+        if entries:
+            pattern["pattern"] = entries
+            kept_patterns.append(pattern)
+    result.repeated_patterns = kept_patterns
+    return result
 
 
 def walk(node):
@@ -266,8 +282,8 @@ class PipelineRuntime:
         def checked_rank(ranker, *args, **kwargs):
             if not self.sequence:
                 raise TraceIdentityError("Cannot rank targets without a checked canonical trace.")
-            extend_ranker_filters(ranker)
             result = original_rank(ranker, *args, **kwargs)
+            result = prune_static_readonly_selectors(result)
             allowed = {f"{n['function']}_{n['address']}".lower() for n in walk(self.sequence["trace"])}
             if any(key.lower() not in allowed for key in result.functions_to_be_inspected):
                 raise TraceIdentityError("Ranked target is not an observed canonical selector/address pair.")
