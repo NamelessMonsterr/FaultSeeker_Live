@@ -11,33 +11,51 @@ import httpx
 # per flagged function and offers no sanctioned value for an undetermined
 # mechanism ("{}" only means "no vulnerable function"). On the Hedgey ETH case
 # this correlated with invented mechanism narratives (see runs/ablation_*).
-# Appending this contract to vulnerability-analysis prompts gives the model an
-# honest path: explicit 'mechanism undetermined' plus observed_anomalies
-# limited to facts visible in the provided information. Reversible: set
-# FAULTSEEKER_ABSTENTION_CONTRACT=0 to disable.
+# Appending this contract gives the model an honest path. Reversible: set
+# FAULTSEEKER_ABSTENTION_CONTRACT to 0/false/no/off/disabled to turn it off.
+#
+# Schema compatibility (verified against the pinned engine parser,
+# function_analyzer._update_potentially_vulnerable_function): per-entry
+# records are read via .get('evidence'|'reason'|'description'|'rationale')
+# and .get('confidence_score'|'confidence'|'score'); unknown extra fields are
+# silently DISCARDED. The contract therefore introduces no new output field -
+# "mechanism undetermined" is a plain nonempty evidence string, which the
+# parser accepts verbatim.
+ABSTENTION_SENTINEL = "[FAULTSEEKER_ABSTENTION_CONTRACT_V1]"
 ABSTENTION_CONTRACT = (
-    "\n\nAdditional output rules (override the evidence format above):\n"
+    "\n\n" + ABSTENTION_SENTINEL + "\n"
+    "Additional output rules:\n"
     "- If the provided information does not establish HOW a function is "
     "vulnerable, set \"evidence\" to exactly \"mechanism undetermined\". "
     "This is a valid, respected answer.\n"
     "- NEVER invent a mechanism (e.g. swaps, reentrancy, price manipulation) "
-    "or name protocols that are not directly established by the provided "
-    "information.\n"
-    "- Add an \"observed_anomalies\" array containing only facts visible in "
-    "the provided information (calls made, parameters, approvals, transfers) - "
-    "no inferred behavior."
+    "and NEVER name protocols that are not directly established by the "
+    "provided information.\n"
+    "- Observed calls, selectors, approvals, transfers and unusual parameters "
+    "are not independently proof of a vulnerability. A suspicious function "
+    "without sufficient evidence of a fault localized within it must not be "
+    "flagged; a flagged function whose mechanism cannot be established uses "
+    "\"mechanism undetermined\"."
 )
-_VULN_PROMPT_MARKERS = ("potentially vulnerable", "Identify any vulnerable functions")
+# Targeting: the engine's vulnerability-analysis prompt is identified by a
+# distinctive CO-OCCURRING signature (topic phrase + its JSON schema field),
+# case-insensitive - a quoted phrase alone cannot trigger augmentation, and
+# minor wording drift in either element disables the repair loudly (no
+# augmentation) rather than silently mistargeting it.
+_VULN_PROMPT_TOPICS = ("potentially vulnerable", "identify any vulnerable functions")
+_VULN_PROMPT_SCHEMA = "confidence_score"
+_DISABLE_VALUES = ("0", "false", "no", "off", "disabled")
 
 
 def augment_vulnerability_prompt(kwargs, phase):
     """Append the abstention contract to vulnerability-analysis prompts only.
-    Returns (kwargs, augmented?). Idempotent; never touches other phases or
-    prompt types. Input kwargs are not mutated."""
+    Returns (kwargs, augmented?). Idempotent via a unique sentinel; never
+    touches other phases or prompt types. Input kwargs are not mutated.
+    Non-list / malformed messages structures are left untouched, never crash."""
     import os
     if phase != "analysis":
         return kwargs, False
-    if os.environ.get("FAULTSEEKER_ABSTENTION_CONTRACT", "1").lower() in ("0", "false", "no"):
+    if os.environ.get("FAULTSEEKER_ABSTENTION_CONTRACT", "1").strip().lower() in _DISABLE_VALUES:
         return kwargs, False
     messages = kwargs.get("messages")
     if not isinstance(messages, list):
@@ -45,12 +63,17 @@ def augment_vulnerability_prompt(kwargs, phase):
     idx = None
     for i in range(len(messages) - 1, -1, -1):
         m = messages[i]
-        if (isinstance(m, dict) and m.get("role") == "user"
-                and isinstance(m.get("content"), str)
-                and any(marker in m["content"] for marker in _VULN_PROMPT_MARKERS)):
+        if not isinstance(m, dict) or m.get("role") != "user":
+            continue
+        content = m.get("content")
+        if not isinstance(content, str):
+            continue
+        lowered = content.lower()
+        if (any(topic in lowered for topic in _VULN_PROMPT_TOPICS)
+                and _VULN_PROMPT_SCHEMA in content):
             idx = i
             break
-    if idx is None or "mechanism undetermined" in messages[idx]["content"]:
+    if idx is None or ABSTENTION_SENTINEL in messages[idx]["content"]:
         return kwargs, False
     kwargs = dict(kwargs)
     messages = [dict(m) for m in messages]
