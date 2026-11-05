@@ -660,6 +660,40 @@ class PipelineRuntime:
         return tokens
 
     @staticmethod
+    def _strip_comments_and_strings(source_text):
+        """Comment-strip and STRING-BLANK, preserving length and newlines so
+        byte/line offsets stay valid. String literal contents (including
+        escaped quotes) are replaced with spaces: declaration keywords or
+        braces inside a string are data, never declarations, and must not
+        fabricate namespace evidence or disturb scope tracking. An
+        unterminated string blanks to EOF (fail closed)."""
+        text = re.sub(r"/\*.*?\*/", " ", source_text or "", flags=re.S)
+        text = re.sub(r"//[^\n]*", "", text)
+        out = []
+        i, n = 0, len(text)
+        while i < n:
+            ch = text[i]
+            if ch in ('"', "'"):
+                q = ch
+                out.append(" ")
+                i += 1
+                while i < n and text[i] != q:
+                    if text[i] == "\\" and i + 1 < n:
+                        out.append("\n" if text[i] == "\n" else " ")
+                        out.append("\n" if text[i + 1] == "\n" else " ")
+                        i += 2
+                    else:
+                        out.append("\n" if text[i] == "\n" else " ")
+                        i += 1
+                if i < n:
+                    out.append(" ")
+                    i += 1
+            else:
+                out.append(ch)
+                i += 1
+        return "".join(out)
+
+    @staticmethod
     def _declaration_index(source_text):
         """Source-context resolution: declarations visible in ONE file, with
         enclosing-scope provenance.
@@ -675,8 +709,7 @@ class PipelineRuntime:
         proves it. Enum-typed struct fields resolve to uint8 (the ABI
         canonical form); other non-elementary fields make fields None
         (unsupported depth fails closed)."""
-        text = re.sub(r"/\*.*?\*/", " ", source_text or "", flags=re.S)
-        text = re.sub(r"//[^\n]*", "", text)
+        text = PipelineRuntime._strip_comments_and_strings(source_text)
         decls, kinds, fields, scopes = {}, {}, {}, []
         scope, scope_start, depth = None, 0, 0
         i = 0
@@ -957,8 +990,7 @@ class PipelineRuntime:
                     # from another contract in the same file never proves a
                     # name for this function.
                     try:
-                        stripped = re.sub(r"/\*.*?\*/", " ", file_text[rel], flags=re.S)
-                        stripped = re.sub(r"//[^\n]*", "", stripped)
+                        stripped = PipelineRuntime._strip_comments_and_strings(file_text[rel])
                         off = sum(len(l) + 1 for l in stripped.split("\n")[:max(0, (e.get("start_line") or 1) - 1)])
                         e["fn_scope"] = next((name for name, s, en in file_index[rel].get("scopes", [])
                                               if s <= off <= en), None)

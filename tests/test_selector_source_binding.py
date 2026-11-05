@@ -765,6 +765,43 @@ def test_indented_contract_scope_provenance(pinned_fork):
                                  [["address"]], idx, fn_scope="A") is False
 
 
+def test_string_literals_cannot_fabricate_declarations(pinned_fork):
+    """Adversarial: declaration keywords and braces inside Solidity string
+    literals are DATA. They must not register declarations, shift scope, or
+    produce a successful binding."""
+    m = importlib.import_module("app.pipeline_guards")
+    P = m.PipelineRuntime
+    # fake struct/enum/contract inside string literals, escaped quotes, braces
+    src = (
+        'contract CampaignManager {\n'
+        '  string constant DECOY = "struct Campaign { uint256 amount; }";\n'
+        "  string constant DECOY2 = 'enum TokenLockup { A, B }';\n"
+        '  string constant DECOY3 = "} contract Evil { struct X { uint256 y; }";\n'
+        '  string constant ESC = "q \\\" struct Nope { uint256 z; } \\\" end";\n'
+        "  struct Real { address a; }\n"
+        "  function execute(Real memory r) external {}\n"
+        "}\n")
+    idx = P._declaration_index(src)
+    # no fabricated declarations from string content
+    assert "Campaign" not in idx["decls"]
+    assert "TokenLockup" not in idx["decls"]
+    assert "Evil" not in idx["decls"] and "Nope" not in idx["decls"]
+    # braces inside strings did not break scope tracking of the REAL struct
+    assert idx["decls"].get("Real") == [("CampaignManager.Real", "CampaignManager")]
+    assert idx["kinds"].get("CampaignManager.Real") == "struct"
+    # the real function still binds against its real struct
+    body = "function execute(Real memory r) external {}"
+    assert P._header_matches_abi(body, ["(address)"], ["struct CampaignManager.Real"],
+                                 [["address"]], idx, fn_scope="CampaignManager") is True
+    # and an ABI naming the decoy cannot bind: the name is unproven
+    assert P._header_matches_abi(body, ["(uint256)"], ["struct CampaignManager.Campaign"],
+                                 [["uint256"]], idx, fn_scope="CampaignManager") in (None, False)
+    # unterminated string blanks to EOF: nothing after it can be proven
+    src2 = 'contract C {\n  string s = "oops;\n  struct Late { uint256 x; }\n}\n'
+    idx2 = P._declaration_index(src2)
+    assert "Late" not in idx2["decls"]
+
+
 @pytest.mark.skipif(os.getenv("FAULTSEEKER_LIVE_NETWORK") != "1",
                     reason="keyless Blockscout route; run explicitly, not in the offline suite")
 def test_live_blockscout_binding_route(tmp_path, pinned_fork):
