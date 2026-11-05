@@ -541,4 +541,6 @@ class ModelEndpointSession:
                 "calls": {phase: dict(counts) for phase, counts in self.calls.items()},
                 "transport_seconds": round(self.spent, 3),
                 "time_budget_seconds": self.time_budget,
+                "abstention_augmented_calls": self.abstention_augmented_calls,
+                "abstention_targeting_mismatches": self.abstention_targeting_mismatches,
                 "failure": self.failure.as_dict() if self.failure else None}

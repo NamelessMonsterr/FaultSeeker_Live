@@ -486,3 +486,41 @@ def test_pinned_engine_dispatch_boundary_integration():
                   if n == "faultseeker" or n.startswith("faultseeker.")]:
             del sys.modules[n]
         sys.modules.update(saved)
+
+
+def test_summary_exposes_abstention_counters_on_real_dispatch():
+    # Observability contract: a run's serialized model_endpoint summary must
+    # carry the augmentation counters, so a production run can prove whether
+    # the abstention contract actually reached the wire (activation evidence),
+    # instead of relying on construction arguments alone.
+    import json as _json
+    import httpx
+    from openai import OpenAI
+    sent = []
+    def reply(request):
+        sent.append(_json.loads(request.content))
+        return httpx.Response(200, json={"id": "mock", "object": "chat.completion",
+                                         "created": 0, "model": "mercury-3",
+                                         "choices": [{"index": 0, "message":
+                                                      {"role": "assistant", "content": "{}"},
+                                                      "finish_reason": "stop"}]})
+    def factory():
+        return OpenAI(api_key="test-secret-never-output", base_url="https://model.invalid/v1",
+                      http_client=httpx.Client(transport=httpx.MockTransport(reply)))
+    session = me.ModelEndpointSession(retry_limit=0, time_budget=60, call_timeout=10)
+    session.register_keys("https://model.invalid/v1", ["k"], model="mercury-3")
+    vuln_kwargs = {"model": "mercury-3",
+                   "messages": [{"role": "user", "content": me.ENGINE_VULN_ANALYSIS_TEMPLATE + "ctx"}]}
+    session.call(factory, vuln_kwargs, "mercury-3")
+    summary = session.summary()
+    assert summary["abstention_augmented_calls"] == 1
+    assert summary["abstention_targeting_mismatches"] == 0
+    # wire proof: the request that left for the provider carried the contract
+    assert sent[0]["messages"][-1]["content"].endswith(me.ABSTENTION_CONTRACT.strip().splitlines()[-1].strip()[-20:]) \
+        or me.ABSTENTION_CONTRACT.splitlines()[1].strip()[:30] in sent[0]["messages"][-1]["content"]
+    # an ordinary prompt neither augments nor flags drift
+    session.call(factory, {"model": "mercury-3",
+                           "messages": [{"role": "user", "content": "rank these"}]}, "mercury-3")
+    summary = session.summary()
+    assert summary["abstention_augmented_calls"] == 1
+    assert summary["abstention_targeting_mismatches"] == 0
