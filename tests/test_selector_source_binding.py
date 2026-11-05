@@ -1044,6 +1044,31 @@ def test_preserve_bound_sources_component(pinned_fork):
     # no key, no match: not a source-bearing prompt -> untouched, no event
     assert P._preserve_bound_sources("x" * 12000, [src], [model], cap) == ("x" * 12000, None)
     assert P._preserve_bound_sources("x" * 9999, [src], [model], cap) == ("x" * 9999, None)
+    # B2: empty source collection must still detect a source-bearing over-cap prompt
+    out_e, ev_e = P._preserve_bound_sources(msg_k, [], [model], cap)
+    assert out_e == msg_k and ev_e["status"] == "bound_source_unverified_outbound"
+    assert P._preserve_bound_sources("x" * 12000, [], [model], cap) == ("x" * 12000, None)
+    # B1: a model reply that ALSO appears in required evidence is ambiguous -> required, not trimmed
+    form = json.dumps(src)[1:-1]
+    dup = "EVID:" + model + "|" + form + "|MODEL:" + model + ("p" * 2000)
+    assert len(dup) > cap
+    out_d, ev_d = P._preserve_bound_sources(dup, [src], [model], cap)
+    assert out_d == dup and ev_d["status"] == "required_evidence_unfit" and ev_d["available_reduction"] == 0
+    # multi-span: two distinct replies with different capacity, source between them, ceiling rounding
+    m1 = "".join(f"alpha reply {i} on approvals. " for i in range(100))
+    m2 = "".join(f"beta reply {i} on balances and flows. " for i in range(160))
+    e1 = "E1:" + "1" * 1200
+    msg2 = e1 + m1 + form + m2 + "|E2:" + "2" * 1500
+    assert len(msg2) > cap
+    out_m, ev_m = P._preserve_bound_sources(msg2, [src], [m1, m2], cap)
+    assert ev_m["status"] == "preserved_other_text_trimmed" and len(out_m) <= cap
+    assert form in out_m and e1 in out_m and ("2" * 1500) in out_m
+    assert out_m.count(P.MODEL_TEXT_MARKER) == 2
+    assert out_m.index(m1[:200]) < out_m.index(form) < out_m.index(m2[:200])
+    # adjacent replies (touching spans) must not double-count or overlap
+    msg3 = ("q" * 800) + m1 + m2 + form + ("r" * 900)
+    out3, ev3 = P._preserve_bound_sources(msg3, [src], [m1, m2], cap)
+    assert len(msg3) <= cap or (ev3["status"] == "preserved_other_text_trimmed" and len(out3) <= cap and form in out3)
     # oversized source: unchanged, explicit
     huge = "function g() {\n" + "  y();\n" * 1700 + "}\n"
     m2 = ("P" * 3000) + huge + ("Q" * 3000)

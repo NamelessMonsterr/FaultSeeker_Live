@@ -953,8 +953,9 @@ class PipelineRuntime:
         Statuses: preserved_other_text_trimmed, source_oversized_unpreserved,
         required_evidence_unfit, bound_source_unverified_outbound. At/under
         the cap, or when no source-bearing key and no bound source: (message, None)."""
-        if not isinstance(message, str) or len(message) <= cap or not sources:
+        if not isinstance(message, str) or len(message) <= cap:
             return message, None
+        sources = sources or ()
         P = PipelineRuntime
         needles = [f for src in sources for f in P._source_forms(src)]
         src_spans = P._find_spans(message, needles)
@@ -970,13 +971,24 @@ class PipelineRuntime:
         if src_chars > cap:
             return message, {**base, "status": "source_oversized_unpreserved"}
         cut = len(message) - cap
-        # trimmable: verbatim model replies (full text or its [:2000] prefix) outside source spans
-        mt_needles = []
+        # trimmable: verbatim model replies (full text or its [:2000] prefix) outside source spans.
+        # Provenance is substring identity (the engine gives no insertion boundaries). A reply whose
+        # 2000-char prefix occurs MORE THAN ONCE in the message is ambiguous (it may also sit in
+        # required evidence), so it is treated as required, never trimmed.
+        floor = 2 * P.MODEL_TEXT_KEEP + len(P.MODEL_TEXT_MARKER)
+        cand = []
         for t in model_texts:
-            if isinstance(t, str) and len(t) >= 2 * P.MODEL_TEXT_KEEP + len(P.MODEL_TEXT_MARKER):
-                mt_needles.extend({t, t[:2000]})
-        cand = [(a, b) for a, b in P._find_spans(message, [n for n in mt_needles if len(n) >= 2 * P.MODEL_TEXT_KEEP + len(P.MODEL_TEXT_MARKER)])
-                if not any(a < sb and sa < b for sa, sb in src_spans)]
+            if not isinstance(t, str) or len(t) < floor:
+                continue
+            pre = t[:2000]
+            if message.count(pre) != 1:
+                continue
+            i = message.find(t)
+            a_, b_ = (i, i + len(t)) if i >= 0 else (message.find(pre), message.find(pre) + len(pre))
+            if any(a_ < sb and sa < b_ for sa, sb in src_spans) or any(a_ < cb and ca < b_ for ca, cb in cand):
+                continue
+            cand.append((a_, b_))
+        cand.sort()
         M, K = len(P.MODEL_TEXT_MARKER), P.MODEL_TEXT_KEEP
         slack = [(a, b, (b - a) - K - M) for a, b in cand if (b - a) - K - M > 0]
         max_red = sum(x[2] for x in slack)
