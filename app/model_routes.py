@@ -36,19 +36,23 @@ def adapt_request(model, kwargs):
         adapted["extra_body"] = extra
         if tiny:
             adapted["max_tokens"] = 64
-        # Mercury accepts temperature only in [0.5, 1.0] and silently resets
-        # out-of-range values to 1.0 with a warning. Clamping the engine's 0 to
-        # 0.5 is NOT safe: at 0.5 with medium reasoning the model spins into
-        # ~60K-token reasoning loops that hit the output ceiling and return
-        # empty content (observed live). Drop out-of-range values instead and
-        # let the provider default apply - the configuration observed to
-        # complete full analyses reliably.
+        # Mercury accepts temperature only in [0.5, 1.0]. The engine requests 0;
+        # clamping to 0.5 is NOT safe: at 0.5 with medium reasoning the model
+        # spins into ~60K-token reasoning loops that hit the output ceiling and
+        # return empty content (observed live). Pin out-of-range or missing
+        # values explicitly to 1.0 - stochastic, disclosed, and the only
+        # medium-reasoning configuration observed to complete full analyses.
         temp = adapted.get("temperature")
-        if isinstance(temp, (int, float)) and not isinstance(temp, bool):
-            if 0.5 <= float(temp) <= 1.0:
-                adapted["temperature"] = float(temp)
-            else:
-                del adapted["temperature"]
+        if not (isinstance(temp, (int, float)) and not isinstance(temp, bool)
+                and 0.5 <= float(temp) <= 1.0):
+            adapted["temperature"] = 1.0
+        # Bound non-tiny completions so one runaway reasoning loop cannot eat
+        # the per-minute output budget in a single call. Truncated answers are
+        # rejected by the transport (finish_reason=length), never used silently.
+        if not tiny:
+            cap = adapted.get("max_tokens")
+            if not isinstance(cap, int) or cap > 16384:
+                adapted["max_tokens"] = 16384
         return adapted
     if not str(model).startswith(ITERA_PREFIX):
         return kwargs

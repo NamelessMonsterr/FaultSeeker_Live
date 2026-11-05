@@ -59,13 +59,19 @@ def test_adapt_request_adds_reasoning_effort_only_for_mercury(monkeypatch):
     tiny = m.adapt_request(MERCURY, {**base, "max_tokens": 8})
     assert tiny["max_tokens"] == 64
     assert tiny["extra_body"] == {"reasoning_effort": "instant"}
-    # Mercury accepts temperature only in [0.5, 1.0]. Out-of-range values are
-    # dropped (provider default applies): clamping 0 to 0.5 triggers runaway
-    # reasoning and empty completions at medium effort; in-range values pass.
-    assert "temperature" not in m.adapt_request(MERCURY, {**base, "temperature": 0})
+    # Mercury accepts temperature only in [0.5, 1.0]. Out-of-range or missing
+    # values pin explicitly to 1.0 (clamping 0 to 0.5 triggers runaway reasoning
+    # and empty completions at medium effort); valid in-range values pass.
+    assert m.adapt_request(MERCURY, {**base, "temperature": 0})["temperature"] == 1.0
     assert m.adapt_request(MERCURY, {**base, "temperature": 0.7})["temperature"] == 0.7
-    assert "temperature" not in m.adapt_request(MERCURY, {**base, "temperature": 2})
-    assert "temperature" not in m.adapt_request(MERCURY, base)
+    assert m.adapt_request(MERCURY, {**base, "temperature": 2})["temperature"] == 1.0
+    assert m.adapt_request(MERCURY, base)["temperature"] == 1.0
+    # Non-tiny completions are capped so one runaway call cannot eat the
+    # per-minute output budget; smaller explicit caps are respected.
+    assert m.adapt_request(MERCURY, base)["max_tokens"] == 500
+    uncapped = dict(base); del uncapped["max_tokens"]
+    assert m.adapt_request(MERCURY, uncapped)["max_tokens"] == 16384
+    assert m.adapt_request(MERCURY, {**base, "max_tokens": 100000})["max_tokens"] == 16384
     other = {"model": "qwen/qwen3.8-27b", "messages": []}
     assert m.adapt_request("qwen/qwen3.8-27b", other) is other
 

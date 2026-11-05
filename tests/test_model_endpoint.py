@@ -90,6 +90,45 @@ def test_recovery_keeps_model_and_does_not_reset_shared_retry_allowance():
     assert any(e["state"] == "model_endpoint_ready" for e in events)
 
 
+def test_truncated_completion_fails_honestly():
+    truncated = {"id": "x", "object": "chat.completion",
+                 "choices": [{"index": 0, "message": {"role": "assistant", "content": "{\"partial"},
+                              "finish_reason": "length"}]}
+    m, session, factory, calls, _, _ = setup([httpx.Response(200, json=truncated)])
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.call(factory, {"model": MODEL, "messages": []}, MODEL)
+    assert failure.value.kind == "truncated_output"
+
+
+def test_output_pacing_holds_calls_within_rolling_budget():
+    big = dict(OK)
+    big["usage"] = {"prompt_tokens": 10, "completion_tokens": 800}
+    m, session, factory, calls, events, clock = setup(
+        [httpx.Response(200, json=big)] * 3, output_budget_per_min=1000)
+    session.time_budget = 300  # room for the ~60s pacing wait
+    req = {"model": MODEL, "messages": [], "max_tokens": 800}
+    session.call(factory, req, MODEL)   # 800 of 1000 used
+    t0 = clock.now
+    session.call(factory, req, MODEL)   # would exceed: paces ~60s, then runs
+    assert clock.now - t0 >= 60         # waited for the window to slide
+    assert any(e.get("output_pacing") for e in events)
+    assert session.tokens["completion"] == 1600
+    assert session.spent >= 60          # pacing counts against the budget
+
+
+def test_error_detail_captures_retry_after_and_redacts_secrets():
+    body = {"error": {"message": "slow down; key sk-abcdef1234567890 revoked"}}
+    m, session, factory, calls, events, _ = setup(
+        [httpx.Response(429, json=body, headers={"retry-after": "12"})] * 8)
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.preflight(factory, MODEL, timeout=20)
+    assert failure.value.kind == "rate_limited"
+    failed = [e for e in events if e.get("state") == "model_endpoint_failed"]
+    assert failed and failed[0].get("retry_after") == "12"
+    assert "sk-abcdef1234567890" not in json.dumps(events)
+    assert "test-secret-never-output" not in json.dumps(events)
+
+
 def test_preflight_failure_never_starts_expensive_analysis():
     m, session, factory, calls, _, _ = setup([httpx.Response(401, json={"error": {"message": "no"}})])
     ran = False
