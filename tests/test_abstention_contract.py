@@ -210,6 +210,7 @@ def test_pinned_engine_template_matches_embedded_identity():
              if n == "faultseeker" or n.startswith("faultseeker.")}
     for name in saved:
         del sys.modules[name]
+    original_path = sys.path[:]
     sys.path.insert(0, str(root))
     try:
         from faultseeker.prompts.function_analysis import vulnerability_analysis_prompts as vap
@@ -218,7 +219,7 @@ def test_pinned_engine_template_matches_embedded_identity():
             f"engine module resolved outside pinned checkout: {resolved}"
         actual = vap.VulnerabilityAnalysisPrompts().update_potentially_vulnerable_function
     finally:
-        sys.path.remove(str(root))
+        sys.path[:] = original_path
         for name in [n for n in list(sys.modules)
                      if n == "faultseeker" or n.startswith("faultseeker.")]:
             del sys.modules[name]
@@ -354,13 +355,28 @@ def test_missing_content_key_current_message_no_fallback():
 
 
 def _pinned_root():
+    # The repair's targeting authority depends on the EXACT pinned engine, so
+    # the checkout's identity is anchored to the authoritative build config:
+    # HEAD must equal Dockerfile ARG FAULTSEEKER_SHA and the tree must be
+    # clean. Fail closed when identity cannot be established.
     import os
     location = os.getenv("FAULTSEEKER_TEST_PIPELINE_REPO")
     assert location, ("pinned engine checkout required: set "
                       "FAULTSEEKER_TEST_PIPELINE_REPO (release verification "
                       "of the abstention repair's trusted boundary)")
     import pathlib
-    return pathlib.Path(location).resolve()
+    import subprocess
+    root = pathlib.Path(location).resolve()
+    dockerfile = pathlib.Path(__file__).resolve().parents[1] / "Dockerfile"
+    pin = next(l.split("=", 1)[1].strip() for l in dockerfile.read_text().splitlines()
+               if l.startswith("ARG FAULTSEEKER_SHA="))
+    head = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                          capture_output=True, text=True, check=True).stdout.strip()
+    assert head == pin, f"engine checkout {head[:12]} != pinned {pin[:12]}"
+    dirty = subprocess.run(["git", "-C", str(root), "status", "--porcelain"],
+                           capture_output=True, text=True, check=True).stdout.strip()
+    assert not dirty, f"engine checkout is dirty: {dirty[:200]}"
+    return root
 
 
 def test_pinned_engine_constructs_vuln_prompt_template_first():
@@ -417,3 +433,56 @@ def test_template_embedded_mid_message_never_activates():
     out, augmented, _ = me.augment_vulnerability_prompt(kw, "analysis")
     assert not augmented
     assert me.ABSTENTION_SENTINEL not in out["messages"][-1]["content"]
+
+
+def test_pinned_engine_dispatch_boundary_integration():
+    # R8-F2: behavioral proof, not source-text assertions. The pinned
+    # engine's agent is driven through two real query() calls with the
+    # dispatch hook instrumented exactly where the fork installs session.call
+    # (over _llm_call_with_retry). Asserts the control flow: constructed
+    # prompt -> appended as last user message -> dispatched -> model reply
+    # enters memory under the assistant role.
+    import os
+    import sys
+    root = str(_pinned_root())
+    os.environ["OPENAI_API_KEY"] = "test-only-key"
+    saved = {n: sys.modules[n] for n in list(sys.modules)
+             if n == "faultseeker" or n.startswith("faultseeker.")}
+    for n in saved:
+        del sys.modules[n]
+    original_path = sys.path[:]
+    sys.path.insert(0, root)
+    try:
+        from faultseeker.utils import agent as agent_module
+        captured = []
+
+        class _Msg:
+            content = "{}"
+        class _Choice:
+            message = _Msg()
+        class _Completion:
+            choices = [_Choice()]
+
+        def spy(create_client, kwargs, model):
+            captured.append([dict(m) for m in kwargs["messages"]])
+            return _Completion()
+
+        agent_module._llm_call_with_retry = spy  # the fork's install point
+        a = agent_module.GPTAgent("boundary test", model_name="gpt-4o")
+        a.query("CONSTRUCTED-PROMPT-ONE", format="str")
+        a.query("CONSTRUCTED-PROMPT-TWO", format="str")
+        assert len(captured) == 2
+        first, second = captured
+        assert first[-1] == {"role": "user", "content": "CONSTRUCTED-PROMPT-ONE"}
+        assert second[-1] == {"role": "user", "content": "CONSTRUCTED-PROMPT-TWO"}
+        # the model reply to prompt one entered history as assistant, and no
+        # user message ever carries model output
+        roles = [m["role"] for m in second]
+        assert "assistant" in roles
+        assert all(m["content"] != "{}" for m in second if m["role"] == "user")
+    finally:
+        sys.path[:] = original_path
+        for n in [n for n in list(sys.modules)
+                  if n == "faultseeker" or n.startswith("faultseeker.")]:
+            del sys.modules[n]
+        sys.modules.update(saved)
