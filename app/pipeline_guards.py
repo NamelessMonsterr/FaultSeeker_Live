@@ -406,16 +406,24 @@ class PipelineRuntime:
             # capable hosted models. Register them as cloud at this same
             # authorized hook boundary. Every other model's classification
             # is unchanged; the pinned engine checkout is never edited.
-            try:
-                from faultseeker.prompts import local_model_prompts as _lmp
-            except ImportError:
-                _lmp = None
-            if _lmp is not None and isinstance(getattr(_lmp, "CLOUD_PREFIXES", None), tuple):
-                _add = tuple(pfx for pfx in ("mercury-", "itera/")
-                             if not any(pfx.startswith(c) or c.startswith(pfx)
-                                        for c in _lmp.CLOUD_PREFIXES))
-                if _add:
-                    self.replace(_lmp, "CLOUD_PREFIXES", tuple(_lmp.CLOUD_PREFIXES) + _add)
+            # Fail CLOSED (R26-F1): a missing prompt module or an unexpected
+            # CLOUD_PREFIXES structure must abort installation loudly - never
+            # serve runs with provider routing installed but the prompt-family
+            # correction silently skipped (the exact silent failure being
+            # remediated). Concurrency: this is a process-global mutation;
+            # production runs one analysis per child process (server.worker),
+            # and install happens before dispatch and restore after completion.
+            from faultseeker.prompts import local_model_prompts as _lmp
+            if not isinstance(getattr(_lmp, "CLOUD_PREFIXES", None), tuple):
+                raise RuntimeError(
+                    "pinned engine prompt boundary unexpected: "
+                    "local_model_prompts.CLOUD_PREFIXES is not a tuple - "
+                    "refusing to install model hooks against an unverified boundary")
+            _add = tuple(pfx for pfx in ("mercury-", "itera/")
+                         if not any(pfx.startswith(c) or c.startswith(pfx)
+                                    for c in _lmp.CLOUD_PREFIXES))
+            if _add:
+                self.replace(_lmp, "CLOUD_PREFIXES", tuple(_lmp.CLOUD_PREFIXES) + _add)
         for agent_class in {agent_module.GPTAgent, agent_module.UniversalAgent}:
             original = agent_class._send_message
             def checked_send(agent, *args, _original=original, **kwargs):

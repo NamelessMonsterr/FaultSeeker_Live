@@ -37,6 +37,8 @@ def _pinned_root():
 @pytest.fixture()
 def engine_modules():
     root = str(_pinned_root())
+    saved_env = {k: os.environ.get(k) for k in
+                 ("OPENAI_API_KEY", "INCEPTION_API_KEY", "ITERA_API_KEY")}
     os.environ["OPENAI_API_KEY"] = "test-only-key"
     os.environ["INCEPTION_API_KEY"] = "test-only-mercury-key"
     os.environ["ITERA_API_KEY"] = "test-only-itera-key"
@@ -50,6 +52,11 @@ def engine_modules():
         yield
     finally:
         sys.path[:] = original_path
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
         for n in [n for n in list(sys.modules)
                   if n == "faultseeker" or n.startswith("faultseeker.")]:
             del sys.modules[n]
@@ -87,6 +94,13 @@ def test_hook_classes_fork_routes_cloud_and_leaves_others_unchanged(engine_modul
             .startswith("Based on the current understanding of the transaction")
         local = lmp.get_vuln_prompts("phi3:mini").update_potentially_vulnerable_function
         assert local.startswith("Identify any vulnerable functions")
+        # BOTH prompt-family getters follow the classification (R26-F3):
+        # get_worker_prompts for both production routes + a genuinely local model
+        for model in ("mercury-3", "itera/qwen3.8-27b"):
+            assert type(lmp.get_worker_prompts(model)).__name__ == "WorkerPrompts", model
+        assert type(lmp.get_worker_prompts("phi3:mini")).__name__ == "LocalWorkerPrompts"
+        assert type(lmp.get_vuln_prompts("mercury-3")).__name__ == "VulnerabilityAnalysisPrompts"
+        assert type(lmp.get_vuln_prompts("phi3:mini")).__name__ == "LocalVulnerabilityAnalysisPrompts"
     finally:
         runtime.close()
     # close() restores the engine module boundary
@@ -111,16 +125,22 @@ def _drive_production_dispatch(model):
         template = analyzer.vulnerability_prompts.update_potentially_vulnerable_function
         assert template.startswith("Based on the current understanding of the transaction"), (
             f"{model}: analyzer did not load the cloud prompt family")
-        # stage 1: capture the engine-dispatched kwargs at the fork's install point
+        # Uninterrupted chain: an observing wrapper at the fork's install point
+        # captures the engine-dispatched kwargs, then delegates to the REAL
+        # installed hook (session.call) with only the HTTP transport mocked -
+        # no fabricated completion, no manual replay (R27 finding).
         captured = []
-        class _Msg: content = "{}"
-        class _Choice: message = _Msg()
-        class _Completion: choices = [_Choice()]
         original_hook = agent_module._llm_call_with_retry  # session.call (installed above)
-        def spy(create_client, kwargs, m):
+        session.register_keys("https://model.invalid/v1", ["k"], model=model)
+        session.model_routes[model] = "https://model.invalid/v1"
+        def factory():
+            return OpenAI(api_key="test-secret-never-output",
+                          base_url="https://model.invalid/v1",
+                          http_client=httpx.Client(transport=httpx.MockTransport(reply)))
+        def observing(create_client, kwargs, m):
             captured.append(dict(kwargs, messages=[dict(x) for x in kwargs["messages"]]))
-            return _Completion()
-        agent_module._llm_call_with_retry = spy
+            return original_hook(factory, kwargs, m)
+        agent_module._llm_call_with_retry = observing
         try:
             analyzer.cheatsheet = []
             analyzer.understanding_result = "understanding"
@@ -137,14 +157,6 @@ def _drive_production_dispatch(model):
         assert kwargs["messages"][-1]["role"] == "user"
         assert kwargs["messages"][-1]["content"].startswith(
             "Based on the current understanding of the transaction")
-        # stage 2: the captured production-shaped kwargs through the REAL session.call
-        session.register_keys("https://model.invalid/v1", ["k"], model=model)
-        session.model_routes[model] = "https://model.invalid/v1"
-        def factory():
-            return OpenAI(api_key="test-secret-never-output",
-                          base_url="https://model.invalid/v1",
-                          http_client=httpx.Client(transport=httpx.MockTransport(reply)))
-        original_hook(factory, kwargs, model)  # == session.call, the installed hook
         summary = session.summary()
         assert summary["abstention_augmented_calls"] == 1, (
             f"{model}: contract did not activate on the production dispatch shape")
@@ -191,3 +203,20 @@ def test_local_family_prompt_flags_mismatch_never_augmented(engine_modules):
         assert me.ABSTENTION_CONTRACT.strip()[-40:] not in sent[-1]["messages"][-1]["content"]
     finally:
         runtime.close()
+
+
+def test_hooks_fail_closed_when_prompt_boundary_unavailable(engine_modules):
+    """R26-F1: installation must abort loudly if the pinned engine's prompt
+    module or its CLOUD_PREFIXES tuple is missing/changed - never serve runs
+    with provider routing installed but the prompt-family correction skipped."""
+    lmp = importlib.import_module("faultseeker.prompts.local_model_prompts")
+    original = lmp.CLOUD_PREFIXES
+    lmp.CLOUD_PREFIXES = ["gpt-"]  # wrong type: boundary no longer matches contract
+    try:
+        session = me.ModelEndpointSession(retry_limit=0, time_budget=60, call_timeout=10)
+        runtime = pg.PipelineRuntime(TX, "eth", session=session)
+        agent_module = importlib.import_module("faultseeker.utils.agent")
+        with pytest.raises(RuntimeError, match="prompt boundary"):
+            runtime.install_model_hooks(agent_module)
+    finally:
+        lmp.CLOUD_PREFIXES = original
