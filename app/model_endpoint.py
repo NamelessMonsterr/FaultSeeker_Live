@@ -456,6 +456,20 @@ class ModelEndpointSession:
                                     entry["contract_in_adapted_payload"] = bool(
                                         isinstance(_last_user, str)
                                         and ABSTENTION_CONTRACT.strip()[-40:] in _last_user)
+                            # Non-secret attribution metadata for post-hoc
+                            # failure analysis (9603b88f79c2 could not name
+                            # WHICH prompt family its blanked calls were):
+                            # family classification from already-computed
+                            # signals + a system-prompt hash for correlation.
+                            # No prompt content, no secrets.
+                            entry["prompt_family"] = (
+                                "cloud_vuln_update" if abstention_augmented
+                                else "local_family_like" if abstention_mismatch
+                                else "other")
+                            _sp = kwargs.get("system_prompt")
+                            entry["system_sha256_16"] = (_hl.sha256(
+                                _sp.encode()).hexdigest()[:16]
+                                if isinstance(_sp, str) else None)
                             self.abstention_call_log.append(entry)
                         except Exception:
                             pass
