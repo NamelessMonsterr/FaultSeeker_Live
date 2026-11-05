@@ -231,10 +231,33 @@ def test_rejected_findings_force_partial_even_with_valid_scored():
     assert "excluded from scoring" in joined
     assert "uniswapV3SwapCallback_0x0000" in joined
     # the valid finding stays scored; rejected keys never appear in scored output
-    assert report["scored_functions"] == [valid]
+    assert report["scored_functions"] == [{**valid, "name_verification": "unverified_model_label"}]
     scored_text = json.dumps(report["scored_functions"])
     assert "uniswapV3SwapCallback" not in scored_text
     assert "0xdead" not in scored_text
+
+
+def test_prose_name_contradicting_selector_is_flagged_not_rewritten():
+    m = importlib.import_module("app.pipeline_guards")
+    identity = importlib.import_module("app.trace_identity")
+    seq = identity.sequence_from_parity(FIXTURE["responses"]["trace_transaction"], TX, "eth")
+    runtime = m.PipelineRuntime(TX, "eth")
+    runtime.sequence = seq
+    root = seq["trace"]
+    entry = {"address": root["address"], "function": root["function"],
+             "evidence": ["The approve function triggers anomalous transferFrom calls."]}
+    report = runtime.annotate_result({
+        "transaction_hash": TX, "chain": "eth", "analysis_status": "completed",
+        "scored_functions": [entry]})
+    flagged = report["scored_functions"][0]["name_verification"]
+    if root["function"].lower() not in ("0x095ea7b3", "0x23b872dd"):
+        assert flagged.startswith("contradiction")
+        assert any("Name/selector contradiction" in l for l in report["limitations"])
+    else:
+        assert flagged == "unverified_model_label"
+    # structured identity is never rewritten to match prose
+    assert report["scored_functions"][0]["function"] == root["function"]
+    assert "unverified" in report["analysis_integrity"]["function_name_verification"]
 
 
 def test_rejected_findings_only_still_partial():

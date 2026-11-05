@@ -280,6 +280,35 @@ class PipelineRuntime:
             result["limitations"].append(
                 f"{len(rejected)} model finding(s) had no bindable observed target and were excluded from scoring: {shown}"
                 + (" ..." if len(rejected) > 5 else ""))
+        # Narrative function names are model-generated labels bound to no ABI;
+        # only selectors/addresses are verified identities. Annotate every scored
+        # entry, and flag when prose claims a canonical ERC-20 name whose
+        # well-known selector contradicts the observed selector.
+        CANONICAL = {"approve": "0x095ea7b3", "transferfrom": "0x23b872dd",
+                     "transfer": "0xa9059cbb", "balanceof": "0x70a08231",
+                     "allowance": "0xdd62ed3e"}
+        import re as _re
+        name_claim = _re.compile(r"\b(approve|transferFrom|transfer|balanceOf|allowance)\b", _re.I)
+        contradictions = []
+        entries = [(e, (e.get("function") or "").lower())
+                   for e in (result.get("scored_functions") or []) if isinstance(e, dict)]
+        entries += [(e, ((e.get("function_signature") or {}).get("function") or "").lower())
+                    for e in (result.get("evidence_cards") or []) if isinstance(e, dict)]
+        for entry, selector in entries:
+            texts = [str(t) for t in (entry.get("evidence") or [])]
+            claimed = {m.group(1).lower() for t in texts for m in name_claim.finditer(t)}
+            bad = sorted(n for n in claimed if n in CANONICAL and CANONICAL[n] != selector)
+            entry["name_verification"] = ("contradiction: prose claims " + ", ".join(bad)
+                                          if bad else "unverified_model_label")
+            if bad:
+                contradictions.append(f"{selector}: prose claims {', '.join(bad)}")
+        result["analysis_integrity"]["function_name_verification"] = (
+            "narrative names are unverified model labels; selectors and addresses are the verified identities")
+        if contradictions:
+            shown = "; ".join(contradictions[:5])
+            result.setdefault("limitations", []).append(
+                f"Name/selector contradiction(s): {shown}. Narrative names are unverified; selector identity stands."
+                + (" ..." if len(contradictions) > 5 else ""))
         if self.session:
             result["model_endpoint"] = self.session.summary()
             calls = result["model_endpoint"].get("calls", {})
@@ -328,9 +357,16 @@ class PipelineRuntime:
                 result["stage_completed"] = "function-analysis-partial"  # never leave the stage-3 default on a truncated analysis
                 result["sections"] = {**(result.get("sections") or {}), "function_analysis": "partial_wall_cap" if wall["likely_forced"] else ("partial_errors" if wall["error"] else "partial_unverified_exit"), "scoring": "not_validated"}
                 result["priority_basis"] = "heuristic_preanalysis_estimate"
+                adequate = sum(1 for r in wall["functions"] if r.get("outcome") == "normal" and r.get("detail") == "adequate")
+                ceiling = sum(1 for r in wall["functions"] if r.get("outcome") == "normal" and r.get("detail") == "iteration_ceiling")
+                capped = ", ".join(f"{r.get('function', '?')} ({r.get('completed_cycles', 0)}/{r.get('ceiling', '?')} cycles)"
+                                   for r in wall["functions"] if r.get("outcome") != "normal") or "none"
                 result.setdefault("limitations", []).append(
-                    f"Function analysis: {wall['normal']} ended normally, {wall['likely_forced']} likely stopped by the {wall['cap_secs']}s per-function wall cap, "
-                    f"{wall['unknown_exit']} ended without an observed normal exit, {wall['error']} errored. Candidates from those functions are partial; scoring is not validated.")
+                    f"Function analysis: {wall['normal']} ended normally ({adequate} adequacy-confirmed, {ceiling} iteration-ceiling), "
+                    f"{wall['likely_forced']} likely stopped by the {wall['cap_secs']}s per-function wall cap, "
+                    f"{wall['unknown_exit']} ended without an observed normal exit, {wall['error']} errored. "
+                    f"Non-normal functions: {capped}. Candidates from those functions are partial; scoring is not validated. "
+                    "An iteration-ceiling exit is the fork's completion rule, not substantive verification of that function's analysis.")
         return result
 
     def failure_report(self, error=None):
