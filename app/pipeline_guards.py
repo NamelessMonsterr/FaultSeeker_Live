@@ -696,16 +696,11 @@ class PipelineRuntime:
                 if base != it_name:
                     return False
             else:
-                # unqualified source name: a final-segment match is proof only
-                # when that name is unique among this signature's user-defined
-                # inputs; otherwise the source context cannot establish which
-                # declaration it refers to and identity is unproven.
-                siblings = [(s or "").partition(" ")[2].split("[")[0].rsplit(".", 1)[-1]
-                            for s in internal_types if (s or "").startswith(("struct", "enum", "contract"))]
-                if siblings.count(it_short) != 1:
-                    return None
-                if base != it_short:
-                    return False
+                # Unqualified source name: without resolving the source unit's
+                # declarations/imports, the token could name a different type
+                # than the ABI internalType's. Uniqueness among the signature's
+                # inputs does not prove namespace identity - unsupported.
+                return None
             abi_suffix = canon_abi
             while abi_suffix.endswith("]"):
                 i = abi_suffix.rindex("[")

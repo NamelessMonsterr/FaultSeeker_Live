@@ -152,20 +152,24 @@ def test_retrieval_resolves_selector_through_real_analyzer_method(tmp_path, pinn
         rt.selector_bindings[HEDGEY] = {"selectors": m.PipelineRuntime._build_selector_map(_load_abi())}
         rt.sequence = _hedgey_trace()
         stub, FA = _analyzer_stub({HEDGEY: parsed})
+        # createLockedCampaign's REAL header names its structs unqualified:
+        # type identity unproven under the conservative policy -> unresolved,
+        # never a guessed bind.
         out = FA._retrieve_source_code(stub, HEDGEY, "0xefd86b62")
-        assert out, "selector-identified unit must now reach the downloaded source"
-        assert "createLockedCampaign" in out[0]["source_code"]
-        assert "safeIncreaseAllowance" in out[0]["source_code"]
+        assert out == []
         rec = rt.selector_resolution_log[-1]
-        assert rec["status"] == "resolved"
+        assert rec["status"] == "unresolved"
+        assert rec["reason"] == "type_identity_unsupported"
         assert rec["selector"] == "0xefd86b62"  # canonical identity preserved
         assert rec["resolved_name"] == "createLockedCampaign"
-        assert rec["source_entries"] == len(out) >= 1
-        assert rec["code_address"] == HEDGEY and rec["execution_context"] == HEDGEY
-        assert rec["call_type"] == "call"
-        # cancelCampaign (0xf412e4c7) resolves too.
+        # cancelCampaign (0xf412e4c7, elementary bytes16) resolves through the
+        # real analyzer method against the real ABI and source.
         out2 = FA._retrieve_source_code(stub, HEDGEY, "0xf412e4c7")
         assert out2 and "cancelCampaign" in out2[0]["source_code"]
+        rec2 = rt.selector_resolution_log[-1]
+        assert rec2["status"] == "resolved"
+        assert rec2["code_address"] == HEDGEY and rec2["execution_context"] == HEDGEY
+        assert rec2["call_type"] == "call"
     finally:
         _restore(rt)
 
@@ -289,12 +293,12 @@ def test_delegatecall_binds_code_address_and_execution_context(tmp_path):
     try:
         rt.selector_bindings[HEDGEY] = {"selectors": m.PipelineRuntime._build_selector_map(_load_abi())}
         rt.sequence = {"trace": {
-            "address": proxy, "function": "0xefd86b62", "call_type": "call",
-            "children": [{"address": HEDGEY, "function": "0xefd86b62",
+            "address": proxy, "function": "0xf412e4c7", "call_type": "call",
+            "children": [{"address": HEDGEY, "function": "0xf412e4c7",
                           "call_type": "delegatecall", "children": []}]}}
         stub, FA = _analyzer_stub({HEDGEY: parsed})
-        out = FA._retrieve_source_code(stub, HEDGEY, "0xefd86b62")
-        assert out and "createLockedCampaign" in out[0]["source_code"]
+        out = FA._retrieve_source_code(stub, HEDGEY, "0xf412e4c7")
+        assert out and "cancelCampaign" in out[0]["source_code"]
         rec = rt.selector_resolution_log[-1]
         assert rec["status"] == "resolved"
         assert rec["code_address"] == HEDGEY          # target whose code executes
@@ -416,13 +420,21 @@ def test_overloaded_source_units_disambiguated_or_fail(pinned_fork):
                            "input_count": 1, "input_types": ["(address,uint256)"],
                            "input_internal_types": ["struct X.B"]}}}
         stub2, FA2 = _analyzer_stub({addr: {"foo": [
-            {"path": "./S1.sol", "start_line": 1, "end_line": 1, "content": "function foo(A memory a) external { _use(a); }"},
-            {"path": "./S2.sol", "start_line": 1, "end_line": 1, "content": "function foo(B memory b) external { _use(b); }"}]}})
+            {"path": "./S1.sol", "start_line": 1, "end_line": 1, "content": "function foo(X.A memory a) external { _use(a); }"},
+            {"path": "./S2.sol", "start_line": 1, "end_line": 1, "content": "function foo(X.B memory b) external { _use(b); }"}]}})
         out2 = FA2._retrieve_source_code(stub2, addr, "0xefd86b62")
-        # structA vs structB: internalType identity selects B, arity cannot
-        assert len(out2) == 1 and "B memory b" in out2[0]["source_code"]
+        # structA vs structB: qualified internalType identity selects B, arity cannot
+        assert len(out2) == 1 and "X.B memory b" in out2[0]["source_code"]
         rec2 = rt.selector_resolution_log[-1]
         assert rec2["status"] == "resolved"
+        # Same pair with UNQUALIFIED names: namespace identity unproven ->
+        # fail closed even though internalType names a unique struct
+        stub2q, FA2q = _analyzer_stub({addr: {"foo": [
+            {"path": "./S1.sol", "start_line": 1, "end_line": 1, "content": "function foo(A memory a) external { _use(a); }"},
+            {"path": "./S2.sol", "start_line": 1, "end_line": 1, "content": "function foo(B memory b) external { _use(b); }"}]}})
+        out2q = FA2q._retrieve_source_code(stub2q, addr, "0xefd86b62")
+        assert out2q == []
+        assert rt.selector_resolution_log[-1]["status"] == "ambiguous_overload"
         # One proven match + one UNDECIDABLE candidate: the undecidable one
         # might be the ABI-matched overload -> fail closed, no silent select.
         rt.selector_bindings[addr] = {"selectors": {
@@ -431,7 +443,7 @@ def test_overloaded_source_units_disambiguated_or_fail(pinned_fork):
                            "input_internal_types": ["struct X.B"]}}}
         stub2c, FA2c = _analyzer_stub({addr: {"foo": [
             {"path": "./S1.sol", "start_line": 1, "end_line": 1, "content": "// no header here"},
-            {"path": "./S2.sol", "start_line": 1, "end_line": 1, "content": "function foo(B memory b) external { _use(b); }"}]}})
+            {"path": "./S2.sol", "start_line": 1, "end_line": 1, "content": "function foo(X.B memory b) external { _use(b); }"}]}})
         out2c = FA2c._retrieve_source_code(stub2c, addr, "0xefd86b62")
         assert out2c == []
         assert rt.selector_resolution_log[-1]["status"] == "ambiguous_overload"
@@ -474,7 +486,20 @@ def test_overloaded_source_units_disambiguated_or_fail(pinned_fork):
         stub4, FA4 = _analyzer_stub({addr: {"createLockedCampaign": [
             {"path": "./ClaimCampaigns.sol", "start_line": 1, "end_line": 2, "content": hedgey_body}]}})
         out4 = FA4._retrieve_source_code(stub4, addr, "0xefd86b62")
-        assert len(out4) == 1
+        # The Hedgey header names its structs UNQUALIFIED: without source-context
+        # resolution their identity is unproven -> conservative unresolved.
+        assert out4 == []
+        assert rt.selector_resolution_log[-1]["status"] == "unresolved"
+        assert rt.selector_resolution_log[-1]["reason"] == "type_identity_unsupported"
+        # The same shape with QUALIFIED type names binds by exact identity.
+        qualified_body = ("function createLockedCampaign(bytes16 id, "
+                          "ClaimCampaigns.Campaign memory campaign, "
+                          "ClaimCampaigns.ClaimLockup memory claimLockup, "
+                          "ClaimCampaigns.Donation memory donation) external {}")
+        stub4q, FA4q = _analyzer_stub({addr: {"createLockedCampaign": [
+            {"path": "./ClaimCampaigns.sol", "start_line": 1, "end_line": 2, "content": qualified_body}]}})
+        out4q = FA4q._retrieve_source_code(stub4q, addr, "0xefd86b62")
+        assert len(out4q) == 1
         assert rt.selector_resolution_log[-1]["unit_binding"]["disambiguated_by"] == "single_candidate_exact_types"
         assert (rt.selector_resolution_log[-1]["unit_binding"]["evidence_basis"]
                 == "abi_internal_type_and_canonical_match")
@@ -585,13 +610,13 @@ def test_header_matches_abi_exact_type_identity(pinned_fork):
     assert f("function f(address to, uint x) {}", ["address", "uint256"], ["address", "uint256"]) is True
     # enum vs uint: ABI enum (canonical uint8) must NOT match a plain uint8 source token
     assert f("function f(uint8 x) {}", ["uint8"], ["enum X.Status"]) is False
-    # enum source token matches ABI enum internalType
-    assert f("function f(Status s) {}", ["uint8"], ["enum X.Status"]) is True
-    # wrong enum name
-    assert f("function f(Other s) {}", ["uint8"], ["enum X.Status"]) is False
+    # enum source token matches ABI enum internalType (qualified full path)
+    assert f("function f(X.Status s) {}", ["uint8"], ["enum X.Status"]) is True
+    # wrong enum path
+    assert f("function f(Y.Status s) {}", ["uint8"], ["enum X.Status"]) is False
     # struct array shape must match canonical ABI array shape
-    assert f("function f(Campaign[] memory c) {}", ["(address)[]"], ["struct X.Campaign[]"]) is True
-    assert f("function f(Campaign[] memory c) {}", ["(address)"], ["struct X.Campaign"]) is False
+    assert f("function f(X.Campaign[] memory c) {}", ["(address)[]"], ["struct X.Campaign[]"]) is True
+    assert f("function f(X.Campaign[] memory c) {}", ["(address)"], ["struct X.Campaign"]) is False
     # user-defined source token with no ABI internalType: cannot prove -> None
     assert f("function f(Campaign memory c) {}", ["(address)"], [""]) is None
     # unparseable -> None
@@ -601,11 +626,13 @@ def test_header_matches_abi_exact_type_identity(pinned_fork):
     # qualified source name: full dotted path must equal the ABI internalType's
     assert f("function f(X.Campaign memory c) {}", ["(address)"], ["struct X.Campaign"]) is True
     assert f("function f(Y.Campaign memory c) {}", ["(address)"], ["struct X.Campaign"]) is False
-    # unqualified name: final-segment match only when unique among user-defined inputs
-    assert f("function f(Campaign memory a, Campaign memory b) {}", ["(address)", "(address)"],
-             ["struct X.Campaign", "struct X.Campaign"]) is None  # ambiguous namespace -> unproven
+    # unqualified user-defined names are ALWAYS unproven without source-context
+    # resolution - even when unique among the signature's inputs (the header's
+    # Campaign could be an imported/inherited Y.Campaign absent from the ABI)
     assert f("function f(Campaign memory c, Lock memory l) {}", ["(address)", "(address)"],
-             ["struct X.Campaign", "struct X.Lock"]) is True
+             ["struct X.Campaign", "struct X.Lock"]) is None
+    assert f("function f(Campaign memory a, Campaign memory b) {}", ["(address)", "(address)"],
+             ["struct X.Campaign", "struct X.Campaign"]) is None
 
 
 @pytest.mark.skipif(os.getenv("FAULTSEEKER_LIVE_NETWORK") != "1",
