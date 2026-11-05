@@ -464,7 +464,6 @@ class ModelEndpointSession:
                     # Token accounting happens at receipt, before any validation can
                     # raise: blank completions and refusals still consumed tokens, and
                     # their usage belongs in the ledger and the rolling output window.
-                    self._count_tokens(completion)
                     try:
                         _c = getattr(completion, "choices", None)
                         _u = getattr(completion, "usage", None)
@@ -487,6 +486,10 @@ class ModelEndpointSession:
                         })
                     except Exception:
                         pass
+                    # (capture above is independent of token accounting: a
+                    # _count_tokens failure can no longer lose the attempt's
+                    # finish_reason/usage record - R30 finding)
+                    self._count_tokens(completion)
                     choices = getattr(completion, "choices", None)
                     content = getattr(choices[0].message, "content", None) if choices else None
                     finish = getattr(choices[0], "finish_reason", None) if choices else None
