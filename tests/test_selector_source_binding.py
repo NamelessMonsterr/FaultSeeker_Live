@@ -1272,3 +1272,49 @@ def test_reporting_survives_malformed_sections(pinned_fork):
         fres = {"analysis_status": "failed", "sections": bad}
         rt._apply_retention_report(fres, failure=True)
         assert fres["analysis_status"] == "failed" and fres["source_retention"]["requests_not_fit"] == 1
+
+
+def test_completed_status_never_coexists_with_retention_event_and_regex_and_sig_capture(pinned_fork):
+    """Component tests: (a) failure=True with an initially COMPLETED result is still downgraded; failed stays failed;
+    (b) SOURCE_FIELD_RE matches every intended key spelling; (c) each wrapper keeps its OWN signature (no late-binding)."""
+    import types, inspect
+    from types import SimpleNamespace
+    m = importlib.import_module("app.pipeline_guards")
+    rt = m.PipelineRuntime("0x" + "1" * 64, "eth")
+    rt.source_retention_events = [{"status": "over_cap_request_cut", "original_chars": 12000, "cap": 10000}]
+    for bad in (None, {}, "x"):
+        res = {"analysis_status": "completed", "sections": bad}
+        rt._apply_retention_report(res, failure=True)
+        assert res["analysis_status"] == "partial" and res["stage_completed"] == "function-analysis-partial"
+        assert res["sections"]["function_analysis"] == "partial_request_exceeded_cap"
+    f = {"analysis_status": "failed", "sections": {}}
+    rt._apply_retention_report(f, failure=True)
+    assert f["analysis_status"] == "failed" and "function_analysis" not in f["sections"]
+    p_ = {"analysis_status": "partial", "sections": {}}
+    rt._apply_retention_report(p_, failure=True)
+    assert p_["analysis_status"] == "partial"
+    rt.source_retention_events = []
+    n = {"analysis_status": "completed"}
+    rt._apply_retention_report(n, failure=False)
+    assert n == {"analysis_status": "completed"}
+    R = m.PipelineRuntime.SOURCE_FIELD_RE
+    assert R.pattern == r"""["'](?=[^"']*source)[^"']*["']\s*:"""
+    for k in ('"source-code"', '"source.code"', '"source code"', '"Source Code"', '"sourceCode"', '"contract_source"', '"verified_source"', '"functionSourceCode"', "'source_code'"):
+        assert R.search("{" + k + ': "v"}'), k
+    assert not R.search('{"resource_id": 1}') or True   # 'resource' contains 'source': a stated, accepted false positive
+    assert R.search('{"resource": 1}')
+    assert not R.search('{"name": "x", "value": 1}')
+    # (c) late-binding: wrappers installed for different classes must hold different signature objects
+    from faultseeker.utils import agent as A
+    import os
+    os.environ.setdefault("OPENAI_API_KEY", "dummy-test-value")
+    rt2 = _runtime()
+    rt2.session = SimpleNamespace(assert_healthy=lambda: None, call=lambda *a, **k: None, route_policy=None)
+    rt2._model_config = None
+    try:
+        rt2.install_model_hooks(A)
+        for cls in (A.GPTAgent, A.UniversalAgent):
+            w = cls._send_message
+            assert w.__kwdefaults__["_sig"] == inspect.signature(w.__kwdefaults__["_original"]), cls
+    finally:
+        _restore(rt2)

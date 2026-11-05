@@ -1273,7 +1273,7 @@ class PipelineRuntime:
         for agent_class in {agent_module.GPTAgent, agent_module.UniversalAgent}:
             original = agent_class._send_message
             _sig = inspect.signature(original)
-            def checked_send(agent, *args, _original=original, **kwargs):
+            def checked_send(agent, *args, _original=original, _sig=_sig, **kwargs):
                 self.assert_healthy()
                 # Inspect only (never rewrite). Resolve user_message through the real
                 # pinned signature, so positional/keyword binding is exact.
@@ -1697,10 +1697,12 @@ class PipelineRuntime:
             if _bad:
                 _lim = result.get("limitations")
                 result["limitations"] = [_lim] if isinstance(_lim, str) else (list(_lim) if isinstance(_lim, (list, tuple)) else [])
-                if not failure:   # a failure report already is failed/partial; never relax or relabel its status
+                _sec = result.get("sections")
+                if not failure or result.get("analysis_status") == "completed":
+                    # a failure report that is already failed/partial keeps its status (never relaxed or relabeled);
+                    # but a COMPLETED status can never coexist with a retention event, on any path
                     result["analysis_status"] = "partial"
                     result["stage_completed"] = "function-analysis-partial"
-                    _sec = result.get("sections")
                     result["sections"] = {**(_sec if isinstance(_sec, dict) else {}), "function_analysis": "partial_request_exceeded_cap", "scoring": "not_validated"}
                 _txt = (
                     f"{len(_bad)} model request(s) with source-bearing content exceeded the {self.PROMPT_CAP}-character request cap (or the bound source could not be verified in the outbound request). "
