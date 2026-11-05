@@ -444,7 +444,11 @@ class PipelineRuntime:
                                  "input_types": [PipelineRuntime._canonical_abi_type(i)
                                                  for i in entry.get("inputs", []) or []],
                                  "input_internal_types": [(i.get("internalType") or "")
-                                                          for i in entry.get("inputs", []) or []]}
+                                                          for i in entry.get("inputs", []) or []],
+                                 "input_components": [([PipelineRuntime._canonical_abi_type(c)
+                                                        for c in i.get("components", []) or []]
+                                                       if str(i.get("type", "")).startswith("tuple") else None)
+                                                      for i in entry.get("inputs", []) or []]}
             elif prior == "ambiguous" or prior.get("signature") != sig:
                 out[selector] = "ambiguous"
         return out
@@ -656,21 +660,94 @@ class PipelineRuntime:
         return tokens
 
     @staticmethod
-    def _header_matches_abi(source_code, input_types, internal_types):
+    def _declaration_index(source_text):
+        """Source-context resolution: declarations visible in ONE file.
+
+        {"decls": {simple_name: qualified_name}, "kinds": {qualified_name:
+        "struct"|"enum"|"contract"}, "fields": {qualified_name: [canonical
+        field types] | None}} for struct/enum declarations and contract/
+        library/interface scopes, one nesting level, comments stripped. A
+        name absent from decls may come from an import and stays unproven.
+        Enum-typed struct fields resolve to uint8 (the ABI canonical form);
+        other non-elementary fields make fields None (unsupported depth)."""
+        text = re.sub(r"/\*.*?\*/", " ", source_text or "", flags=re.S)
+        text = re.sub(r"//[^\n]*", "", text)
+        decls, kinds, fields = {}, {}, {}
+        scope = None
+        depth = 0
+        i = 0
+        n = len(text)
+        while i < n:
+            m = re.match(r"(contract|library|interface)\s+(\w+)[^{;]*\{", text[i:])
+            if m and scope is None and (i == 0 or text[i - 1] == "\n"):
+                scope = m.group(2)
+                i += m.end()
+                depth = 1
+                continue
+            m = re.match(r"(struct|enum)\s+(\w+)\s*\{", text[i:])
+            if m and (i == 0 or text[i - 1] in "\n "):
+                kind, name = m.group(1), m.group(2)
+                qualified = f"{scope}.{name}" if scope else name
+                decls.setdefault(name, qualified)
+                kinds[qualified] = kind
+                j = text.find("}", i + m.end())
+                if j == -1:
+                    return {"decls": decls, "kinds": kinds, "fields": fields}
+                body = text[i + m.end():j]
+                if kind == "struct":
+                    canon_fields = []
+                    for field in body.split(";"):
+                        field = field.strip()
+                        if not field:
+                            continue
+                        ftok = field.split()[0] if field.split() else ""
+                        canon = PipelineRuntime._normalize_source_type(ftok)
+                        if canon is None:
+                            # enum-typed field: canonical ABI form is uint8
+                            fbase = ftok.split("[")[0]
+                            fqual = decls.get(fbase, fbase)
+                            if kinds.get(fqual) == "enum":
+                                suffix = ftok[len(fbase):]
+                                canon = "uint8" + suffix
+                            else:
+                                canon_fields = None
+                                break
+                        canon_fields.append(canon)
+                    fields[qualified] = canon_fields
+                i = j + 1
+                continue
+            ch = text[i]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if scope is not None and depth == 0:
+                    scope = None
+            i += 1
+        return {"decls": decls, "kinds": kinds, "fields": fields}
+
+    @staticmethod
+    def _header_matches_abi(source_code, input_types, internal_types,
+                            components=None, decl_index=None):
         """Exact type-identity check: every header parameter must match the ABI
         input at its position. Elementary source tokens canonicalize and must
         equal the canonical ABI type; user-defined tokens (struct/enum/
         contract) must match the ABI internalType's declared type NAME and the
-        ABI canonical array shape. A user-defined ABI input vs an elementary
-        source token (enum vs uint) or vice versa is a mismatch. Same-arity
-        alone never satisfies this. Returns True/False, or None when the
-        header is unparseable or the ABI lacks the internalType needed to
-        identify a user-defined parameter (unsupported -> cannot prove)."""
+        ABI canonical array shape. Qualified source names need full dotted-path
+        equality. Unqualified names are provable ONLY through the source unit's
+        own declaration index (a name the file does not declare may come from
+        an import and stays unproven). For structs the DECLARED FIELD TYPES
+        must also equal the ABI tuple components. A user-defined ABI input vs
+        an elementary source token (enum vs uint) or vice versa is a mismatch.
+        Same-arity alone never satisfies this. Returns True/False, or None
+        when identity cannot be proven (unparseable header, missing
+        internalType, undeclared name, non-elementary struct fields)."""
         tokens = PipelineRuntime._source_header_type_tokens(source_code)
         if tokens is None or len(tokens) != len(input_types):
             return None if tokens is None else False
         internal_types = internal_types or [""] * len(input_types)
-        for tok, canon_abi, internal in zip(tokens, input_types, internal_types):
+        components = components or [None] * len(input_types)
+        for idx, (tok, canon_abi, internal) in enumerate(zip(tokens, input_types, internal_types)):
             canon_src = PipelineRuntime._normalize_source_type(tok)
             kind, _, it_name = (internal or "").partition(" ")
             while it_name.endswith("]"):
@@ -695,19 +772,35 @@ class PipelineRuntime:
                 # qualified source name: full dotted path must equal the ABI's
                 if base != it_name:
                     return False
+                resolved = base
             else:
-                # Unqualified source name: without resolving the source unit's
-                # declarations/imports, the token could name a different type
-                # than the ABI internalType's. Uniqueness among the signature's
-                # inputs does not prove namespace identity - unsupported.
-                return None
-            abi_suffix = canon_abi
-            while abi_suffix.endswith("]"):
-                i = abi_suffix.rindex("[")
-                abi_suffix = abi_suffix[:i]
-            abi_arr = canon_abi[len(abi_suffix):]
-            if suffix != abi_arr:
+                # unqualified: provable only via the file's own declarations
+                resolved = (decl_index or {}).get("decls", {}).get(base)
+                if resolved is None:
+                    return None
+                if resolved != it_name:
+                    return False
+            abi_arr = canon_abi
+            while abi_arr.endswith("]"):
+                abi_arr = abi_arr[:abi_arr.rindex("[")]
+            if suffix != canon_abi[len(abi_arr):]:
                 return False
+            if kind == "struct":
+                # name identity proven; when source context is available,
+                # verify the DEFINITION against the ABI tuple components (the
+                # selector commits to the exact layout). Without any source
+                # context the qualified-path/internalType identity stands.
+                comp = components[idx]
+                if comp is not None and decl_index is not None:
+                    fields_map = decl_index.get("fields") or {}
+                    if resolved in fields_map:
+                        decl_fields = fields_map[resolved]
+                        if decl_fields is None:
+                            return None      # non-elementary field: unsupported depth
+                        if decl_fields != comp:
+                            return False     # same name, different layout
+                    elif resolved in (decl_index.get("decls") or {}).values():
+                        return None          # declared here but layout unparseable
         return True
 
     def _install_selector_source_binding(self):
@@ -797,6 +890,29 @@ class PipelineRuntime:
             return info
         self.replace(ContractDownloader, "run", run_with_binding)
 
+        original_parse_contract = ContractDownloader.parse_contract
+
+        def parse_contract_with_decl_index(output_dir):
+            # Source-context resolution support: attach each source file's
+            # declaration index (struct/enum names with their qualified paths
+            # and canonical field layouts) so unqualified header tokens can be
+            # resolved against the file's OWN declarations instead of guessed.
+            parsed = original_parse_contract(output_dir)
+            file_index = {}
+            for entries in parsed.values():
+                for e in entries:
+                    rel = e.get("path") or ""
+                    if rel not in file_index:
+                        actual = os.path.join(output_dir, rel.lstrip("./"))
+                        try:
+                            with open(actual, encoding="utf-8") as fh:
+                                file_index[rel] = PipelineRuntime._declaration_index(fh.read())
+                        except OSError:
+                            file_index[rel] = {"decls": {}, "fields": {}}
+                    e["decl_index"] = file_index[rel]
+            return parsed
+        self.replace(ContractDownloader, "parse_contract", staticmethod(parse_contract_with_decl_index))
+
         original_retrieve = FunctionAnalyzer._retrieve_source_code
         selector_re = re.compile(r"^0x[0-9a-fA-F]{8}$")
 
@@ -821,6 +937,16 @@ class PipelineRuntime:
             entry = mapping.get(function_name.lower())
             if isinstance(entry, dict):
                 candidates = original_retrieve(analyzer, code_address, entry["name"])
+                # The pinned retriever rebuilds each entry (path+source_code
+                # only), dropping the declaration index attached at parse time;
+                # reattach it from the analyzer's contract_info by exact
+                # (path, content) identity.
+                raw_entries = (analyzer.contract_info.get(code_address) or {}).get(entry["name"]) or []
+                by_identity = {(r.get("path"), r.get("content")): r for r in raw_entries}
+                for c in candidates:
+                    raw = by_identity.get((c.get("path"), c.get("source_code")))
+                    if raw and raw.get("decl_index"):
+                        c["decl_index"] = raw["decl_index"]
                 # Exact unit binding: the ABI selector proves the signature; the
                 # source parser keys by name only, so multiple candidate bodies
                 # (overloads, same-name functions across inherited contracts)
@@ -835,7 +961,9 @@ class PipelineRuntime:
                     # cannot be distinguished and must fail unresolved.
                     verdicts = [runtime._header_matches_abi(c.get("source_code"),
                                                             entry.get("input_types"),
-                                                            entry.get("input_internal_types"))
+                                                            entry.get("input_internal_types"),
+                                                            entry.get("input_components"),
+                                                            c.get("decl_index"))
                                 for c in candidates]
                     # Exactly one proven match AND every other candidate
                     # provably excluded: an undecidable (None) candidate might
@@ -858,7 +986,8 @@ class PipelineRuntime:
                 elif candidates:
                     verdict = runtime._header_matches_abi(
                         candidates[0].get("source_code"), entry.get("input_types"),
-                        entry.get("input_internal_types"))
+                        entry.get("input_internal_types"), entry.get("input_components"),
+                        candidates[0].get("decl_index"))
                     if verdict is not True:
                         # False: a parameter's type identity provably disagrees
                         #   (wrong canonical type, wrong user-defined name, wrong

@@ -86,7 +86,7 @@ def test_canonical_signature_vectors_from_verified_hedgey_abi():
         "(address,uint256,uint256,uint256,uint256),(address,uint256,uint256,uint256,uint256,uint256))")
     assert mapping["0xf412e4c7"] == {"name": "cancelCampaign", "signature": "cancelCampaign(bytes16)",
                                      "input_count": 1, "input_types": ["bytes16"],
-                                     "input_internal_types": ["bytes16"]}
+                                     "input_internal_types": ["bytes16"], "input_components": [None]}
     assert mapping["0xefd86b62"]["input_types"][0] == "bytes16"
     assert mapping["0xefd86b62"]["input_types"][1].startswith("(address,address,uint256,uint256,uint8,bytes32)")
     assert mapping["0x47d1e2c1"]["name"] == "claimTokens"
@@ -102,10 +102,11 @@ def test_overloads_resolve_by_selector_not_name():
     ]
     mapping = m.PipelineRuntime._build_selector_map(abi)
     assert mapping["0x1a695230"] == {"name": "transfer", "signature": "transfer(address)", "input_count": 1,
-                                     "input_types": ["address"], "input_internal_types": [""]}
+                                     "input_types": ["address"], "input_internal_types": [""],
+                                     "input_components": [None]}
     assert mapping["0xa9059cbb"] == {"name": "transfer", "signature": "transfer(address,uint256)",
                                      "input_count": 2, "input_types": ["address", "uint256"],
-                                     "input_internal_types": ["", ""]}
+                                     "input_internal_types": ["", ""], "input_components": [None, None]}
     assert "ambiguous" not in mapping.values()
 
 
@@ -146,20 +147,20 @@ def test_selector_collision_fails_unresolved(pinned_fork):
 
 def test_retrieval_resolves_selector_through_real_analyzer_method(tmp_path, pinned_fork):
     m = importlib.import_module("app.pipeline_guards")
+    rt = _runtime()  # hooks installed: parse_contract now attaches decl indices
     parsed = _parse_hedgey_source(tmp_path)
-    rt = _runtime()
     try:
         rt.selector_bindings[HEDGEY] = {"selectors": m.PipelineRuntime._build_selector_map(_load_abi())}
         rt.sequence = _hedgey_trace()
         stub, FA = _analyzer_stub({HEDGEY: parsed})
-        # createLockedCampaign's REAL header names its structs unqualified:
-        # type identity unproven under the conservative policy -> unresolved,
-        # never a guessed bind.
+        # createLockedCampaign's unqualified struct names are PROVEN by the
+        # file's own declarations (ClaimCampaigns.Campaign etc., declared in
+        # ClaimCampaigns.sol) plus field-layout equality with the ABI tuples.
+        assert parsed["createLockedCampaign"][0]["decl_index"]["decls"]["Campaign"] == "ClaimCampaigns.Campaign"
         out = FA._retrieve_source_code(stub, HEDGEY, "0xefd86b62")
-        assert out == []
+        assert out and "createLockedCampaign" in out[0]["source_code"]
         rec = rt.selector_resolution_log[-1]
-        assert rec["status"] == "unresolved"
-        assert rec["reason"] == "type_identity_unsupported"
+        assert rec["status"] == "resolved"
         assert rec["selector"] == "0xefd86b62"  # canonical identity preserved
         assert rec["resolved_name"] == "createLockedCampaign"
         # cancelCampaign (0xf412e4c7, elementary bytes16) resolves through the
@@ -288,17 +289,17 @@ def test_delegatecall_binds_code_address_and_execution_context(tmp_path):
     (storage) context is the parent frame's address. Both are recorded."""
     m = importlib.import_module("app.pipeline_guards")
     proxy = "0xaaaabbbbccccddddeeeeffff0000111122223333"
-    parsed = _parse_hedgey_source(tmp_path)
     rt = _runtime()
+    parsed = _parse_hedgey_source(tmp_path)
     try:
         rt.selector_bindings[HEDGEY] = {"selectors": m.PipelineRuntime._build_selector_map(_load_abi())}
         rt.sequence = {"trace": {
-            "address": proxy, "function": "0xf412e4c7", "call_type": "call",
-            "children": [{"address": HEDGEY, "function": "0xf412e4c7",
+            "address": proxy, "function": "0xefd86b62", "call_type": "call",
+            "children": [{"address": HEDGEY, "function": "0xefd86b62",
                           "call_type": "delegatecall", "children": []}]}}
         stub, FA = _analyzer_stub({HEDGEY: parsed})
-        out = FA._retrieve_source_code(stub, HEDGEY, "0xf412e4c7")
-        assert out and "cancelCampaign" in out[0]["source_code"]
+        out = FA._retrieve_source_code(stub, HEDGEY, "0xefd86b62")
+        assert out and "createLockedCampaign" in out[0]["source_code"]
         rec = rt.selector_resolution_log[-1]
         assert rec["status"] == "resolved"
         assert rec["code_address"] == HEDGEY          # target whose code executes
@@ -482,15 +483,40 @@ def test_overloaded_source_units_disambiguated_or_fail(pinned_fork):
                                            "(address,uint256,uint256,uint256,uint256,uint256)"],
                            "input_internal_types": ["bytes16", "struct ClaimCampaigns.Campaign",
                                                     "struct ClaimCampaigns.ClaimLockup",
-                                                    "struct ClaimCampaigns.Donation"]}}}
+                                                    "struct ClaimCampaigns.Donation"],
+                           "input_components": [None,
+                                                ["address", "address", "uint256", "uint256", "uint8", "bytes32"],
+                                                ["address", "uint256", "uint256", "uint256", "uint256"],
+                                                ["address", "uint256", "uint256", "uint256", "uint256"]]}}}
+        decl_index = {"decls": {"Campaign": "ClaimCampaigns.Campaign",
+                                "ClaimLockup": "ClaimCampaigns.ClaimLockup",
+                                "Donation": "ClaimCampaigns.Donation"},
+                      "fields": {"ClaimCampaigns.Campaign": ["address", "address", "uint256", "uint256", "uint8", "bytes32"],
+                                 "ClaimCampaigns.ClaimLockup": ["address", "uint256", "uint256", "uint256", "uint256"],
+                                 "ClaimCampaigns.Donation": ["address", "uint256", "uint256", "uint256", "uint256"]}}
         stub4, FA4 = _analyzer_stub({addr: {"createLockedCampaign": [
-            {"path": "./ClaimCampaigns.sol", "start_line": 1, "end_line": 2, "content": hedgey_body}]}})
+            {"path": "./ClaimCampaigns.sol", "start_line": 1, "end_line": 2, "content": hedgey_body,
+             "decl_index": decl_index}]}})
         out4 = FA4._retrieve_source_code(stub4, addr, "0xefd86b62")
-        # The Hedgey header names its structs UNQUALIFIED: without source-context
-        # resolution their identity is unproven -> conservative unresolved.
-        assert out4 == []
-        assert rt.selector_resolution_log[-1]["status"] == "unresolved"
+        # Unqualified names PROVEN by the declaration index + field layouts.
+        assert len(out4) == 1
+        assert rt.selector_resolution_log[-1]["status"] == "resolved"
+        # Without the declaration index the same header stays unproven.
+        stub4u, FA4u = _analyzer_stub({addr: {"createLockedCampaign": [
+            {"path": "./ClaimCampaigns.sol", "start_line": 1, "end_line": 2, "content": hedgey_body}]}})
+        out4u = FA4u._retrieve_source_code(stub4u, addr, "0xefd86b62")
+        assert out4u == []
         assert rt.selector_resolution_log[-1]["reason"] == "type_identity_unsupported"
+        # A same-named struct with a DIFFERENT layout is a mismatch, not a bind.
+        bad_fields = {"decls": decl_index["decls"],
+                      "fields": {**decl_index["fields"],
+                                 "ClaimCampaigns.Campaign": ["address", "address", "uint256", "uint256", "uint8", "uint128"]}}
+        stub4b, FA4b = _analyzer_stub({addr: {"createLockedCampaign": [
+            {"path": "./ClaimCampaigns.sol", "start_line": 1, "end_line": 2, "content": hedgey_body,
+             "decl_index": bad_fields}]}})
+        out4b = FA4b._retrieve_source_code(stub4b, addr, "0xefd86b62")
+        assert out4b == []
+        assert rt.selector_resolution_log[-1]["reason"] == "signature_mismatch"
         # The same shape with QUALIFIED type names binds by exact identity.
         qualified_body = ("function createLockedCampaign(bytes16 id, "
                           "ClaimCampaigns.Campaign memory campaign, "
