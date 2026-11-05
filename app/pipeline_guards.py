@@ -718,6 +718,12 @@ class PipelineRuntime:
             "Model-dependent analysis did not complete. Deterministic observations are not a verified vulnerability report."]
         if self.session:
             result["model_endpoint"] = self.session.summary()
+        # Preserve the instrumented selection boundary on failure too: a run
+        # that dies AFTER the narrow-down still yields the exact payload+reply
+        # needed for offline stage evaluation.
+        if self.narrowdown_capture or self.ranked_targets:
+            result["_debug"] = {"ranked_targets": list(self.ranked_targets),
+                                "narrowdown_capture": deepcopy(self.narrowdown_capture)}
         if isinstance(error, TraceIdentityError):
             result["failure"] = {"kind": "trace_identity", "message": str(error)}
         result["trace_provenance"] = deepcopy((self.sequence or {}).get("trace_provenance", {}))
