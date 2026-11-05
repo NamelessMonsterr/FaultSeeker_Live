@@ -75,13 +75,19 @@ def sha16(value):
     """Digest of the canonical JSON of the WHOLE value, bounded: the serialized
     form is measured first and hashing is skipped (explicit marker) above
     MAX_HASH_CHARS. Identity only, not a wire hash."""
+    h = hashlib.sha256()
+    n = 0
     try:
-        raw = json.dumps(value, sort_keys=True, default=str)
+        # streamed: abort as soon as the serialized-size budget is exceeded,
+        # never materializing the full serialization.
+        for chunk in json.JSONEncoder(sort_keys=True, default=str).iterencode(value):
+            n += len(chunk)
+            if n > MAX_HASH_CHARS:
+                return "skipped_oversize"
+            h.update(chunk.encode())
     except Exception:
         return "unserializable"
-    if len(raw) > MAX_HASH_CHARS:
-        return "skipped_oversize"
-    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+    return h.hexdigest()[:16]
 
 
 def bounded_sha16(value, total_chars):
