@@ -1,4 +1,5 @@
 """Run-scoped model transport policy. No provider bodies or credentials escape it."""
+import os
 import re
 import threading
 import time
@@ -200,6 +201,28 @@ def _error_detail(exc):
     return detail
 
 
+def _preflight_cold_start_retries_enabled():
+    """Explicit operator opt-in for cold-start preflight retries.
+
+    Default OFF (2026-11-05 user directive: no unauthorized retries or
+    duplicate calls). When set to "1", transient preflight failures
+    (timeout/connection/5xx - the Render free-tier cold-start shapes) retry
+    within the preflight deadline. Rate limiting never qualifies: a 429 is
+    the provider saying stop, not a service waking up.
+    """
+    return os.getenv("FAULTSEEKER_PREFLIGHT_COLD_START_RETRIES", "").strip() == "1"
+
+
+def _mercury_blank_reask_enabled():
+    """Explicit gate for the user-granted Mercury blank-answer re-ask.
+
+    The one-re-ask grant applies only while Mercury testing is authorized;
+    it is not in effect for other providers or when the grant is not active
+    (default OFF). Set to "1" only under an active Mercury-testing grant.
+    """
+    return os.getenv("FAULTSEEKER_MERCURY_BLANK_REASK", "").strip() == "1"
+
+
 def classify(error, phase):
     # SDK exceptions wrap HTTPX errors; do not include their potentially secret body.
     status = getattr(error, "status_code", None)
@@ -228,8 +251,9 @@ class ModelEndpointSession:
     All agent instances and function-analysis threads share this object. Successful
     calls never reset the retry allowance. SDK automatic retries are always disabled.
     Analysis/RPC/CPU time outside model transport is not charged to this budget.
-    Preflight retries are bounded by the preflight deadline, not the shared retry
-    allowance, so a cold-starting endpoint gets its whole window to wake up.
+    Preflight does not retry by default; the explicit
+    FAULTSEEKER_PREFLIGHT_COLD_START_RETRIES=1 policy restores deadline-bounded
+    transient retries for a waking endpoint (never rate limiting).
     """
     def __init__(self, emit=lambda event: None, retry_limit=3, time_budget=600,
                  call_timeout=60, clock=time.monotonic, sleep=time.sleep,
@@ -533,7 +557,10 @@ class ModelEndpointSession:
                     # (bounded by the existing preflight deadline). The blank answer
                     # still consumed tokens and the re-ask is another real, ledgered
                     # call; every other failure kind and model keeps zero retries.
+                    # The grant applies only while Mercury testing is authorized:
+                    # FAULTSEEKER_MERCURY_BLANK_REASK=1 enables it, default OFF.
                     blank_retry = (not retryable and not blank_retried
+                                   and _mercury_blank_reask_enabled()
                                    and str(model).startswith("mercury-")
                                    and getattr(error, "kind", None) == "blank_completion")
                     if blank_retry:
@@ -566,34 +593,39 @@ class ModelEndpointSession:
                 if deadline is not None and self.clock() >= deadline:
                     self._fail(self._out_of_time(phase, deadline, last_error))
                 next_key = None
-                if pool and len(pool["keys"]) > 1 and error.kind in ("authentication", "rate_limited"):
+                if pool and len(pool["keys"]) > 1 and error.kind == "authentication":
                     pool["rejected"].add(pool["active"])
                     next_key = next((key for key in pool["keys"] if key not in pool["rejected"]), None)
                     if next_key is None:
                         self._fail(error)  # All configured credentials rejected.
                     retryable = True
-                if (phase == "preflight" and error.kind == "rate_limited"
+                if (phase == "preflight" and not blank_retry
                         and next_key is None):
-                    # A 429 is the provider/account saying stop - not a cold
-                    # start, so the cold-start rationale for deadline-bounded
-                    # preflight retries does not apply. Hammering a 429ing
-                    # credential for the whole preflight window is never right
-                    # (observed: 30 preflight attempts against a 429ing Codex
-                    # proxy route, run e5845d595bc9, 2026-11-05). A pool with
-                    # an untried key still rotates once above (independent
-                    # limits); with no rotation left, fail on the first 429
-                    # and keep the provider's Retry-After hint.
-                    if retry_hint:
-                        error.detail = {**(error.detail or {}),
-                                        "retry_after_header": retry_hint}
-                    self._fail(error)
+                    # No automatic preflight retries by default (2026-11-05 user
+                    # directive: no unauthorized retries/duplicate calls).
+                    # Hammering a 429ing credential for the whole preflight
+                    # window is never right (observed: 30 preflight attempts
+                    # against a 429ing Codex proxy route, run e5845d595bc9),
+                    # and transient cold-start retries happen only under the
+                    # explicit FAULTSEEKER_PREFLIGHT_COLD_START_RETRIES=1
+                    # policy. A 429 fails immediately regardless: it is the
+                    # provider saying stop, and it never rotates credentials
+                    # above - rotating keys against one account's rate limit
+                    # is a limit bypass, not failover. (An available
+                    # authentication-failure rotation, next_key set above,
+                    # skips this gate: a fresh credential is not a retry.)
+                    # Keep the provider's Retry-After hint on the record.
+                    if (error.kind == "rate_limited"
+                            or not _preflight_cold_start_retries_enabled()):
+                        if retry_hint and error.kind == "rate_limited":
+                            error.detail = {**(error.detail or {}),
+                                            "retry_after_header": retry_hint}
+                        self._fail(error)
                 if not retryable:
                     self._fail(error)
                 if phase != "preflight" and not blank_retry:
-                    # Only analysis retries consume the shared allowance. Preflight
-                    # retries are bounded by the preflight deadline instead, so a
-                    # cold-starting endpoint gets the whole window to wake up -
-                    # except rate limiting, which fails fast above.
+                    # Only analysis retries consume the shared allowance.
+                    # Preflight retries are off by default and gated above.
                     # The granted blank-answer re-ask has its own per-call budget
                     # and never touches the shared allowance.
                     if self.retries_left <= 0:

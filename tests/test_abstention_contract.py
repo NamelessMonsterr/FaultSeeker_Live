@@ -260,7 +260,8 @@ def _session_with(responses):
     return session, factory, calls
 
 
-def test_dispatch_carries_contract_and_blank_reask_preserves_it():
+def test_dispatch_carries_contract_and_blank_reask_preserves_it(monkeypatch):
+    monkeypatch.setenv("FAULTSEEKER_MERCURY_BLANK_REASK", "1")
     session, factory, calls = _session_with(
         [_httpx.Response(200, json=_BLANK), _httpx.Response(200, json=_OK)])
     out = session.call(factory, dict(VULN_CALL), "mercury-3")

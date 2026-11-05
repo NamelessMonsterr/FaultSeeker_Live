@@ -116,8 +116,9 @@ def test_real_cache_identity_guard_rejects_wrong_chain(pinned, monkeypatch):
 @pytest.mark.parametrize("statuses,expected", [
     ([401, 200, 200, 200], ["first", "second", "second", "second"]),
     ([403, 200, 200, 200], ["first", "second", "second", "second"]),
-    ([429, 200, 200, 200], ["first", "second", "second", "second"]),
-    ([200, 429, 200, 200], ["first", "first", "second", "second"]),
+    # A mid-run 429 never rotates credentials (limit bypass); it consumes the
+    # operator's shared retry allowance and re-tries the SAME credential.
+    ([200, 429, 200, 200], ["first", "first", "first", "first"]),
 ])
 def test_real_agents_keep_preflight_rotation_and_rotate_mid_run(pinned, monkeypatch, statuses, expected):
     agents = importlib.import_module("faultseeker.utils.agent")

@@ -106,7 +106,7 @@ def rotation_runtime(monkeypatch, statuses, retry_limit=3, budget=60, seconds=1)
     return runtime, calls, events, query
 
 
-@pytest.mark.parametrize("first_status", [401, 403, 429])
+@pytest.mark.parametrize("first_status", [401, 403])
 def test_preflight_rotates_key_specific_failures_and_keeps_valid_key(monkeypatch, first_status):
     runtime, calls, events, query = rotation_runtime(monkeypatch, [first_status, 200, 200])
     runtime.preflight(["gpt-6.1-sol-low"])
@@ -133,8 +133,21 @@ def test_all_keys_invalid_fails_once_without_another_ladder(monkeypatch):
     assert len(calls) == 2
 
 
+def test_preflight_429_never_rotates_credentials_and_fails_fast(monkeypatch):
+    # Rotating keys against one account's rate limit is a limit bypass, not
+    # failover: preflight 429 fails on the first attempt, second key untried.
+    from app.model_endpoint import ModelEndpointFailure
+    runtime, calls, events, query = rotation_runtime(monkeypatch, [429, 200, 200])
+    with pytest.raises(ModelEndpointFailure) as failure:
+        runtime.preflight(["gpt-6.1-sol-low"])
+    assert calls == ["Bearer test-first"]
+    assert failure.value.kind == "rate_limited"
+    assert "test-first" not in json.dumps(events)
+
+
 def test_endpoint_outage_does_not_rotate_keys_or_reset_budget(monkeypatch):
     from app.model_endpoint import ModelEndpointFailure
+    monkeypatch.setenv("FAULTSEEKER_PREFLIGHT_COLD_START_RETRIES", "1")
     runtime, calls, events, query = rotation_runtime(monkeypatch, [502]*8, retry_limit=2)
     with pytest.raises(ModelEndpointFailure) as failure:
         runtime.preflight(["gpt-6.1-sol-low"])

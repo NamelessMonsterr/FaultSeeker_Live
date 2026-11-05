@@ -56,8 +56,10 @@ def test_classifies_errors_without_leaking_bodies(status, body, kind):
     assert failure.value.kind == kind
     assert "SECRET" not in str(failure.value)
     assert "html" not in str(failure.value).lower()
-    # 401 fails fast; transient 5xx retries until the preflight deadline.
-    assert len(calls) == (1 if status == 401 else 7)
+    # No automatic preflight retries by default: every failure kind fails
+    # on the first attempt (cold-start retries need the explicit env policy,
+    # covered below).
+    assert len(calls) == 1
     assert "SECRET" not in json.dumps(events)
 
 
@@ -78,9 +80,10 @@ def test_preflight_rate_limited_fails_fast_with_retry_after():
                if e.get("state") == "model_endpoint_failed")
 
 
-def test_preflight_cold_start_transients_still_retry_to_deadline():
-    # The fix above must not remove cold-start tolerance: connection errors and
-    # 5xx still retry within the preflight window (existing behavior).
+def test_preflight_cold_start_transients_retry_only_under_explicit_policy(monkeypatch):
+    # The no-retry default must not remove cold-start tolerance when the
+    # operator explicitly opts in: 5xx then retries within the window.
+    monkeypatch.setenv("FAULTSEEKER_PREFLIGHT_COLD_START_RETRIES", "1")
     m, session, factory, calls, _, clock = setup([httpx.Response(502, text="bad")] * 8)
     with pytest.raises(m.ModelEndpointFailure) as failure:
         session.preflight(factory, MODEL, timeout=20)
@@ -101,7 +104,8 @@ def test_analysis_rate_limited_respects_zero_retry_limit():
     assert len(calls) == 2  # preflight + exactly one analysis attempt
 
 
-def test_timeout_is_bounded_and_classified():
+def test_timeout_is_bounded_and_classified(monkeypatch):
+    monkeypatch.setenv("FAULTSEEKER_PREFLIGHT_COLD_START_RETRIES", "1")
     m, session, factory, calls, _, clock = setup([httpx.ReadTimeout("SECRET")] * 8)
     with pytest.raises(m.ModelEndpointFailure) as failure:
         session.preflight(factory, MODEL, timeout=20)
@@ -110,9 +114,28 @@ def test_timeout_is_bounded_and_classified():
     assert "SECRET" not in str(failure.value)
 
 
-def test_recovery_keeps_model_and_does_not_reset_shared_retry_allowance():
+@pytest.mark.parametrize("exc", [httpx.ReadTimeout("slow"), httpx.ConnectError("down")])
+def test_preflight_transients_fail_fast_by_default(exc):
+    # Default policy: no automatic preflight retries - one attempt, immediate
+    # honest failure, even for transient cold-start shapes.
+    m, session, factory, calls, _, _ = setup([exc] * 4)
+    with pytest.raises(m.ModelEndpointFailure):
+        session.preflight(factory, MODEL, timeout=20)
+    assert len(calls) == 1
+
+
+def test_preflight_5xx_fails_fast_by_default():
+    m, session, factory, calls, _, _ = setup([httpx.Response(502, text="bad")] * 4)
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.preflight(factory, MODEL, timeout=20)
+    assert failure.value.kind == "upstream_http"
+    assert len(calls) == 1
+
+
+def test_recovery_keeps_model_and_does_not_reset_shared_retry_allowance(monkeypatch):
     # Preflight retries are bounded by their deadline, not the shared allowance,
     # so the analysis call below still has all of it (3 attempts, 3 failures).
+    monkeypatch.setenv("FAULTSEEKER_PREFLIGHT_COLD_START_RETRIES", "1")
     m, session, factory, calls, events, _ = setup([
         httpx.Response(502, text="<html>bad gateway</html>"), httpx.Response(200, json=OK),
         httpx.Response(200, json=OK), httpx.Response(502, text="bad"), httpx.Response(502, text="bad"),
@@ -263,7 +286,8 @@ def test_valid_completion_at_shared_time_boundary(elapsed, accepted):
 
 
 
-def test_preflight_cold_start_retries_past_retry_limit():
+def test_preflight_cold_start_retries_past_retry_limit(monkeypatch):
+    monkeypatch.setenv("FAULTSEEKER_PREFLIGHT_COLD_START_RETRIES", "1")
     # A waking endpoint that 502s more often than the analysis retry allowance
     # must still get its full preflight window to become ready.
     responses = [httpx.Response(502, text="bad gateway")] * 5 + [httpx.Response(200, json=OK)]
@@ -277,7 +301,8 @@ def test_preflight_cold_start_retries_past_retry_limit():
     assert sum(1 for e in waiting if e.get("retry_in_seconds") == 0) == 6  # every attempt announces itself to the UI
 
 
-def test_preflight_persistent_failure_reports_last_error_at_deadline():
+def test_preflight_persistent_failure_reports_last_error_at_deadline(monkeypatch):
+    monkeypatch.setenv("FAULTSEEKER_PREFLIGHT_COLD_START_RETRIES", "1")
     m, session, factory, calls, events, clock = setup([httpx.Response(502, text="bad gateway")] * 20)
     with pytest.raises(m.ModelEndpointFailure) as failure:
         session.preflight(factory, MODEL, timeout=20)
@@ -287,7 +312,8 @@ def test_preflight_persistent_failure_reports_last_error_at_deadline():
     assert len(calls) == 7 and clock.now < 20
 
 
-def test_preflight_does_not_borrow_analysis_retries():
+def test_preflight_does_not_borrow_analysis_retries(monkeypatch):
+    monkeypatch.setenv("FAULTSEEKER_PREFLIGHT_COLD_START_RETRIES", "1")
     responses = ([httpx.Response(502, text="bad gateway")] * 4 + [httpx.Response(200, json=OK)]
                  + [httpx.Response(502, text="bad")] * 2 + [httpx.Response(200, json=OK)]
                  + [httpx.Response(502, text="bad")])
@@ -399,7 +425,8 @@ OK_MERCURY = {"id": "mock", "object": "chat.completion", "created": 0, "model": 
               "choices": [{"index": 0, "message": {"role": "assistant", "content": "analysis"}, "finish_reason": "stop"}]}
 
 
-def test_mercury_blank_answer_gets_exactly_one_granted_retry():
+def test_mercury_blank_answer_gets_exactly_one_granted_retry(monkeypatch):
+    monkeypatch.setenv("FAULTSEEKER_MERCURY_BLANK_REASK", "1")
     # User-granted narrow exception: one re-ask per blank Mercury completion.
     m, session, factory, calls, events, _ = setup([httpx.Response(200, json=BLANK),
                                                    httpx.Response(200, json=OK_MERCURY)], retry_limit=0)
@@ -411,7 +438,8 @@ def test_mercury_blank_answer_gets_exactly_one_granted_retry():
     assert any(e.get("blank_answer_retry") for e in events)
 
 
-def test_mercury_second_blank_answer_fails_without_another_retry():
+def test_mercury_second_blank_answer_fails_without_another_retry(monkeypatch):
+    monkeypatch.setenv("FAULTSEEKER_MERCURY_BLANK_REASK", "1")
     m, session, factory, calls, _, _ = setup([httpx.Response(200, json=BLANK)] * 3, retry_limit=0)
     with pytest.raises(m.ModelEndpointFailure) as failure:
         session.call(factory, {"model": MERCURY, "messages": []}, MERCURY)
@@ -420,13 +448,31 @@ def test_mercury_second_blank_answer_fails_without_another_retry():
     assert session.blank_answer_retries == 1
 
 
-def test_blank_answer_retry_is_per_call_not_per_run():
+def test_blank_answer_retry_is_per_call_not_per_run(monkeypatch):
+    monkeypatch.setenv("FAULTSEEKER_MERCURY_BLANK_REASK", "1")
     m, session, factory, calls, _, _ = setup([httpx.Response(200, json=BLANK), httpx.Response(200, json=OK_MERCURY),
                                               httpx.Response(200, json=BLANK), httpx.Response(200, json=OK_MERCURY)],
                                              retry_limit=0)
     session.call(factory, {"model": MERCURY, "messages": []}, MERCURY)
     session.call(factory, {"model": MERCURY, "messages": []}, MERCURY)
     assert session.blank_answer_retries == 2
+
+
+def test_mercury_blank_answer_gets_no_retry_when_grant_inactive():
+    # The one-re-ask grant applies only while Mercury testing is authorized
+    # (FAULTSEEKER_MERCURY_BLANK_REASK=1). Default: no re-ask, no duplicate
+    # call - a blank Mercury completion fails immediately.
+    blank = {"id": "x", "object": "chat.completion",
+             "choices": [{"index": 0, "message": {"role": "assistant", "content": ""},
+                          "finish_reason": "stop"}]}
+    m, session, factory, calls, _, _ = setup(
+        [httpx.Response(200, json=blank), httpx.Response(200, json=OK)])
+    import pytest as _pt
+    with _pt.raises(m.ModelEndpointFailure) as failure:
+        session.call(factory, {"model": "mercury-3", "messages": []}, "mercury-3")
+    assert failure.value.kind == "blank_completion"
+    assert len(calls) == 1
+    assert session.blank_answer_retries == 0
 
 
 def test_non_mercury_blank_answer_gets_no_retry():
@@ -447,7 +493,8 @@ def test_mercury_other_failures_still_get_zero_retries():
     assert session.blank_answer_retries == 0
 
 
-def test_mercury_blank_preflight_gets_one_granted_retry_within_deadline():
+def test_mercury_blank_preflight_gets_one_granted_retry_within_deadline(monkeypatch):
+    monkeypatch.setenv("FAULTSEEKER_MERCURY_BLANK_REASK", "1")
     # The grant covers any blank Mercury answer, preflight included; the
     # existing preflight deadline still bounds it.
     m, session, factory, calls, events, _ = setup([httpx.Response(200, json=BLANK),
@@ -458,7 +505,8 @@ def test_mercury_blank_preflight_gets_one_granted_retry_within_deadline():
     assert session.blank_answer_retries == 1
 
 
-def test_mercury_blank_preflight_second_blank_fails():
+def test_mercury_blank_preflight_second_blank_fails(monkeypatch):
+    monkeypatch.setenv("FAULTSEEKER_MERCURY_BLANK_REASK", "1")
     m, session, factory, calls, _, _ = setup([httpx.Response(200, json=BLANK)] * 3, retry_limit=0)
     with pytest.raises(m.ModelEndpointFailure) as failure:
         session.preflight(factory, MERCURY, timeout=20)
@@ -524,7 +572,8 @@ def test_mercury_refusal_is_terminal_and_never_granted():
     assert session.tokens["completion"] == 7
 
 
-def test_blank_completion_and_reask_usage_are_both_ledgered():
+def test_blank_completion_and_reask_usage_are_both_ledgered(monkeypatch):
+    monkeypatch.setenv("FAULTSEEKER_MERCURY_BLANK_REASK", "1")
     m, session, factory, calls, _, _ = setup([httpx.Response(200, json=BLANK_U),
                                               httpx.Response(200, json=OK_U)], retry_limit=0)
     out = session.call(factory, {"model": MERCURY, "messages": []}, MERCURY)
@@ -536,7 +585,8 @@ def test_blank_completion_and_reask_usage_are_both_ledgered():
     assert [tokens for _, tokens in session.output_window] == [7, 5]
 
 
-def test_second_blank_completion_usage_is_ledgered_too():
+def test_second_blank_completion_usage_is_ledgered_too(monkeypatch):
+    monkeypatch.setenv("FAULTSEEKER_MERCURY_BLANK_REASK", "1")
     m, session, factory, calls, _, _ = setup([httpx.Response(200, json=BLANK_U)] * 2, retry_limit=0)
     with pytest.raises(m.ModelEndpointFailure) as failure:
         session.call(factory, {"model": MERCURY, "messages": []}, MERCURY)
