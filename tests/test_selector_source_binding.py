@@ -1319,7 +1319,6 @@ def test_completed_status_never_coexists_with_retention_event_and_regex_and_sig_
     assert R.pattern == r"""["'](?=[^"']*source)[^"']*["']\s*:"""
     for k in ('"source-code"', '"source.code"', '"source code"', '"Source Code"', '"sourceCode"', '"contract_source"', '"verified_source"', '"functionSourceCode"', "'source_code'"):
         assert R.search("{" + k + ': "v"}'), k
-    assert not R.search('{"resource_id": 1}') or True   # 'resource' contains 'source': a stated, accepted false positive
     assert R.search('{"resource": 1}')
     assert not R.search('{"name": "x", "value": 1}')
     # (c) late-binding: wrappers installed for different classes must hold different signature objects
