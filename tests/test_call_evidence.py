@@ -259,3 +259,13 @@ def test_secret_straddling_the_cut_leaves_no_partial_token():
 def test_roles_are_capped_before_processing():
     msgs = [{"role": "user", "content": "x"}] * 500
     assert len(ce.request_features(msgs)["roles"]) == 60 and ce.request_features(msgs)["message_count"] == 500
+
+
+def test_message_processing_is_bounded_and_flagged(monkeypatch):
+    monkeypatch.setattr(ce, "MAX_MESSAGES_SCAN", 3)
+    msgs = [{"role": "user", "content": "m%d" % i} for i in range(10)]
+    r = ce.request_features(msgs)
+    assert r["message_count"] == 10 and r["messages_not_scanned"] == 7 and r["scan_truncated"]
+    rec = ce.CallEvidence()
+    e = rec.record_request(1, "analysis", MODEL, 1, msgs)
+    assert e["last_user_message"]["text"] == "m9"  # last-user search stays within the last 3 messages

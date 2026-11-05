@@ -30,6 +30,7 @@ TOTAL_TEXT_BUDGET = 450_000   # characters of captured text across all calls
 MAX_IDS = 40
 MAX_FEATURE_SCAN_CHARS = 400_000   # features/regex scan at most this much text
 MAX_PARSE_CHARS = 200_000          # responses larger than this are not JSON-parsed
+MAX_MESSAGES_SCAN = 200            # messages examined per request (head and last-user search)
 MAX_LABEL = 120                    # model/phase/role/finish_reason/key strings
 
 _CALL_ID = re.compile(r"0x[0-9a-fA-F]{8}_0x[0-9a-fA-F]{40}")
@@ -68,6 +69,10 @@ def label(value, limit=MAX_LABEL):
 
 
 def sha16(value):
+    """Digest of the canonical JSON of the WHOLE value (same semantics as the
+    pre-existing abstention call log). O(n) time; transient memory is about one
+    extra copy of a payload that already exists in memory and is itself bounded
+    by the engine's prompt cap. Identity only, not a wire hash."""
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
@@ -115,7 +120,7 @@ def request_features(adapted_messages):
     """Program-computed facts about the ADAPTED messages (not template text)."""
     msgs = adapted_messages if isinstance(adapted_messages, list) else []
     parts, total, scanned = [], 0, 0
-    for m in msgs:
+    for m in msgs[:MAX_MESSAGES_SCAN]:
         c = m.get("content") if isinstance(m, dict) else None
         if isinstance(c, str):
             total += len(c)
@@ -130,7 +135,8 @@ def request_features(adapted_messages):
         "roles": [label(m.get("role"), 20) if isinstance(m, dict) else None for m in msgs[:60]],
         "total_chars": total,
         "scanned_chars": scanned,
-        "scan_truncated": total > scanned,
+        "scan_truncated": total > scanned or len(msgs) > MAX_MESSAGES_SCAN,
+        "messages_not_scanned": max(0, len(msgs) - MAX_MESSAGES_SCAN),
         "source_markers": {k: len(rx.findall(full)) for k, rx in _SOURCE_MARKERS.items()},
         "call_ids_in_request": ids,
         "call_ids_in_request_more": ids_more,
@@ -203,7 +209,7 @@ class CallEvidence:
             self.dropped_calls += 1
             return None
         msgs = adapted_messages if isinstance(adapted_messages, list) else []
-        last_user = next((m for m in reversed(msgs)
+        last_user = next((m for m in reversed(msgs[-MAX_MESSAGES_SCAN:])
                           if isinstance(m, dict) and m.get("role") == "user"), None)
         content = last_user.get("content") if isinstance(last_user, dict) else None
         entry = {"seq": seq, "phase": label(phase, 40), "model": label(model),
