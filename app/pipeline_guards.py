@@ -904,9 +904,9 @@ class PipelineRuntime:
         return True
 
     PROMPT_CAP = 10000  # pinned engine GPTAgent/UniversalAgent._send_message cap (agent.py: >10000 -> first 8000 + last 2000)
-    # any quoted key containing 'source' (sourceCode, contract_source, verified_source, ...); a
+    # any quoted key containing 'source', any separators (sourceCode, source-code, source.code, 'source code', ...); a
     # conservative heuristic for the no-bound-source case, not a completeness proof
-    SOURCE_FIELD_RE = re.compile(r'["\']\w*source\w*["\']\s*:', re.IGNORECASE)
+    SOURCE_FIELD_RE = re.compile(r"""["'](?=[^"']*source)[^"']*["']\s*:""", re.IGNORECASE)
     ENGINE_KEEP_HEAD = 8000    # pinned engine _send_message keeps head 8000 + tail 2000 above the 10000 cap
     ENGINE_KEEP_TAIL = 2000
     SOURCE_KEYS = ("function_source_code", "'source_code'", '"source_code"')  # engine payload keys that carry source
@@ -1284,7 +1284,7 @@ class PipelineRuntime:
                 except TypeError:
                     _um, _resolved = None, False
                 if not _resolved or not isinstance(_um, str):
-                    _ev = {"status": "bound_source_unverified_outbound", "reason": "user_message not a string / not resolvable"}
+                    _ev = {"status": "bound_source_unverified_outbound", "reason": "user_message not a string / not resolvable (outbound-boundary verification failure; not proof that a request was transmitted or cut)"}
                 else:
                     _, _ev = self._check_outbound_source_fit(_um, self.bound_source_texts, self.PROMPT_CAP)
                 if _ev:
@@ -1700,7 +1700,8 @@ class PipelineRuntime:
                 if not failure:   # a failure report already is failed/partial; never relax or relabel its status
                     result["analysis_status"] = "partial"
                     result["stage_completed"] = "function-analysis-partial"
-                    result["sections"] = {**(result.get("sections") or {}), "function_analysis": "partial_request_exceeded_cap", "scoring": "not_validated"}
+                    _sec = result.get("sections")
+                    result["sections"] = {**(_sec if isinstance(_sec, dict) else {}), "function_analysis": "partial_request_exceeded_cap", "scoring": "not_validated"}
                 _txt = (
                     f"{len(_bad)} model request(s) with source-bearing content exceeded the {self.PROMPT_CAP}-character request cap (or the bound source could not be verified in the outbound request). "
                     "The engine cut those requests (head 8000 + tail 2000), so bound source and/or other required evidence may be missing. "
@@ -1714,6 +1715,8 @@ class PipelineRuntime:
         _l0 = result.get("limitations") if isinstance(result, dict) else None
         if isinstance(result, dict) and not isinstance(_l0, list):
             result["limitations"] = [_l0] if isinstance(_l0, str) else (list(_l0) if isinstance(_l0, tuple) else [])
+        if isinstance(result, dict) and not isinstance(result.get("sections"), dict) and "sections" in result:
+            result["sections"] = {}
         reconcile_calibrated_confidence(result)
         if self.narrowdown_capture or self.ranked_targets or self.function_verdicts:
             dbg = result.setdefault("_debug", {})

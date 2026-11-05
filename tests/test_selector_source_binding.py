@@ -1037,7 +1037,7 @@ def test_outbound_source_fit_component(pinned_fork):
     plain = "x" * 12000
     out, ev = P._check_outbound_source_fit(plain, [src], cap)
     assert out is plain and ev["status"] == "bound_source_unverified_outbound"
-    for k in ('"source"', '"sourceCode"', '"contract_source"', '"verified_source"', '"functionSourceCode"', "'Source_Code'"):
+    for k in ('"source-code"', '"source.code"', '"source code"', "'Source Code'", '"source"', '"sourceCode"', '"contract_source"', '"verified_source"', '"functionSourceCode"', "'Source_Code'"):
         for emp in ([], None):
             m_ = "{" + k + ': "body"}' + ("y" * 12000)
             o_, e_ = P._check_outbound_source_fit(m_, emp, cap)
@@ -1216,7 +1216,7 @@ def test_hook_non_string_and_unbindable_user_message(pinned_fork, monkeypatch):
                     pass   # engine may reject the invalid call; the inspection event must exist regardless
                 assert len(rt.source_retention_events) == n + 1, (cls, call)
                 assert rt.source_retention_events[-1]["status"] == "bound_source_unverified_outbound"
-                assert "not a string" in rt.source_retention_events[-1]["reason"]
+                assert "not a string" in rt.source_retention_events[-1]["reason"] and "not proof" in rt.source_retention_events[-1]["reason"]
     finally:
         _restore(rt)
 
@@ -1247,3 +1247,28 @@ def test_failure_report_and_repeat_preserve_retention_events(pinned_fork):
     r2 = rt.annotate_result(r)
     assert r2["analysis_status"] == "partial" and r2["source_retention"]["requests_not_fit"] == 2
     assert sum("not fully analyzed" in l for l in r2["limitations"]) == 1
+
+
+def test_reporting_survives_malformed_sections(pinned_fork):
+    """Component test: malformed `sections` cannot break the fail-closed marking, on success and failure paths."""
+    from types import SimpleNamespace
+    from pathlib import Path
+    m = importlib.import_module("app.pipeline_guards")
+    identity = importlib.import_module("app.trace_identity")
+    fx = json.loads((Path(__file__).resolve().parent / "fixtures/hedgey_verified_trace.json").read_text())
+    tx = fx["provenance"]["transaction_hash"]
+    rt = m.PipelineRuntime(tx, "eth")
+    rt.sequence = identity.sequence_from_parity(fx["responses"]["trace_transaction"], tx, "eth")
+    rt.session = SimpleNamespace(summary=lambda: {"calls": {}, "tokens": {}}, assert_healthy=lambda: None)
+    rt.source_retention_events = [{"status": "over_cap_request_cut", "original_chars": 12000, "cap": 10000}]
+    for bad in (None, "str", ["function_analysis"], 5):
+        res = {"analysis_status": "completed", "sections": bad, "limitations": None}
+        rt._apply_retention_report(res)
+        assert res["analysis_status"] == "partial" and isinstance(res["sections"], dict)
+        assert res["sections"]["function_analysis"] == "partial_request_exceeded_cap"
+        assert any("not fully analyzed" in l for l in res["limitations"])
+        a = rt.annotate_result({"transaction_hash": tx, "chain": "eth", "analysis_status": "completed", "sections": bad})
+        assert a["analysis_status"] == "partial" and a["sections"]["function_analysis"] == "partial_request_exceeded_cap"
+        fres = {"analysis_status": "failed", "sections": bad}
+        rt._apply_retention_report(fres, failure=True)
+        assert fres["analysis_status"] == "failed" and fres["source_retention"]["requests_not_fit"] == 1
