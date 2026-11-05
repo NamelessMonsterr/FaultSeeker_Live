@@ -107,3 +107,11 @@ def test_unquoted_and_quoted_credential_fields_redacted(raw):
 def test_hash_precheck_counts_json_escape_expansion():
     assert ce.sha16(["\x00" * 500_000]) == "skipped_oversize"
     assert ce.sha16(["abc"]) not in ("skipped_oversize", "unserializable")
+
+
+def test_long_unterminated_quoted_credential_fully_redacted_at_edges():
+    secret = 'password="firstsecret secondsecret ' + "Z" * 5000 + '"'
+    b = ce.bounded_text(secret, 2000, 100)
+    assert "secondsecret" not in b["text"] and "firstsecret" not in b["text"]
+    tail = ce.bounded_text("x" * 5000 + ' token: "alpha beta gamma delta ' + "Q" * 300, 2000, 100)
+    assert "beta" not in tail["text"] and "gamma" not in tail["text"]
