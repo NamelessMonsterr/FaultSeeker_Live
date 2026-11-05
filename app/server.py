@@ -316,6 +316,13 @@ DEMO_REPLAYS = {
         "txn_hash": "0x2606d459a50ca4920722a111745c2eeced1d8a01ff25ee762e22d5d4b1595739",
         "chain": "eth",
         "integrity_warning": "This historical run used unverified selector-database function labels. Its localization is not a verified analysis of the recorded transaction.",
+    },
+    "demo:hedgey-provenance": {
+        "label": "SAVED REPLAY - Hedgey Finance (run d51c66f4483b, Nov 5; representation labels re-derived from recorded run state, no new analysis)",
+        "events": os.path.join(HERE, "samples", "hedgey_d51c66f4483b.events.jsonl"),
+        "result": os.path.join(HERE, "samples", "hedgey_d51c66f4483b.result.json"),
+        "txn_hash": "0xa17fdb804728f226fcd10e78eae5247abd984e0f03301312315b89cae25aa517",
+        "chain": "eth",
     }
 }
 DEMO_REPLAY_SPEED = float(os.environ.get("DEMO_REPLAY_SPEED", "0.12"))  # fraction of real-time gaps

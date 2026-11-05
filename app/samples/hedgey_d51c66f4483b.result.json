@@ -1,0 +1,2179 @@
+{
+ "transaction_hash": "0xa17fdb804728f226fcd10e78eae5247abd984e0f03301312315b89cae25aa517",
+ "chain": "eth",
+ "ranked_suspicious_functions": [
+  "0xa9059cbb_0x43506849d7c04f9138d1a2050bbf3a0c054402dd",
+  "0xa9059cbb_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+  "0x095ea7b3_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+  "0x70a08231_0x43506849d7c04f9138d1a2050bbf3a0c054402dd",
+  "0x70a08231_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+ ],
+ "potentially_vulnerable_functions": {
+  "0x70a08231_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": {
+   "evidence": [
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined"
+   ],
+   "confidence_score": [
+    0.85,
+    0.85,
+    0.85,
+    0.85,
+    0.85
+   ],
+   "depth": 5,
+   "analysis_context": {
+    "analysis_role": "unknown_suspect",
+    "citations": [
+     {
+      "unit": "0xefd86b62_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+      "trace_relation": "direct_child"
+     },
+     {
+      "unit": "0xf412e4c7_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+      "trace_relation": "direct_child"
+     }
+    ]
+   }
+  },
+  "0x70a08231_0x43506849d7c04f9138d1a2050bbf3a0c054402dd": {
+   "evidence": [
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined"
+   ],
+   "confidence_score": [
+    0.85,
+    0.85,
+    0.85,
+    0.85,
+    0.85
+   ],
+   "depth": 6,
+   "analysis_context": {
+    "analysis_role": "unknown_suspect",
+    "citations": [
+     {
+      "unit": "0xefd86b62_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+      "trace_relation": "transitive_descendant"
+     },
+     {
+      "unit": "0xf412e4c7_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+      "trace_relation": "transitive_descendant"
+     }
+    ]
+   }
+  },
+  "0xa9059cbb_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": {
+   "evidence": [
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined"
+   ],
+   "confidence_score": [
+    0.85,
+    0.85,
+    0.85,
+    0.85,
+    0.85
+   ],
+   "depth": 5,
+   "analysis_context": {
+    "analysis_role": "unknown_suspect",
+    "citations": [
+     {
+      "unit": "0xefd86b62_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+      "trace_relation": "referenced"
+     },
+     {
+      "unit": "0xf412e4c7_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+      "trace_relation": "direct_child"
+     }
+    ]
+   }
+  },
+  "0xa9059cbb_0x43506849d7c04f9138d1a2050bbf3a0c054402dd": {
+   "evidence": [
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined"
+   ],
+   "confidence_score": [
+    0.85,
+    0.85,
+    0.85,
+    0.85,
+    0.85
+   ],
+   "depth": 6,
+   "analysis_context": {
+    "analysis_role": "unknown_suspect",
+    "citations": [
+     {
+      "unit": "0xefd86b62_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+      "trace_relation": "referenced"
+     },
+     {
+      "unit": "0xf412e4c7_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+      "trace_relation": "transitive_descendant"
+     }
+    ]
+   }
+  },
+  "0x095ea7b3_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": {
+   "evidence": [
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined"
+   ],
+   "confidence_score": [
+    0.85,
+    0.85,
+    0.85
+   ],
+   "depth": 5,
+   "analysis_context": {
+    "analysis_role": "unknown_suspect",
+    "citations": [
+     {
+      "unit": "0xefd86b62_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+      "trace_relation": "direct_child"
+     }
+    ]
+   }
+  }
+ },
+ "rejected_findings": [],
+ "transaction_understanding": "",
+ "scored_functions": [
+  {
+   "evidence": [
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined"
+   ],
+   "confidence_score": [
+    0.85,
+    0.85,
+    0.85,
+    0.85,
+    0.85
+   ],
+   "depth": 6,
+   "function": "0x70a08231",
+   "address": "0x43506849d7c04f9138d1a2050bbf3a0c054402dd",
+   "confidence": {
+    "overall": 0.9909,
+    "level": "very_high",
+    "components": {
+     "pattern_match": 0.3,
+     "code_evidence": 0.3,
+     "txn_consistency": 0.5,
+     "llm_confidence": 0.85
+    },
+    "explanation": [
+     "Overall confidence: 99.1% (very_high) - Immediate remediation recommended",
+     "  Pattern match: 30.0% (weak)",
+     "  Code evidence: 30.0% (weak)",
+     "  Txn consistency: 50.0% (moderate)",
+     "  LLM confidence: 85.0% (strong)"
+    ],
+    "calibrated": true,
+    "calibration_model": "/srv/FaultSeeker-/data/models/calibrator.json",
+    "proxy_overall": 0.46,
+    "proxy_level": "low"
+   },
+   "name_verification": "unverified_model_label",
+   "analysis_context": {
+    "analysis_role": "unknown_suspect",
+    "citations": [
+     {
+      "unit": "0xefd86b62_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+      "trace_relation": "transitive_descendant"
+     },
+     {
+      "unit": "0xf412e4c7_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+      "trace_relation": "transitive_descendant"
+     }
+    ]
+   }
+  },
+  {
+   "evidence": [
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined"
+   ],
+   "confidence_score": [
+    0.85,
+    0.85,
+    0.85,
+    0.85,
+    0.85
+   ],
+   "depth": 6,
+   "function": "0xa9059cbb",
+   "address": "0x43506849d7c04f9138d1a2050bbf3a0c054402dd",
+   "confidence": {
+    "overall": 0.9909,
+    "level": "very_high",
+    "components": {
+     "pattern_match": 0.3,
+     "code_evidence": 0.3,
+     "txn_consistency": 0.5,
+     "llm_confidence": 0.85
+    },
+    "explanation": [
+     "Overall confidence: 99.1% (very_high) - Immediate remediation recommended",
+     "  Pattern match: 30.0% (weak)",
+     "  Code evidence: 30.0% (weak)",
+     "  Txn consistency: 50.0% (moderate)",
+     "  LLM confidence: 85.0% (strong)"
+    ],
+    "calibrated": true,
+    "calibration_model": "/srv/FaultSeeker-/data/models/calibrator.json",
+    "proxy_overall": 0.46,
+    "proxy_level": "low"
+   },
+   "name_verification": "unverified_model_label",
+   "analysis_context": {
+    "analysis_role": "unknown_suspect",
+    "citations": [
+     {
+      "unit": "0xefd86b62_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+      "trace_relation": "referenced"
+     },
+     {
+      "unit": "0xf412e4c7_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+      "trace_relation": "transitive_descendant"
+     }
+    ]
+   }
+  },
+  {
+   "evidence": [
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined"
+   ],
+   "confidence_score": [
+    0.85,
+    0.85,
+    0.85,
+    0.85,
+    0.85
+   ],
+   "depth": 5,
+   "function": "0x70a08231",
+   "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "confidence": {
+    "overall": 0.9909,
+    "level": "very_high",
+    "components": {
+     "pattern_match": 0.3,
+     "code_evidence": 0.3,
+     "txn_consistency": 0.5,
+     "llm_confidence": 0.85
+    },
+    "explanation": [
+     "Overall confidence: 99.1% (very_high) - Immediate remediation recommended",
+     "  Pattern match: 30.0% (weak)",
+     "  Code evidence: 30.0% (weak)",
+     "  Txn consistency: 50.0% (moderate)",
+     "  LLM confidence: 85.0% (strong)"
+    ],
+    "calibrated": true,
+    "calibration_model": "/srv/FaultSeeker-/data/models/calibrator.json",
+    "proxy_overall": 0.46,
+    "proxy_level": "low"
+   },
+   "name_verification": "unverified_model_label",
+   "analysis_context": {
+    "analysis_role": "unknown_suspect",
+    "citations": [
+     {
+      "unit": "0xefd86b62_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+      "trace_relation": "direct_child"
+     },
+     {
+      "unit": "0xf412e4c7_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+      "trace_relation": "direct_child"
+     }
+    ]
+   }
+  },
+  {
+   "evidence": [
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined"
+   ],
+   "confidence_score": [
+    0.85,
+    0.85,
+    0.85,
+    0.85,
+    0.85
+   ],
+   "depth": 5,
+   "function": "0xa9059cbb",
+   "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "confidence": {
+    "overall": 0.9909,
+    "level": "very_high",
+    "components": {
+     "pattern_match": 0.3,
+     "code_evidence": 0.3,
+     "txn_consistency": 0.5,
+     "llm_confidence": 0.85
+    },
+    "explanation": [
+     "Overall confidence: 99.1% (very_high) - Immediate remediation recommended",
+     "  Pattern match: 30.0% (weak)",
+     "  Code evidence: 30.0% (weak)",
+     "  Txn consistency: 50.0% (moderate)",
+     "  LLM confidence: 85.0% (strong)"
+    ],
+    "calibrated": true,
+    "calibration_model": "/srv/FaultSeeker-/data/models/calibrator.json",
+    "proxy_overall": 0.46,
+    "proxy_level": "low"
+   },
+   "name_verification": "unverified_model_label",
+   "analysis_context": {
+    "analysis_role": "unknown_suspect",
+    "citations": [
+     {
+      "unit": "0xefd86b62_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+      "trace_relation": "referenced"
+     },
+     {
+      "unit": "0xf412e4c7_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+      "trace_relation": "direct_child"
+     }
+    ]
+   }
+  },
+  {
+   "evidence": [
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined"
+   ],
+   "confidence_score": [
+    0.85,
+    0.85,
+    0.85
+   ],
+   "depth": 5,
+   "function": "0x095ea7b3",
+   "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "confidence": {
+    "overall": 0.9909,
+    "level": "very_high",
+    "components": {
+     "pattern_match": 0.3,
+     "code_evidence": 0.3,
+     "txn_consistency": 0.5,
+     "llm_confidence": 0.85
+    },
+    "explanation": [
+     "Overall confidence: 99.1% (very_high) - Immediate remediation recommended",
+     "  Pattern match: 30.0% (weak)",
+     "  Code evidence: 30.0% (weak)",
+     "  Txn consistency: 50.0% (moderate)",
+     "  LLM confidence: 85.0% (strong)"
+    ],
+    "calibrated": true,
+    "calibration_model": "/srv/FaultSeeker-/data/models/calibrator.json",
+    "proxy_overall": 0.46,
+    "proxy_level": "low"
+   },
+   "name_verification": "unverified_model_label",
+   "analysis_context": {
+    "analysis_role": "unknown_suspect",
+    "citations": [
+     {
+      "unit": "0xefd86b62_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+      "trace_relation": "direct_child"
+     }
+    ]
+   }
+  }
+ ],
+ "evidence_cards": [
+  {
+   "function_signature": {
+    "address": "0x43506849d7c04f9138d1a2050bbf3a0c054402dd",
+    "function": "0x70a08231",
+    "call_depth": 6
+   },
+   "confidence": {
+    "overall": 0.9909,
+    "level": "very_high",
+    "components": {
+     "pattern_match": 0.3,
+     "code_evidence": 0.3,
+     "txn_consistency": 0.5,
+     "llm_confidence": 0.85
+    },
+    "explanation": [
+     "Overall confidence: 99.1% (very_high) - Immediate remediation recommended",
+     "  Pattern match: 30.0% (weak)",
+     "  Code evidence: 30.0% (weak)",
+     "  Txn consistency: 50.0% (moderate)",
+     "  LLM confidence: 85.0% (strong)"
+    ],
+    "calibrated": true,
+    "calibration_model": "/srv/FaultSeeker-/data/models/calibrator.json",
+    "proxy_overall": 0.46,
+    "proxy_level": "low"
+   },
+   "evidence": [
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined"
+   ],
+   "analyst_notes": "",
+   "name_verification": "unverified_model_label",
+   "analysis_context": {
+    "analysis_role": "unknown_suspect",
+    "citations": [
+     {
+      "unit": "0xefd86b62_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+      "trace_relation": "transitive_descendant"
+     },
+     {
+      "unit": "0xf412e4c7_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+      "trace_relation": "transitive_descendant"
+     }
+    ]
+   }
+  },
+  {
+   "function_signature": {
+    "address": "0x43506849d7c04f9138d1a2050bbf3a0c054402dd",
+    "function": "0xa9059cbb",
+    "call_depth": 6
+   },
+   "confidence": {
+    "overall": 0.9909,
+    "level": "very_high",
+    "components": {
+     "pattern_match": 0.3,
+     "code_evidence": 0.3,
+     "txn_consistency": 0.5,
+     "llm_confidence": 0.85
+    },
+    "explanation": [
+     "Overall confidence: 99.1% (very_high) - Immediate remediation recommended",
+     "  Pattern match: 30.0% (weak)",
+     "  Code evidence: 30.0% (weak)",
+     "  Txn consistency: 50.0% (moderate)",
+     "  LLM confidence: 85.0% (strong)"
+    ],
+    "calibrated": true,
+    "calibration_model": "/srv/FaultSeeker-/data/models/calibrator.json",
+    "proxy_overall": 0.46,
+    "proxy_level": "low"
+   },
+   "evidence": [
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined"
+   ],
+   "analyst_notes": "",
+   "name_verification": "unverified_model_label",
+   "analysis_context": {
+    "analysis_role": "unknown_suspect",
+    "citations": [
+     {
+      "unit": "0xefd86b62_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+      "trace_relation": "referenced"
+     },
+     {
+      "unit": "0xf412e4c7_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+      "trace_relation": "transitive_descendant"
+     }
+    ]
+   }
+  },
+  {
+   "function_signature": {
+    "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "function": "0x70a08231",
+    "call_depth": 5
+   },
+   "confidence": {
+    "overall": 0.9909,
+    "level": "very_high",
+    "components": {
+     "pattern_match": 0.3,
+     "code_evidence": 0.3,
+     "txn_consistency": 0.5,
+     "llm_confidence": 0.85
+    },
+    "explanation": [
+     "Overall confidence: 99.1% (very_high) - Immediate remediation recommended",
+     "  Pattern match: 30.0% (weak)",
+     "  Code evidence: 30.0% (weak)",
+     "  Txn consistency: 50.0% (moderate)",
+     "  LLM confidence: 85.0% (strong)"
+    ],
+    "calibrated": true,
+    "calibration_model": "/srv/FaultSeeker-/data/models/calibrator.json",
+    "proxy_overall": 0.46,
+    "proxy_level": "low"
+   },
+   "evidence": [
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined"
+   ],
+   "analyst_notes": "",
+   "name_verification": "unverified_model_label",
+   "analysis_context": {
+    "analysis_role": "unknown_suspect",
+    "citations": [
+     {
+      "unit": "0xefd86b62_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+      "trace_relation": "direct_child"
+     },
+     {
+      "unit": "0xf412e4c7_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+      "trace_relation": "direct_child"
+     }
+    ]
+   }
+  },
+  {
+   "function_signature": {
+    "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "function": "0xa9059cbb",
+    "call_depth": 5
+   },
+   "confidence": {
+    "overall": 0.9909,
+    "level": "very_high",
+    "components": {
+     "pattern_match": 0.3,
+     "code_evidence": 0.3,
+     "txn_consistency": 0.5,
+     "llm_confidence": 0.85
+    },
+    "explanation": [
+     "Overall confidence: 99.1% (very_high) - Immediate remediation recommended",
+     "  Pattern match: 30.0% (weak)",
+     "  Code evidence: 30.0% (weak)",
+     "  Txn consistency: 50.0% (moderate)",
+     "  LLM confidence: 85.0% (strong)"
+    ],
+    "calibrated": true,
+    "calibration_model": "/srv/FaultSeeker-/data/models/calibrator.json",
+    "proxy_overall": 0.46,
+    "proxy_level": "low"
+   },
+   "evidence": [
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined"
+   ],
+   "analyst_notes": "",
+   "name_verification": "unverified_model_label",
+   "analysis_context": {
+    "analysis_role": "unknown_suspect",
+    "citations": [
+     {
+      "unit": "0xefd86b62_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+      "trace_relation": "referenced"
+     },
+     {
+      "unit": "0xf412e4c7_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+      "trace_relation": "direct_child"
+     }
+    ]
+   }
+  },
+  {
+   "function_signature": {
+    "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "function": "0x095ea7b3",
+    "call_depth": 5
+   },
+   "confidence": {
+    "overall": 0.9909,
+    "level": "very_high",
+    "components": {
+     "pattern_match": 0.3,
+     "code_evidence": 0.3,
+     "txn_consistency": 0.5,
+     "llm_confidence": 0.85
+    },
+    "explanation": [
+     "Overall confidence: 99.1% (very_high) - Immediate remediation recommended",
+     "  Pattern match: 30.0% (weak)",
+     "  Code evidence: 30.0% (weak)",
+     "  Txn consistency: 50.0% (moderate)",
+     "  LLM confidence: 85.0% (strong)"
+    ],
+    "calibrated": true,
+    "calibration_model": "/srv/FaultSeeker-/data/models/calibrator.json",
+    "proxy_overall": 0.46,
+    "proxy_level": "low"
+   },
+   "evidence": [
+    "mechanism undetermined",
+    "mechanism undetermined",
+    "mechanism undetermined"
+   ],
+   "analyst_notes": "",
+   "name_verification": "unverified_model_label",
+   "analysis_context": {
+    "analysis_role": "unknown_suspect",
+    "citations": [
+     {
+      "unit": "0xefd86b62_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+      "trace_relation": "direct_child"
+     }
+    ]
+   }
+  }
+ ],
+ "reentrancy": {
+  "score": 0.0,
+  "detected": false,
+  "tier": "NOT_REENTRANCY",
+  "signals": {
+   "same_function_reentry": false,
+   "cross_function_reentry": true,
+   "reentry_before_return": true,
+   "slot_rewrite": false,
+   "write_after_call": false,
+   "state_slot_reentry": false
+  },
+  "context": {
+   "fallback_mode": false,
+   "storage_trace_available": true
+  }
+ },
+ "priority": {
+  "total": 0.94,
+  "exploitability": 0.85,
+  "reentrancy": 0.0,
+  "flashloan": 0.6,
+  "price_manipulation": 0.0,
+  "liquidity_drain": 0.0,
+  "reentrancy_source": "storage"
+ },
+ "priority_score": 0.94,
+ "analyst_feedback": [],
+ "duration": 671.5345895290375,
+ "timestamp": "2026-11-05T14:16:17.598820",
+ "_debug": {
+  "forensics_duration": 45.957207441329956,
+  "analysis_duration": 625.4710967540741,
+  "functions_to_inspect_count": 43,
+  "ranked_targets": [
+   "0xc9a69562_0xc793113f1548b97e37c409f39244ee44241bf2b3",
+   "0x5c38449e_0xba12222222228d8ba445958a75a0704d566bf2c8",
+   "0xd877845c_0xce88686553686da562ce7cea497ce749da109f9f",
+   "0xf04f2707_0xc793113f1548b97e37c409f39244ee44241bf2b3",
+   "0xefd86b62_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+   "0xf412e4c7_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+   "0x70a08231_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "0x70a08231_0x43506849d7c04f9138d1a2050bbf3a0c054402dd",
+   "0xa9059cbb_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "0x095ea7b3_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "0x23b872dd_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "0xdd62ed3e_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "0xa9059cbb_0x43506849d7c04f9138d1a2050bbf3a0c054402dd",
+   "0x095ea7b3_0x43506849d7c04f9138d1a2050bbf3a0c054402dd",
+   "0x23b872dd_0x43506849d7c04f9138d1a2050bbf3a0c054402dd",
+   "0xdd62ed3e_0x43506849d7c04f9138d1a2050bbf3a0c054402dd"
+  ],
+  "narrowdown_capture": [
+   {
+    "kind": "narrowdown",
+    "candidate_count": 16,
+    "prompt": "You are a senior smart contract security expert and helping with a fault localization analysis for a malicious transaction. Given the information of the following function calls that have been selected to be potentially related to the fault (e.g., related to price manipulation, key transfer/stake/unstake/other token related operations, or key validations, same functions with multiple addresses), your task is to understand the provided information and narrow down the list of functions to be inspected by identifying and deciding which functions are most likely containing the fault implementation. Note that functions explicitly mentioned price related operations such as cache must be kept. The function call information is as follows (value for each is its appearance count): {\"0xc9a69562_0xc793113f1548b97e37c409f39244ee44241bf2b3\": {\"count_of_appearance\": 1, \"example_calls\": [{\"gas\": \"0x729bb\", \"params\": \"000000000000000000000000000000000000000000000000000000000000006000000000000000000000000000000000000000000000000000000000000000a000000000000000000000000000000000000000000000000000000000000000e00000000000000000000000000000000000000000000000000000000000000001000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb4800000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000012fd80fba0000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000000\", \"params_hash\": \"f8a8d71a03b0\", \"depth\": [0]}]}, \"0x5c38449e_0xba12222222228d8ba445958a75a0704d566bf2c8\": {\"count_of_appearance\": 1, \"example_calls\": [{\"gas\": \"0x68857\", \"params\": \"000000000000000000000000c793113f1548b97e37c409f39244ee44241bf2b3000000000000000000000000000000000000000000000000000000000000008000000000000000000000000000000000000000000000000000000000000000c000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb4800000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000012fd80fba0000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000000\", \"params_hash\": \"e6ed4bbc2719\", \"depth\": [0, 0]}]}, \"0xd877845c_0xce88686553686da562ce7cea497ce749da109f9f\": {\"count_of_appearance\": 1, \"example_calls\": [{\"gas\": \"0x6133b\", \"params\": \"\", \"params_hash\": \"da39a3ee5e6b\", \"depth\": [0, 0, 1]}]}, \"0xf04f2707_0xc793113f1548b97e37c409f39244ee44241bf2b3\": {\"count_of_appearance\": 1, \"example_calls\": [{\"gas\": \"0x581ea\", \"params\": \"000000000000000000000000000000000000000000000000000000000000008000000000000000000000000000000000000000000000000000000000000000c0000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000001400000000000000000000000000000000000000000000000000000000000000001000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb4800000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000012fd80fba000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000000\", \"params_hash\": \"20743c9012c8\", \"depth\": [0, 0, 3]}]}, \"0xefd86b62_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511\": {\"count_of_appearance\": 1, \"example_calls\": [{\"gas\": \"0x4629c\", \"params\": \"0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000c793113f1548b97e37c409f39244ee44241bf2b3000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb480000000000000000000000000000000000000000000000000000012fd80fba0000000000000000000000000000000000000000000000000000000000bac7f5f000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000c793113f1548b97e37c409f39244ee44241bf2b30000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000c793113f1548b97e37c409f39244ee44241bf2b300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\", \"params_hash\": \"e46cfb83292e\", \"depth\": [0, 0, 3, 1]}]}, \"0xf412e4c7_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511\": {\"count_of_appearance\": 1, \"example_calls\": [{\"gas\": \"0xfd3e\", \"params\": \"0000000000000000000000000000000000000000000000000000000000000000\", \"params_hash\": \"0114498021cb\", \"depth\": [0, 0, 3, 2]}]}, \"0x70a08231_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48\": {\"count_of_appearance\": 7, \"example_calls\": [{\"gas\": \"0x644ed\", \"params\": \"000000000000000000000000ba12222222228d8ba445958a75a0704d566bf2c8\", \"params_hash\": \"1b7ccd238f01\", \"depth\": [0, 0, 0], \"possible_signature\": \"balanceOf(...) [possible signature; implementation unverified]\", \"implementation_unverified\": true}, {\"gas\": \"0x3dfa8\", \"params\": \"000000000000000000000000bc452fdc8f851d7c5b72e1fe74dfb63bb793d511\", \"params_hash\": \"90b15370ce89\", \"depth\": [0, 0, 3, 1, 0], \"possible_signature\": \"balanceOf(...) [possible signature; implementation unverified]\", \"implementation_unverified\": true}, {\"gas\": \"0x3d157\", \"params\": \"000000000000000000000000c793113f1548b97e37c409f39244ee44241bf2b3\", \"params_hash\": \"7741545081bb\", \"depth\": [0, 0, 3, 1, 1], \"possible_signature\": \"balanceOf(...) [possible signature; implementation unverified]\", \"implementation_unverified\": true}]}, \"0x70a08231_0x43506849d7c04f9138d1a2050bbf3a0c054402dd\": {\"count_of_appearance\": 7, \"example_calls\": [{\"gas\": \"0x61001\", \"params\": \"000000000000000000000000ba12222222228d8ba445958a75a0704d566bf2c8\", \"params_hash\": \"1b7ccd238f01\", \"depth\": [0, 0, 0, 0], \"possible_signature\": \"balanceOf(...) [possible signature; implementation unverified]\", \"implementation_unverified\": true}, {\"gas\": \"0x3cd4f\", \"params\": \"000000000000000000000000bc452fdc8f851d7c5b72e1fe74dfb63bb793d511\", \"params_hash\": \"90b15370ce89\", \"depth\": [0, 0, 3, 1, 0, 0], \"possible_signature\": \"balanceOf(...) [possible signature; implementation unverified]\", \"implementation_unverified\": true}, {\"gas\": \"0x3bf38\", \"params\": \"000000000000000000000000c793113f1548b97e37c409f39244ee44241bf2b3\", \"params_hash\": \"7741545081bb\", \"depth\": [0, 0, 3, 1, 1, 0], \"possible_signature\": \"balanceOf(...) [possible signature; implementation unverified]\", \"implementation_unverified\": true}]}, \"0xa9059cbb_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48\": {\"count_of_appearance\": 3, \"example_calls\": [{\"gas\": \"0x604ce\", \"params\": \"000000000000000000000000c793113f1548b97e37c409f39244ee44241bf2b30000000000000000000000000000000000000000000000000000012fd80fba00\", \"params_hash\": \"c84faaf62f7e\", \"depth\": [0, 0, 2], \"possible_signature\": \"transfer(...) [possible signature; implementation unverified]\", \"implementation_unverified\": true}, {\"gas\": \"0xd9b8\", \"params\": \"000000000000000000000000c793113f1548b97e37c409f39244ee44241bf2b30000000000000000000000000000000000000000000000000000012fd80fba00\", \"params_hash\": \"c84faaf62f7e\", \"depth\": [0, 0, 3, 2, 1], \"possible_signature\": \"transfer(...) [possible signature; implementation unverified]\", \"implementation_unverified\": true}, {\"gas\": \"0x1d8d\", \"params\": \"000000000000000000000000ba12222222228d8ba445958a75a0704d566bf2c80000000000000000000000000000000000000000000000000000012fd80fba00\", \"params_hash\": \"dbc229257055\", \"depth\": [0, 0, 3, 3], \"possible_signature\": \"transfer(...) [possible signature; implementation unverified]\", \"implementation_unverified\": true}]}, \"0x095ea7b3_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48\": {\"count_of_appearance\": 2, \"example_calls\": [{\"gas\": \"0x4f4db\", \"params\": \"000000000000000000000000bc452fdc8f851d7c5b72e1fe74dfb63bb793d511ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\", \"params_hash\": \"7351f4a0d8da\", \"depth\": [0, 0, 3, 0], \"possible_signature\": \"approve(...) [possible signature; implementation unverified]\", \"implementation_unverified\": true}, {\"gas\": \"0x31368\", \"params\": \"000000000000000000000000c793113f1548b97e37c409f39244ee44241bf2b30000000000000000000000000000000000000000000000000000012fd80fba00\", \"params_hash\": \"c84faaf62f7e\", \"depth\": [0, 0, 3, 1, 5], \"possible_signature\": \"approve(...) [possible signature; implementation unverified]\", \"implementation_unverified\": true}]}, \"0x23b872dd_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48\": {\"count_of_appearance\": 1, \"example_calls\": [{\"gas\": \"0x3c964\", \"params\": \"000000000000000000000000c793113f1548b97e37c409f39244ee44241bf2b3000000000000000000000000bc452fdc8f851d7c5b72e1fe74dfb63bb793d5110000000000000000000000000000000000000000000000000000012fd80fba00\", \"params_hash\": \"0b6b05927130\", \"depth\": [0, 0, 3, 1, 2], \"possible_signature\": \"transferFrom(...) [possible signature; implementation unverified]\", \"implementation_unverified\": true}]}, \"0xdd62ed3e_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48\": {\"count_of_appearance\": 1, \"example_calls\": [{\"gas\": \"0x323a9\", \"params\": \"000000000000000000000000bc452fdc8f851d7c5b72e1fe74dfb63bb793d511000000000000000000000000c793113f1548b97e37c409f39244ee44241bf2b3\", \"params_hash\": \"e12b39946307\", \"depth\": [0, 0, 3, 1, 4], \"possible_signature\": \"allowance(...) [possible signature; implementation unverified]\", \"implementation_unverified\": true}]}, \"0xa9059cbb_0x43506849d7c04f9138d1a2050bbf3a0c054402dd\": {\"count_of_appearance\": 3, \"example_calls\": [{\"gas\": \"0x5e9de\", \"params\": \"000000000000000000000000c793113f1548b97e37c409f39244ee44241bf2b30000000000000000000000000000000000000000000000000000012fd80fba00\", \"params_hash\": \"c84faaf62f7e\", \"depth\": [0, 0, 2, 0], \"possible_signature\": \"transfer(...) [possible signature; implementation unverified]\", \"implementation_unverified\": true}, {\"gas\": \"0xd374\", \"params\": \"000000000000000000000000c793113f1548b97e37c409f39244ee44241bf2b30000000000000000000000000000000000000000000000000000012fd80fba00\", \"params_hash\": \"c84faaf62f7e\", \"depth\": [0, 0, 3, 2, 1, 0], \"possible_signature\": \"transfer(...) [possible signature; implementation unverified]\", \"implementation_unverified\": true}, {\"gas\": \"0x1a3a\", \"params\": \"000000000000000000000000ba12222222228d8ba445958a75a0704d566bf2c80000000000000000000000000000000000000000000000000000012fd80fba00\", \"params_hash\": \"dbc229257055\", \"depth\": [0, 0, 3, 3, 0], \"possible_signature\": \"transfer(...) [possible signature; implementation unverified]\", \"implementation_unverified\": true}]}, \"0x095ea7b3_0x43506849d7c04f9138d1a2050bbf3a0c054402dd\": {\"count_of_appearance\": 2, \"example_calls\": [{\"gas\": \"0x4de2b\", \"params\": \"000000000000000000000000bc452fdc8f851d7c5b72e1fe74dfb63bb793d511ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\", \"params_hash\": \"7351f4a0d8da\", \"depth\": [0, 0, 3, 0, 0], \"possible_signature\": \"approve(...) [possible signature; implementation unverified]\", \"implementation_unverified\": true}, {\"gas\": \"0x3043e\", \"params\": \"000000000000000000000000c793113f1548b97e37c409f39244ee44241bf2b30000000000000000000000000000000000000000000000000000012fd80fba00\", \"params_hash\": \"c84faaf62f7e\", \"depth\": [0, 0, 3, 1, 5, 0], \"possible_signature\": \"approve(...) [possible signature; implementation unverified]\", \"implementation_unverified\": true}]}, \"0x23b872dd_0x43506849d7c04f9138d1a2050bbf3a0c054402dd\": {\"count_of_appearance\": 1, \"example_calls\": [{\"gas\": \"0x3b75c\", \"params\": \"000000000000000000000000c793113f1548b97e37c409f39244ee44241bf2b3000000000000000000000000bc452fdc8f851d7c5b72e1fe74dfb63bb793d5110000000000000000000000000000000000000000000000000000012fd80fba00\", \"params_hash\": \"0b6b05927130\", \"depth\": [0, 0, 3, 1, 2, 0], \"possible_signature\": \"transferFrom(...) [possible signature; implementation unverified]\", \"implementation_unverified\": true}]}, \"0xdd62ed3e_0x43506849d7c04f9138d1a2050bbf3a0c054402dd\": {\"count_of_appearance\": 1, \"example_calls\": [{\"gas\": \"0x3143d\", \"params\": \"000000000000000000000000bc452fdc8f851d7c5b72e1fe74dfb63bb793d511000000000000000000000000c793113f1548b97e37c409f39244ee44241bf2b3\", \"params_hash\": \"e12b39946307\", \"depth\": [0, 0, 3, 1, 4, 0], \"possible_signature\": \"allowance(...) [possible signature; implementation unverified]\", \"implementation_unverified\": true}]}}\nReturn the key of the function call information (i.e., function_name_address) in a list format. Try to narrow down the list as much as possible. Do not include any other information.",
+    "reply": [
+     "0xefd86b62_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+     "0xf412e4c7_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511"
+    ]
+   },
+   {
+    "kind": "narrowdown_selection",
+    "env_snapshot": {
+     "model": "",
+     "reasoning_effort": "low",
+     "retry_limit": "0",
+     "max_functions": "5"
+    },
+    "dispatched_configs": [
+     {
+      "model": "gpt-6.1-sol-low",
+      "temperature": 0,
+      "reasoning_effort": null,
+      "max_tokens": 8,
+      "phase": "preflight"
+     },
+     {
+      "model": "gpt-6.1-sol-low",
+      "temperature": 0,
+      "reasoning_effort": null,
+      "max_tokens": null,
+      "phase": "analysis"
+     }
+    ],
+    "pre_candidate_count": 16,
+    "pre_created_contract_candidates": [],
+    "post_selection_count": 2,
+    "post_selection_keys": [
+     "0xefd86b62_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+     "0xf412e4c7_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511"
+    ],
+    "repeated_patterns_count": 0
+   }
+  ],
+  "function_verdicts": [
+   {
+    "known_buckets": [
+     "0xc9a69562_0xc793113f1548b97e37c409f39244ee44241bf2b3",
+     "0x5c38449e_0xba12222222228d8ba445958a75a0704d566bf2c8",
+     "0xd877845c_0xce88686553686da562ce7cea497ce749da109f9f",
+     "0xf04f2707_0xc793113f1548b97e37c409f39244ee44241bf2b3",
+     "0xefd86b62_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+     "0xf412e4c7_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+     "0x70a08231_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+     "0x70a08231_0x43506849d7c04f9138d1a2050bbf3a0c054402dd",
+     "0xa9059cbb_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+     "0x095ea7b3_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+     "0x23b872dd_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+     "0xdd62ed3e_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+     "0xa9059cbb_0x43506849d7c04f9138d1a2050bbf3a0c054402dd",
+     "0x095ea7b3_0x43506849d7c04f9138d1a2050bbf3a0c054402dd",
+     "0x23b872dd_0x43506849d7c04f9138d1a2050bbf3a0c054402dd",
+     "0xdd62ed3e_0x43506849d7c04f9138d1a2050bbf3a0c054402dd"
+    ],
+    "proposals": {
+     "0xefd86b62_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511": [
+      "0x70a08231_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+      "0x70a08231_0x43506849d7c04f9138d1a2050bbf3a0c054402dd",
+      "0xa9059cbb_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+      "0xa9059cbb_0x43506849d7c04f9138d1a2050bbf3a0c054402dd",
+      "0x095ea7b3_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+     ],
+     "0xf412e4c7_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511": [
+      "0x70a08231_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+      "0x70a08231_0x43506849d7c04f9138d1a2050bbf3a0c054402dd",
+      "0xa9059cbb_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+      "0xa9059cbb_0x43506849d7c04f9138d1a2050bbf3a0c054402dd"
+     ]
+    },
+    "rejected_findings": []
+   }
+  ],
+  "dispatched_configs": []
+ },
+ "analysis_integrity": {
+  "function_identity": "calldata_selector",
+  "abi_verified": false,
+  "ranked_targets": [
+   "0xc9a69562_0xc793113f1548b97e37c409f39244ee44241bf2b3",
+   "0x5c38449e_0xba12222222228d8ba445958a75a0704d566bf2c8",
+   "0xd877845c_0xce88686553686da562ce7cea497ce749da109f9f",
+   "0xf04f2707_0xc793113f1548b97e37c409f39244ee44241bf2b3",
+   "0xefd86b62_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+   "0xf412e4c7_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+   "0x70a08231_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "0x70a08231_0x43506849d7c04f9138d1a2050bbf3a0c054402dd",
+   "0xa9059cbb_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "0x095ea7b3_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "0x23b872dd_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "0xdd62ed3e_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+   "0xa9059cbb_0x43506849d7c04f9138d1a2050bbf3a0c054402dd",
+   "0x095ea7b3_0x43506849d7c04f9138d1a2050bbf3a0c054402dd",
+   "0x23b872dd_0x43506849d7c04f9138d1a2050bbf3a0c054402dd",
+   "0xdd62ed3e_0x43506849d7c04f9138d1a2050bbf3a0c054402dd"
+  ],
+  "unverified_targets": [],
+  "function_name_verification": "narrative names are unverified model labels; selectors and addresses are the verified identities",
+  "model_analysis": {
+   "analysis_calls_ok": 50,
+   "analysis_calls_failed": 0,
+   "preflight_calls_ok": 1,
+   "scored_functions": 5,
+   "evidence_cards": 5,
+   "function_analysis_runs_observed": {
+    "started": 1,
+    "completed": 1
+   }
+  },
+  "function_wall_cap": {
+   "cap_secs": 480,
+   "functions": [
+    {
+     "kind": "function",
+     "function": "0xefd86b62@0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+     "outcome": "normal",
+     "detail": "iteration_ceiling",
+     "elapsed_wall_secs": 308.1,
+     "elapsed_mono_secs": 308.1,
+     "completed_cycles": 3,
+     "ceiling": 3
+    },
+    {
+     "kind": "function",
+     "function": "0xf412e4c7@0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+     "outcome": "normal",
+     "detail": "iteration_ceiling",
+     "elapsed_wall_secs": 299.5,
+     "elapsed_mono_secs": 299.5,
+     "completed_cycles": 3,
+     "ceiling": 3
+    }
+   ],
+   "normal": 2,
+   "likely_forced": 0,
+   "unknown_exit": 0,
+   "error": 0
+  }
+ },
+ "trace_provenance": {
+  "source": "structured_rpc_or_cache",
+  "identity_cross_check": "eth_getTransactionByHash + eth_chainId",
+  "transaction_hash": "0xa17fdb804728f226fcd10e78eae5247abd984e0f03301312315b89cae25aa517",
+  "chain": "eth",
+  "block_hash": "0x563f516841cca5f633e51498e3bd305aed2ca919273950e0281805c65952acc4",
+  "block_number": "0x12c69cf",
+  "function_identity": "calldata_selector",
+  "abi_verified": false
+ },
+ "deterministic_rule_observation": {
+  "rule_verdict": "EXPLOIT",
+  "rule_confidence": 0.85,
+  "matched_rule": "closed_source_access_control",
+  "vuln_type_hint": "Improper Access Control Of Close-Source Contract",
+  "reentrancy": {
+   "score": 0.0,
+   "detected": false,
+   "tier": "NOT_REENTRANCY",
+   "signals": {
+    "same_function_reentry": false,
+    "cross_function_reentry": true,
+    "reentry_before_return": true,
+    "slot_rewrite": false,
+    "write_after_call": false,
+    "state_slot_reentry": false
+   },
+   "context": {
+    "fallback_mode": false,
+    "storage_trace_available": true
+   }
+  },
+  "priority": {
+   "total": 0.94,
+   "exploitability": 0.85,
+   "reentrancy": 0.0,
+   "flashloan": 0.6,
+   "price_manipulation": 0.0,
+   "liquidity_drain": 0.0,
+   "reentrancy_source": "storage"
+  },
+  "priority_score": 0.94,
+  "signals": {
+   "reentrancy": {
+    "score": 0.0,
+    "detected": false,
+    "tier": "NOT_REENTRANCY",
+    "signals": {
+     "same_function_reentry": false,
+     "cross_function_reentry": true,
+     "reentry_before_return": true,
+     "slot_rewrite": false,
+     "write_after_call": false,
+     "state_slot_reentry": false
+    },
+    "context": {
+     "fallback_mode": false,
+     "storage_trace_available": true
+    }
+   },
+   "reentrancy_score": 0.0,
+   "reentrancy_detected": false,
+   "reentrancy_paths_count": 0,
+   "reentrancy_fallback_mode": false,
+   "reentrancy_detection_threshold": 0.45,
+   "reentrancy_confidence_tier": "NOT_REENTRANCY",
+   "reentrancy_signals": {
+    "same_function_reentry": false,
+    "cross_function_reentry": true,
+    "reentry_before_return": true,
+    "slot_rewrite": false,
+    "write_after_call": false,
+    "state_slot_reentry": false
+   },
+   "reentrancy_context": {
+    "fallback_mode": false,
+    "storage_trace_available": true
+   },
+   "flash_loan_detected": true,
+   "flash_callback_detected": true,
+   "flash_profit_eth": 0.0,
+   "price_read_write_sequences": 0,
+   "price_delta_ratio": 0.0,
+   "price_manipulation_detected": false,
+   "hashed_fn_count": 34,
+   "closed_source_state_change": true,
+   "access_control_bypass": true,
+   "privileged_calls_count": 10,
+   "created_contract_in_privileged": false,
+   "arbitrary_external_call": false,
+   "inflation_attack": false,
+   "single_transfer_only": false,
+   "profit_extraction_eth": 0.0,
+   "large_transfer_to_eoa": false,
+   "top_vuln_hints": [
+    "Flash Loan Attack",
+    "Access Control"
+   ],
+   "debug": {
+    "same_contract_reentry": 1,
+    "ancestor_proximity_reentry": 0,
+    "same_selector_reentry": 0,
+    "delegatecall_proxy_reentry": 0,
+    "call_depth_max": 5,
+    "external_calls": 24,
+    "state_changes_after_call": false,
+    "state_reentry": false,
+    "write_before_and_after": false,
+    "same_function_reentered": false,
+    "same_contract_different_selector": true,
+    "nested_depth_reentry": true,
+    "external_call_chain": true,
+    "same_slot_rewritten": false,
+    "storage_events_total": 5,
+    "storage_trace_available": true,
+    "detection_threshold": 0.45,
+    "guard_slots_filtered": 0,
+    "reentrant_patterns_found": 2,
+    "score_components": {
+     "same_contract_reentry": 1,
+     "ancestor_proximity_reentry": 0,
+     "same_selector_reentry": 0,
+     "delegatecall_proxy_reentry": 0,
+     "call_depth_max": 5,
+     "external_calls": 24,
+     "state_changes_after_call": false,
+     "state_reentry": false,
+     "write_before_and_after": false,
+     "same_function_reentered": false,
+     "same_contract_different_selector": true,
+     "nested_depth_reentry": true,
+     "external_call_chain": true,
+     "same_slot_rewritten": false,
+     "storage_events_total": 5,
+     "storage_trace_available": true,
+     "detection_threshold": 0.45,
+     "guard_slots_filtered": 0,
+     "score": 0.0
+    }
+   },
+   "graph_reasoning": {
+    "node_count": 11,
+    "edge_count": 38,
+    "node_kinds": {
+     "contract_or_eoa": 6,
+     "storage_slot": 5
+    },
+    "edge_kinds": {
+     "call": 10,
+     "sstore": 5,
+     "staticcall": 9,
+     "delegatecall": 14
+    },
+    "cycle_count": 1,
+    "delegatecall_edges": 14,
+    "transfer_edges": 0,
+    "storage_slot_edges": 5,
+    "anomaly_score": 1.0,
+    "motifs": [
+     "recursive_cycle",
+     "proxy_delegatecall"
+    ]
+   },
+   "trace_entropy": 0.532803,
+   "call_depth_max": 11,
+   "token_flow_anomaly": 1.0,
+   "calibrated_confidence": null,
+   "ablation": {
+    "disable_faegl": false,
+    "disable_tig": false,
+    "disable_calibration": false,
+    "disable_llm_routing": false,
+    "disable_adversarial_hardening": false,
+    "variant": "full_system",
+    "disabled_components": []
+   }
+  }
+ },
+ "limitations": [
+  "Function identities use observed calldata selectors. Human-readable names require verified ABI/source at the execution context; selector-database labels are not proof."
+ ],
+ "model_endpoint": {
+  "attempts": 51,
+  "tokens": {
+   "prompt": 0,
+   "completion": 0,
+   "reasoning": 0
+  },
+  "retries_remaining": 0,
+  "blank_answer_retries": 0,
+  "calls": {
+   "preflight": {
+    "ok": 1,
+    "failed": 0
+   },
+   "analysis": {
+    "ok": 50,
+    "failed": 0
+   }
+  },
+  "transport_seconds": 653.195,
+  "time_budget_seconds": 6000.0,
+  "abstention_augmented_calls": 6,
+  "abstention_targeting_mismatches": 1,
+  "abstention_calls": [
+   {
+    "seq": 2,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 2,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "4d64c3d574db999b"
+   },
+   {
+    "seq": 3,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 3,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "5973b8af90e104b1"
+   },
+   {
+    "seq": 4,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 4,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "f2ddafe5a074d23c"
+   },
+   {
+    "seq": 5,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 5,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "d05245ad421963dc"
+   },
+   {
+    "seq": 6,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 6,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "ee5462d8f894f82d"
+   },
+   {
+    "seq": 7,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 7,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "b05588990e70924b"
+   },
+   {
+    "seq": 8,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 8,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "0d01d3130a7dcd52"
+   },
+   {
+    "seq": 9,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 9,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "4b3054c02eb1172d"
+   },
+   {
+    "seq": 10,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 10,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "31f913dc3539f8b5"
+   },
+   {
+    "seq": 11,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 11,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "ee2b89a1332ef480"
+   },
+   {
+    "seq": 12,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 12,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "e7575cfb911862a1"
+   },
+   {
+    "seq": 13,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 13,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "f10dc41dee0e9b8a"
+   },
+   {
+    "seq": 14,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 14,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "5adb43e9767b73cd"
+   },
+   {
+    "seq": 15,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 15,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "ff6aa4e0157aab5d"
+   },
+   {
+    "seq": 16,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 16,
+    "augmented": true,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "0d44e6141f803bf3",
+    "contract_in_adapted_payload": true
+   },
+   {
+    "seq": 17,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 17,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "4fcfa683c92b5584"
+   },
+   {
+    "seq": 18,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 18,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "6b60d5ddcd4e599e"
+   },
+   {
+    "seq": 19,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 19,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "f1098f8b0eddd4fd"
+   },
+   {
+    "seq": 20,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 20,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "b277abb6401d25b0"
+   },
+   {
+    "seq": 21,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 21,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "90dfebfa5eac9f57"
+   },
+   {
+    "seq": 22,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 22,
+    "augmented": true,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "edd563f93525bc22",
+    "contract_in_adapted_payload": true
+   },
+   {
+    "seq": 23,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 23,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "9fd57da7bc87c1c6"
+   },
+   {
+    "seq": 24,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 24,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "d664e81f5a33870a"
+   },
+   {
+    "seq": 25,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 25,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "f5a6bb1684be9b87"
+   },
+   {
+    "seq": 26,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 26,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "2e7cd8dc85119ef7"
+   },
+   {
+    "seq": 27,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 27,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "c4e35287f3e83eed"
+   },
+   {
+    "seq": 28,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 28,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "534fb4fa22c3c10e"
+   },
+   {
+    "seq": 29,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 29,
+    "augmented": true,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "cd416a3bb9fedc2a",
+    "contract_in_adapted_payload": true
+   },
+   {
+    "seq": 30,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 30,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "4b0143c4bd9f688f"
+   },
+   {
+    "seq": 31,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 31,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "14da36f5ff2a8e72"
+   },
+   {
+    "seq": 32,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 32,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "cb05fa0187a2036e"
+   },
+   {
+    "seq": 33,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 33,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "7304e1e949411052"
+   },
+   {
+    "seq": 34,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 34,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "deea6386258c6207"
+   },
+   {
+    "seq": 35,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 35,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "8e75265b42d52b1e"
+   },
+   {
+    "seq": 36,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 36,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "32be04d256a4ec54"
+   },
+   {
+    "seq": 37,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 37,
+    "augmented": true,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "561cfb7b3aa334a1",
+    "contract_in_adapted_payload": true
+   },
+   {
+    "seq": 38,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 38,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "91e2fc0e30d9174d"
+   },
+   {
+    "seq": 39,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 39,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "625d515fc5e59495"
+   },
+   {
+    "seq": 40,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 40,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "5cd23161a40f4203"
+   },
+   {
+    "seq": 41,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 41,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "82272f28207df7c0"
+   },
+   {
+    "seq": 42,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 42,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "4c8781990f4afa14"
+   },
+   {
+    "seq": 43,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 43,
+    "augmented": true,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "4ff254a3e0a6c393",
+    "contract_in_adapted_payload": true
+   },
+   {
+    "seq": 44,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 44,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "5aee84af2eb5ebf5"
+   },
+   {
+    "seq": 45,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 45,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "8d447b32a1c7fb31"
+   },
+   {
+    "seq": 46,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 46,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "071cb92e0ede799f"
+   },
+   {
+    "seq": 47,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 47,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "a2a29b1729593f62"
+   },
+   {
+    "seq": 48,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 48,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "bb337f59ebd5552f"
+   },
+   {
+    "seq": 49,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 49,
+    "augmented": false,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "8f31d6a0829e4e31"
+   },
+   {
+    "seq": 50,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 50,
+    "augmented": true,
+    "targeting_mismatch": false,
+    "adapted_messages_sha256_16": "1f49b2b1e597d439",
+    "contract_in_adapted_payload": true
+   },
+   {
+    "seq": 51,
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "attempt": 51,
+    "augmented": false,
+    "targeting_mismatch": true,
+    "adapted_messages_sha256_16": "692e7f66edffd94b"
+   }
+  ],
+  "attempts_detail": [
+   {
+    "phase": "preflight",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 2,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 2,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 11,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 13,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 9,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 11,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 11,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 114,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 1123,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 3573,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 1579,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 91,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 2261,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 1276,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 5586,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 687,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 1812,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 220,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 1996,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 1372,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 7409,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 687,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 2,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 1508,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 185,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 2185,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 1244,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 7470,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 687,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 843,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 2747,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 1417,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 91,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 2035,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 1329,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 4708,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 2,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 1382,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 185,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 2516,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 1394,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 6209,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 550,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 2,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 1411,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 185,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 1543,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 1369,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 7250,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 550,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   },
+   {
+    "phase": "analysis",
+    "model": "gpt-6.1-sol-low",
+    "has_choices": true,
+    "finish_reason": "stop",
+    "content_chars": 285,
+    "prompt_tokens": null,
+    "completion_tokens": null,
+    "reasoning_tokens": 0
+   }
+  ],
+  "failure": null
+ },
+ "stage_completed": "stage-3",
+ "priority_basis": "model_scored_functions",
+ "analysis_mode": "live-pipeline",
+ "analysis_status": "completed",
+ "transaction": {
+  "hash": "0xa17fdb804728f226fcd10e78eae5247abd984e0f03301312315b89cae25aa517",
+  "chain": "eth",
+  "analysis_duration": 671.5345895290375
+ },
+ "llm_cost": null,
+ "rpc_source": "unknown",
+ "query_records": [],
+ "classification": {
+  "rule_verdict": "INCONCLUSIVE",
+  "rule_confidence": null,
+  "matched_rule": "closed_source_access_control",
+  "vuln_type_hint": "unknown",
+  "priority_score": 0.94,
+  "priority": {
+   "total": 0.94,
+   "exploitability": 0.85,
+   "reentrancy": 0.0,
+   "flashloan": 0.6,
+   "price_manipulation": 0.0,
+   "liquidity_drain": 0.0,
+   "reentrancy_source": "storage"
+  },
+  "reentrancy": {
+   "score": 0.0,
+   "tier": "NOT_REENTRANCY",
+   "signals": {
+    "same_function_reentry": false,
+    "cross_function_reentry": true,
+    "reentry_before_return": true,
+    "slot_rewrite": false,
+    "write_after_call": false,
+    "state_slot_reentry": false
+   }
+  },
+  "signals": {
+   "reentrancy_score": 0.0,
+   "call_depth_max": 6,
+   "flash_loan_detected": true,
+   "large_transfer_to_eoa": null,
+   "price_manipulation_detected": false,
+   "reentrancy_confidence_tier": "NOT_REENTRANCY",
+   "profit_extraction_eth": null,
+   "token_flow_anomaly": null,
+   "graph_reasoning": {
+    "cycle_count": null,
+    "edge_count": null
+   }
+  }
+ },
+ "function_analysis": {
+  "functions_to_inspect": {
+   "function_name_with_hash": [
+    {
+     "address": "0x43506849d7c04f9138d1a2050bbf3a0c054402dd",
+     "function": "0x70a08231",
+     "depth": [
+      6
+     ],
+     "call_type": "",
+     "gas": null
+    },
+    {
+     "address": "0x43506849d7c04f9138d1a2050bbf3a0c054402dd",
+     "function": "0xa9059cbb",
+     "depth": [
+      6
+     ],
+     "call_type": "",
+     "gas": null
+    },
+    {
+     "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+     "function": "0x70a08231",
+     "depth": [
+      5
+     ],
+     "call_type": "",
+     "gas": null
+    },
+    {
+     "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+     "function": "0xa9059cbb",
+     "depth": [
+      5
+     ],
+     "call_type": "",
+     "gas": null
+    },
+    {
+     "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+     "function": "0x095ea7b3",
+     "depth": [
+      5
+     ],
+     "call_type": "",
+     "gas": null
+    }
+   ]
+  },
+  "repeated_patterns": {
+   "keys": []
+  }
+ },
+ "summary": {
+  "total_functions_to_inspect": 43,
+  "addresses_to_inspect": 2,
+  "repeated_patterns_detected": null
+ },
+ "attack_analysis": {
+  "potential_attackers": [],
+  "potential_victims": [],
+  "balance_changes": {}
+ },
+ "address_classification": {},
+ "finding_provenance": {
+  "analyzed_units": [
+   "0xefd86b62_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+   "0xf412e4c7_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511"
+  ],
+  "note": "Findings with analysis_role unknown_suspect are retained proposals whose vulnerable status is not established: they are neither confirmed vulnerable nor dismissed. citations, when present, name each analysis unit that cited the finding with its own structural relation in this run's trace only; a finding without citations has undetermined provenance - it was neither analyzed nor recorded as cited. also_analyzed marks a cited function that was additionally analyzed on its own. analyzed_target marks functions the analysis unit itself analyzed."
+ },
+ "score_provenance": {
+  "formula": "total = 1 - product(1 - component) over the listed components",
+  "component_sources": {
+   "exploitability": {
+    "source": "deterministic_rule_confidence",
+    "matched_rule": "closed_source_access_control",
+    "meaning": "Deterministic pre-analysis rule confidence, not an exploitability assessment. No function-level model evidence feeds the priority score."
+   }
+  }
+ }
+}
