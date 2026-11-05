@@ -1017,11 +1017,11 @@ def test_outbound_source_fit_component(pinned_fork):
         # source in the engine-dropped middle (head 8000 / tail 2000): flagged, unchanged
         mid = ("a" * 8500) + form + ("b" * 3000)
         out, ev = P._check_outbound_source_fit(mid, [src], cap)
-        assert out is mid and ev["status"] == "over_cap_request_cut" and ev["source_in_retained_region"] is False, name
+        assert out is mid and ev["status"] == "over_cap_request_cut" and ev["source_text_match_in_retained_region"] is False, name
         # source inside the retained head: still flagged (other evidence in the middle may be cut), unchanged
         headcase = ("a" * 100) + form + ("b" * 12000)
         out, ev = P._check_outbound_source_fit(headcase, [src], cap)
-        assert out is headcase and ev["status"] == "over_cap_request_cut" and ev["source_in_retained_region"] is True, name
+        assert out is headcase and ev["status"] == "over_cap_request_cut" and ev["source_text_match_in_retained_region"] is True, name
     # exact boundary: len == cap is under; cap + 1 is over
     form = forms["json"]
     exact = form + ("z" * (cap - len(form)))
@@ -1033,10 +1033,15 @@ def test_outbound_source_fit_component(pinned_fork):
     for srcs in ([src], [], None):
         out, ev = P._check_outbound_source_fit(key_msg, srcs, cap)
         assert out is key_msg and ev["status"] == "bound_source_unverified_outbound"
-    # no key, no source: not source-bearing -> no event
+    # any bound source for the run but not found in an over-cap request: fail closed (no key spelling needed)
     plain = "x" * 12000
-    assert P._check_outbound_source_fit(plain, [src], cap) == (plain, None)
+    out, ev = P._check_outbound_source_fit(plain, [src], cap)
+    assert out is plain and ev["status"] == "bound_source_unverified_outbound"
+    alt_key = '{"source": "?"}' + ("y" * 12000)
+    assert P._check_outbound_source_fit(alt_key, [src], cap)[1]["status"] == "bound_source_unverified_outbound"
+    # no bound source at all and no source-bearing key: nothing to protect -> no event
     assert P._check_outbound_source_fit(plain, [], cap) == (plain, None)
+    assert P._check_outbound_source_fit(plain, None, cap) == (plain, None)
     # non-string input is passed through
     assert P._check_outbound_source_fit(None, [src], cap) == (None, None)
 
@@ -1081,7 +1086,7 @@ def test_outbound_boundary_fail_closed_with_real_engine_truncation(pinned_fork, 
         agent._send_message(over)
         assert "middle truncated" in sent[-1] and esc not in sent[-1]
         ev = rt.source_retention_events[-1]
-        assert ev["status"] == "over_cap_request_cut" and ev["source_in_retained_region"] is False
+        assert ev["status"] == "over_cap_request_cut" and ev["source_text_match_in_retained_region"] is False
         # empty source collection + oversized source-bearing prompt through the real hook
         saved = list(rt.bound_source_texts)
         rt.bound_source_texts[:] = []
@@ -1119,3 +1124,65 @@ def test_unpreserved_bound_source_marks_run_partial(pinned_fork):
         assert x["sections"]["function_analysis"] == "partial_request_exceeded_cap"
         assert x["source_retention"]["requests_not_fit"] == 1
         assert any("not fully analyzed" in l and "Nothing was trimmed" in l for l in x["limitations"])
+
+
+def test_outbound_hook_binding_for_both_agent_classes(pinned_fork, tmp_path, monkeypatch):
+    """Real pinned signatures: user_message resolved by inspect.signature for
+    GPTAgent and UniversalAgent under positional, keyword and mixed calls;
+    messages pass through byte-for-byte (inspection only). Fake completion, no model/network."""
+    import types, inspect
+    from faultseeker.utils import agent as A
+    m = importlib.import_module("app.pipeline_guards")
+    for cls in (A.GPTAgent, A.UniversalAgent):
+        assert list(inspect.signature(cls._send_message).parameters)[:2] == ["self", "user_message"], cls
+    monkeypatch.setenv("OPENAI_API_KEY", "dummy-test-value")
+    rt = _runtime()
+    sent = []
+
+    def fake_call(create_client, kwargs, model, *a, **k):
+        sent.append(kwargs["messages"][-1]["content"])
+        return types.SimpleNamespace(choices=[types.SimpleNamespace(message=types.SimpleNamespace(content="ok"))], usage=None)
+
+    rt.session = types.SimpleNamespace(assert_healthy=lambda: None, call=fake_call, route_policy=None)
+    rt._model_config = None
+    try:
+        rt.bound_source_texts[:] = ["function zed() external { _q(); }\n"]
+        rt.install_model_hooks(A)
+        big = ("a" * 8500) + ("b" * 4000)   # over cap, bound source not present
+        for cls in (A.GPTAgent, A.UniversalAgent):
+            agent = cls("system", "qwen-plus") if cls is A.GPTAgent else cls("system", "qwen-plus", api_key="dummy")
+            for call in (lambda a: a._send_message(big), lambda a: a._send_message(user_message=big),
+                         lambda a: a._send_message(big, temperature=0.1), lambda a: a._send_message(temperature=0.1, user_message=big)):
+                n = len(rt.source_retention_events)
+                call(agent)
+                assert len(rt.source_retention_events) == n + 1, (cls, call)
+                assert rt.source_retention_events[-1]["status"] == "bound_source_unverified_outbound"
+                assert "middle truncated" in sent[-1]
+            n = len(rt.source_retention_events)
+            agent._send_message(user_message="short prompt")
+            assert len(rt.source_retention_events) == n and sent[-1] == "short prompt"
+    finally:
+        _restore(rt)
+
+
+def test_reporting_hardening_malformed_limitations_and_repeat(pinned_fork):
+    """Component test: malformed limitations are normalized, repeated
+    annotation does not duplicate the limitation, any event => never completed."""
+    from types import SimpleNamespace
+    from pathlib import Path
+    m = importlib.import_module("app.pipeline_guards")
+    identity = importlib.import_module("app.trace_identity")
+    fx = json.loads((Path(__file__).resolve().parent / "fixtures/hedgey_verified_trace.json").read_text())
+    tx = fx["provenance"]["transaction_hash"]
+    rt = m.PipelineRuntime(tx, "eth")
+    rt.sequence = identity.sequence_from_parity(fx["responses"]["trace_transaction"], tx, "eth")
+    rt.session = SimpleNamespace(summary=lambda: {"calls": {"preflight": {"ok": 1}, "analysis": {"ok": 3, "failed": 0}}, "tokens": {}},
+                                 assert_healthy=lambda: None)
+    rt.source_retention_events = [{"status": "over_cap_request_cut", "original_chars": 12000, "cap": 10000}]
+    for bad in (None, "a string", 7, ["ok"]):
+        r = rt.annotate_result({"transaction_hash": tx, "chain": "eth", "analysis_status": "completed", "limitations": bad})
+        assert isinstance(r["limitations"], list) and r["analysis_status"] == "partial"
+        assert r["sections"]["function_analysis"] == "partial_request_exceeded_cap"
+    again = rt.annotate_result(r)
+    assert sum("not fully analyzed" in l for l in again["limitations"]) == 1
+    assert again["analysis_status"] == "partial"

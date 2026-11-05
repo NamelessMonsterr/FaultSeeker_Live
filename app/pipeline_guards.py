@@ -4,6 +4,7 @@ Hooks are installed per worker before main() is entered, and removed on exit.
 The upstream checkout is not edited. This keeps local and Docker execution on
 the same transport/identity policy while retaining the pinned source revision.
 """
+import inspect
 import json
 import threading
 import re
@@ -943,11 +944,12 @@ class PipelineRuntime:
         over-cap, source-bearing request it records an explicit event so the
         run is reported partial / not fully analyzed. Returns (message, event).
         Statuses: over_cap_request_cut (bound source present, request will be
-        cut by the engine; source_in_retained_region says whether the source
-        itself happens to fall in the kept head/tail, other evidence may still
-        be cut), bound_source_unverified_outbound (source-bearing key present
-        but no bound source located, including an empty bound set).
-        At/under cap, or over cap with neither: (message, None)."""
+        cut by the engine; source_text_match_in_retained_region is an informational
+        substring-location observation, NOT a preservation guarantee; the run is
+        partial regardless), bound_source_unverified_outbound (source-bearing key present
+        but no bound source located, OR any bound source exists for the run but is not
+        found in the over-cap request).
+        At/under cap, or over cap with no bound source and no source-bearing key: (message, None)."""
         if not isinstance(message, str) or len(message) <= cap:
             return message, None
         P = PipelineRuntime
@@ -955,14 +957,17 @@ class PipelineRuntime:
         spans = P._find_spans(message, needles)
         base = {"original_chars": len(message), "cap": cap}
         if not spans:
-            if any(k in message for k in P.SOURCE_KEYS):
+            if sources or any(k in message for k in P.SOURCE_KEYS):
+                # fail closed: a run with ANY bound source, or a prompt carrying a
+                # source-bearing key, whose over-cap request does not contain the
+                # bound source text cannot be shown to carry verified source.
                 return message, {**base, "status": "bound_source_unverified_outbound"}
             return message, None
         head, tail = P.ENGINE_KEEP_HEAD, P.ENGINE_KEEP_TAIL
         kept = all(b <= head or a >= len(message) - tail for a, b in spans)
         return message, {**base, "status": "over_cap_request_cut",
                          "source_chars": sum(b - a for a, b in spans),
-                         "source_in_retained_region": kept}
+                         "source_text_match_in_retained_region": kept}  # informational substring-location only; never a preservation guarantee
 
     def _install_selector_source_binding(self):
         # Analysis-input root cause #2 (2026-11-05, verified): canonical traces
@@ -1264,16 +1269,20 @@ class PipelineRuntime:
                         "still classified local after CLOUD_PREFIXES extension")
         for agent_class in {agent_module.GPTAgent, agent_module.UniversalAgent}:
             original = agent_class._send_message
+            _sig = inspect.signature(original)
             def checked_send(agent, *args, _original=original, **kwargs):
                 self.assert_healthy()
-                if args and isinstance(args[0], str):
-                    _msg, _ev = self._check_outbound_source_fit(args[0], self.bound_source_texts, self.PROMPT_CAP)
-                    args = (_msg,) + tuple(args[1:])
-                elif isinstance(kwargs.get("user_message"), str):
-                    _msg, _ev = self._check_outbound_source_fit(kwargs["user_message"], self.bound_source_texts, self.PROMPT_CAP)
-                    kwargs = {**kwargs, "user_message": _msg}
-                else:
-                    _ev = None
+                # Inspect only (never rewrite). Resolve user_message through the real
+                # pinned signature, so positional/keyword binding is exact.
+                try:
+                    _um = _sig.bind(agent, *args, **kwargs).arguments.get("user_message")
+                except TypeError:
+                    _um = None
+                _ev = None
+                if isinstance(_um, str):
+                    _, _ev = self._check_outbound_source_fit(_um, self.bound_source_texts, self.PROMPT_CAP)
+                elif _um is not None or "user_message" not in _sig.parameters:
+                    _ev = {"status": "bound_source_unverified_outbound", "reason": "user_message not a string / not resolvable"}
                 if _ev:
                     self.source_retention_events.append(_ev)
                 try:
@@ -1676,6 +1685,9 @@ class PipelineRuntime:
     def annotate_result(self, value):
         self.assert_healthy()
         result = deepcopy(value)
+        _l0 = result.get("limitations") if isinstance(result, dict) else None
+        if isinstance(result, dict) and not isinstance(_l0, list):
+            result["limitations"] = [_l0] if isinstance(_l0, str) else (list(_l0) if isinstance(_l0, tuple) else [])
         reconcile_calibrated_confidence(result)
         if self.narrowdown_capture or self.ranked_targets or self.function_verdicts:
             dbg = result.setdefault("_debug", {})
@@ -1848,13 +1860,17 @@ class PipelineRuntime:
                 "prompt_cap": self.PROMPT_CAP, "requests_not_fit": len(_bad),
                 "events": deepcopy(_ev[:20])}
             if _bad:
+                _lim = result.get("limitations")
+                result["limitations"] = [_lim] if isinstance(_lim, str) else (list(_lim) if isinstance(_lim, (list, tuple)) else [])
                 result["analysis_status"] = "partial"
                 result["stage_completed"] = "function-analysis-partial"
                 result["sections"] = {**(result.get("sections") or {}), "function_analysis": "partial_request_exceeded_cap", "scoring": "not_validated"}
-                result.setdefault("limitations", []).append(
+                _txt = (
                     f"{len(_bad)} model request(s) with source-bearing content exceeded the {self.PROMPT_CAP}-character request cap (or the bound source could not be verified in the outbound request). "
                     "The engine cut those requests (head 8000 + tail 2000), so bound source and/or other required evidence may be missing. "
                     "Nothing was trimmed or rewritten by FaultSeeker. Those analyses are incomplete and the run is not fully analyzed.")
+                if _txt not in result["limitations"]:
+                    result["limitations"].append(_txt)
         return result
 
     def failure_report(self, error=None):
