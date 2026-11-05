@@ -157,6 +157,17 @@ def annotate_standard_selector_names(result):
             if hint:
                 entry["possible_signature"] = hint
                 entry["implementation_unverified"] = True
+                # Propagation fix (e2e finding): the REAL upstream narrow-down
+                # serializer (_review_function_calls) passes only
+                # count_of_appearance + example_calls[:3] into the prompt, and
+                # ranked call dicts carry no "function" key, so entry-level
+                # annotation never reached the model on selector traces.
+                # Stamp the hint onto the serialized call entries themselves;
+                # the serializer passes them through verbatim.
+                for c in (entry.get("calls") or [])[:3]:
+                    if isinstance(c, dict):
+                        c.setdefault("possible_signature", hint)
+                        c.setdefault("implementation_unverified", True)
             _annotate(entry.get("calls"))
         elif isinstance(entry, list):
             _annotate(entry)
