@@ -156,7 +156,8 @@ def test_retrieval_resolves_selector_through_real_analyzer_method(tmp_path, pinn
         # createLockedCampaign's unqualified struct names are PROVEN by the
         # file's own declarations (ClaimCampaigns.Campaign etc., declared in
         # ClaimCampaigns.sol) plus field-layout equality with the ABI tuples.
-        assert parsed["createLockedCampaign"][0]["decl_index"]["decls"]["Campaign"] == "ClaimCampaigns.Campaign"
+        assert parsed["createLockedCampaign"][0]["decl_index"]["decls"]["Campaign"] == [("ClaimCampaigns.Campaign", "ClaimCampaigns")]
+        assert parsed["createLockedCampaign"][0]["fn_scope"] == "ClaimCampaigns"
         out = FA._retrieve_source_code(stub, HEDGEY, "0xefd86b62")
         assert out and "createLockedCampaign" in out[0]["source_code"]
         rec = rt.selector_resolution_log[-1]
@@ -488,15 +489,16 @@ def test_overloaded_source_units_disambiguated_or_fail(pinned_fork):
                                                 ["address", "address", "uint256", "uint256", "uint8", "bytes32"],
                                                 ["address", "uint256", "uint256", "uint256", "uint256"],
                                                 ["address", "uint256", "uint256", "uint256", "uint256"]]}}}
-        decl_index = {"decls": {"Campaign": "ClaimCampaigns.Campaign",
-                                "ClaimLockup": "ClaimCampaigns.ClaimLockup",
-                                "Donation": "ClaimCampaigns.Donation"},
+        decl_index = {"decls": {"Campaign": [("ClaimCampaigns.Campaign", "ClaimCampaigns")],
+                                "ClaimLockup": [("ClaimCampaigns.ClaimLockup", "ClaimCampaigns")],
+                                "Donation": [("ClaimCampaigns.Donation", "ClaimCampaigns")]},
                       "fields": {"ClaimCampaigns.Campaign": ["address", "address", "uint256", "uint256", "uint8", "bytes32"],
                                  "ClaimCampaigns.ClaimLockup": ["address", "uint256", "uint256", "uint256", "uint256"],
-                                 "ClaimCampaigns.Donation": ["address", "uint256", "uint256", "uint256", "uint256"]}}
+                                 "ClaimCampaigns.Donation": ["address", "uint256", "uint256", "uint256", "uint256"]},
+                      "scopes": [("ClaimCampaigns", 0, 999)]}
         stub4, FA4 = _analyzer_stub({addr: {"createLockedCampaign": [
             {"path": "./ClaimCampaigns.sol", "start_line": 1, "end_line": 2, "content": hedgey_body,
-             "decl_index": decl_index}]}})
+             "decl_index": decl_index, "fn_scope": "ClaimCampaigns"}]}})
         out4 = FA4._retrieve_source_code(stub4, addr, "0xefd86b62")
         # Unqualified names PROVEN by the declaration index + field layouts.
         assert len(out4) == 1
@@ -513,7 +515,7 @@ def test_overloaded_source_units_disambiguated_or_fail(pinned_fork):
                                  "ClaimCampaigns.Campaign": ["address", "address", "uint256", "uint256", "uint8", "uint128"]}}
         stub4b, FA4b = _analyzer_stub({addr: {"createLockedCampaign": [
             {"path": "./ClaimCampaigns.sol", "start_line": 1, "end_line": 2, "content": hedgey_body,
-             "decl_index": bad_fields}]}})
+             "decl_index": bad_fields, "fn_scope": "ClaimCampaigns"}]}})
         out4b = FA4b._retrieve_source_code(stub4b, addr, "0xefd86b62")
         assert out4b == []
         assert rt.selector_resolution_log[-1]["reason"] == "signature_mismatch"
@@ -659,6 +661,46 @@ def test_header_matches_abi_exact_type_identity(pinned_fork):
              ["struct X.Campaign", "struct X.Lock"]) is None
     assert f("function f(Campaign memory a, Campaign memory b) {}", ["(address)", "(address)"],
              ["struct X.Campaign", "struct X.Campaign"]) is None
+
+
+def test_declaration_scope_provenance(pinned_fork):
+    """Namespace proof is scoped to the function's OWN enclosing contract (or a
+    unique file-level declaration). A same-name declaration in ANOTHER contract
+    of the same file - or import/inheritance ambiguity - never proves it."""
+    m = importlib.import_module("app.pipeline_guards")
+    P = m.PipelineRuntime
+    src = (
+        "contract A {\n"
+        "  struct Item { address a; uint256 b; }\n"
+        "  function f(Item memory x) external {}\n"
+        "}\n"
+        "contract B {\n"
+        "  struct Item { address a; }\n"
+        "  function g(Item memory x) external {}\n"
+        "}\n")
+    idx = P._declaration_index(src)
+    assert idx["decls"]["Item"] == [("A.Item", "A"), ("B.Item", "B")]
+    # function in A: its own scope's declaration proves the name
+    assert P._resolve_decl(idx, "Item", "A") == "A.Item"
+    assert P._resolve_decl(idx, "Item", "B") == "B.Item"
+    # unknown scope (import/inheritance ambiguity): unproven
+    assert P._resolve_decl(idx, "Item", "C") is None
+    assert P._resolve_decl(idx, "Item", None) is None
+    # file-level declaration proves for any contract scope, uniquely
+    src2 = "struct Top { address a; }\ncontract C {\n  function h(Top memory t) external {}\n}\n"
+    idx2 = P._declaration_index(src2)
+    assert P._resolve_decl(idx2, "Top", "C") == "Top"
+    # enclosing-contract declaration shadows a file-level one (Solidity rule)
+    src3 = ("struct Top { address a; }\ncontract D {\n"
+            "  struct Top { address a; uint256 b; }\n"
+            "  function h(Top memory t) external {}\n}\n")
+    idx3 = P._declaration_index(src3)
+    assert P._resolve_decl(idx3, "Top", "D") == "D.Top"
+    # end to end: function in B, ABI names A.Item -> mismatch; layout differs too
+    body_b = "function g(Item memory x) external {}"
+    v = P._header_matches_abi(body_b, ["(address,uint256)"], ["struct A.Item"],
+                              [["address", "uint256"]], idx, fn_scope="B")
+    assert v is False  # B.Item != A.Item: proven mismatch, not a bind
 
 
 @pytest.mark.skipif(os.getenv("FAULTSEEKER_LIVE_NETWORK") != "1",

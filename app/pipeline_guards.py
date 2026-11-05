@@ -661,26 +661,30 @@ class PipelineRuntime:
 
     @staticmethod
     def _declaration_index(source_text):
-        """Source-context resolution: declarations visible in ONE file.
+        """Source-context resolution: declarations visible in ONE file, with
+        enclosing-scope provenance.
 
-        {"decls": {simple_name: qualified_name}, "kinds": {qualified_name:
-        "struct"|"enum"|"contract"}, "fields": {qualified_name: [canonical
-        field types] | None}} for struct/enum declarations and contract/
-        library/interface scopes, one nesting level, comments stripped. A
-        name absent from decls may come from an import and stays unproven.
-        Enum-typed struct fields resolve to uint8 (the ABI canonical form);
-        other non-elementary fields make fields None (unsupported depth)."""
+        {"decls": {simple_name: [(qualified_name, scope_or_None), ...]},
+         "kinds": {qualified_name: "struct"|"enum"|"contract"},
+         "fields": {qualified_name: [canonical field types] | None},
+         "scopes": [(contract_name, start_offset, end_offset)]}
+
+        A name resolves for a function ONLY from its own enclosing contract's
+        declarations or a UNIQUE file-level declaration; a declaration inside
+        a DIFFERENT contract (shadowing/inheritance/import ambiguity) never
+        proves it. Enum-typed struct fields resolve to uint8 (the ABI
+        canonical form); other non-elementary fields make fields None
+        (unsupported depth fails closed)."""
         text = re.sub(r"/\*.*?\*/", " ", source_text or "", flags=re.S)
         text = re.sub(r"//[^\n]*", "", text)
-        decls, kinds, fields = {}, {}, {}
-        scope = None
-        depth = 0
+        decls, kinds, fields, scopes = {}, {}, {}, []
+        scope, scope_start, depth = None, 0, 0
         i = 0
         n = len(text)
         while i < n:
             m = re.match(r"(contract|library|interface)\s+(\w+)[^{;]*\{", text[i:])
             if m and scope is None and (i == 0 or text[i - 1] == "\n"):
-                scope = m.group(2)
+                scope, scope_start = m.group(2), i
                 i += m.end()
                 depth = 1
                 continue
@@ -688,11 +692,12 @@ class PipelineRuntime:
             if m and (i == 0 or text[i - 1] in "\n "):
                 kind, name = m.group(1), m.group(2)
                 qualified = f"{scope}.{name}" if scope else name
-                decls.setdefault(name, qualified)
+                decls.setdefault(name, []).append((qualified, scope))
                 kinds[qualified] = kind
                 j = text.find("}", i + m.end())
                 if j == -1:
-                    return {"decls": decls, "kinds": kinds, "fields": fields}
+                    scopes.append((scope, scope_start, n)) if scope else None
+                    return {"decls": decls, "kinds": kinds, "fields": fields, "scopes": scopes}
                 body = text[i + m.end():j]
                 if kind == "struct":
                     canon_fields = []
@@ -703,12 +708,13 @@ class PipelineRuntime:
                         ftok = field.split()[0] if field.split() else ""
                         canon = PipelineRuntime._normalize_source_type(ftok)
                         if canon is None:
-                            # enum-typed field: canonical ABI form is uint8
                             fbase = ftok.split("[")[0]
-                            fqual = decls.get(fbase, fbase)
-                            if kinds.get(fqual) == "enum":
-                                suffix = ftok[len(fbase):]
-                                canon = "uint8" + suffix
+                            # enum-typed field (same scope or file-level): uint8
+                            fcands = [q for q, sc in decls.get(fbase, [])
+                                      if sc == scope or sc is None]
+                            fqual = fcands[0] if len(fcands) == 1 else None
+                            if fqual and kinds.get(fqual) == "enum":
+                                canon = "uint8" + ftok[len(fbase):]
                             else:
                                 canon_fields = None
                                 break
@@ -722,13 +728,33 @@ class PipelineRuntime:
             elif ch == "}":
                 depth -= 1
                 if scope is not None and depth == 0:
+                    scopes.append((scope, scope_start, i))
                     scope = None
             i += 1
-        return {"decls": decls, "kinds": kinds, "fields": fields}
+        if scope is not None:
+            scopes.append((scope, scope_start, n))
+        return {"decls": decls, "kinds": kinds, "fields": fields, "scopes": scopes}
+
+    @staticmethod
+    def _resolve_decl(decl_index, base, fn_scope):
+        """Qualified name for an unqualified token, or None when the function's
+        own scope and the file level cannot prove it. Enclosing-contract
+        declarations win over file-level ones; anything else (other contracts,
+        imports, inheritance) is ambiguity and fails closed."""
+        entries = (decl_index or {}).get("decls", {}).get(base) or []
+        scoped = [q for q, sc in entries if sc is not None and sc == fn_scope]
+        if len(scoped) == 1:
+            return scoped[0]
+        if scoped:
+            return None
+        file_level = [q for q, sc in entries if sc is None]
+        if len(file_level) == 1:
+            return file_level[0]
+        return None
 
     @staticmethod
     def _header_matches_abi(source_code, input_types, internal_types,
-                            components=None, decl_index=None):
+                            components=None, decl_index=None, fn_scope=None):
         """Exact type-identity check: every header parameter must match the ABI
         input at its position. Elementary source tokens canonicalize and must
         equal the canonical ABI type; user-defined tokens (struct/enum/
@@ -774,8 +800,10 @@ class PipelineRuntime:
                     return False
                 resolved = base
             else:
-                # unqualified: provable only via the file's own declarations
-                resolved = (decl_index or {}).get("decls", {}).get(base)
+                # unqualified: provable only via the function's own enclosing
+                # contract or a unique file-level declaration (shadowing /
+                # import / inheritance ambiguity fails closed)
+                resolved = PipelineRuntime._resolve_decl(decl_index, base, fn_scope)
                 if resolved is None:
                     return None
                 if resolved != it_name:
@@ -899,6 +927,7 @@ class PipelineRuntime:
             # resolved against the file's OWN declarations instead of guessed.
             parsed = original_parse_contract(output_dir)
             file_index = {}
+            file_text = {}
             for entries in parsed.values():
                 for e in entries:
                     rel = e.get("path") or ""
@@ -906,10 +935,22 @@ class PipelineRuntime:
                         actual = os.path.join(output_dir, rel.lstrip("./"))
                         try:
                             with open(actual, encoding="utf-8") as fh:
-                                file_index[rel] = PipelineRuntime._declaration_index(fh.read())
+                                file_text[rel] = fh.read()
                         except OSError:
-                            file_index[rel] = {"decls": {}, "fields": {}}
+                            file_text[rel] = ""
+                        file_index[rel] = PipelineRuntime._declaration_index(file_text[rel])
                     e["decl_index"] = file_index[rel]
+                    # The function's actual enclosing contract: a declaration
+                    # from another contract in the same file never proves a
+                    # name for this function.
+                    try:
+                        stripped = re.sub(r"/\*.*?\*/", " ", file_text[rel], flags=re.S)
+                        stripped = re.sub(r"//[^\n]*", "", stripped)
+                        off = sum(len(l) + 1 for l in stripped.split("\n")[:max(0, (e.get("start_line") or 1) - 1)])
+                        e["fn_scope"] = next((name for name, s, en in file_index[rel].get("scopes", [])
+                                              if s <= off <= en), None)
+                    except Exception:
+                        e["fn_scope"] = None
             return parsed
         self.replace(ContractDownloader, "parse_contract", staticmethod(parse_contract_with_decl_index))
 
@@ -947,6 +988,7 @@ class PipelineRuntime:
                     raw = by_identity.get((c.get("path"), c.get("source_code")))
                     if raw and raw.get("decl_index"):
                         c["decl_index"] = raw["decl_index"]
+                        c["fn_scope"] = raw.get("fn_scope")
                 # Exact unit binding: the ABI selector proves the signature; the
                 # source parser keys by name only, so multiple candidate bodies
                 # (overloads, same-name functions across inherited contracts)
@@ -963,7 +1005,8 @@ class PipelineRuntime:
                                                             entry.get("input_types"),
                                                             entry.get("input_internal_types"),
                                                             entry.get("input_components"),
-                                                            c.get("decl_index"))
+                                                            c.get("decl_index"),
+                                                            c.get("fn_scope"))
                                 for c in candidates]
                     # Exactly one proven match AND every other candidate
                     # provably excluded: an undecidable (None) candidate might
@@ -987,7 +1030,7 @@ class PipelineRuntime:
                     verdict = runtime._header_matches_abi(
                         candidates[0].get("source_code"), entry.get("input_types"),
                         entry.get("input_internal_types"), entry.get("input_components"),
-                        candidates[0].get("decl_index"))
+                        candidates[0].get("decl_index"), candidates[0].get("fn_scope"))
                     if verdict is not True:
                         # False: a parameter's type identity provably disagrees
                         #   (wrong canonical type, wrong user-defined name, wrong
