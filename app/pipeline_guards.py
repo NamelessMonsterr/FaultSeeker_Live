@@ -825,11 +825,14 @@ class PipelineRuntime:
                     record["analysis_context"] = context_for(key)
         result["finding_provenance"] = {
             "analyzed_units": sorted(analyzed),
-            "note": ("Findings with analysis_role unknown_suspect were cited during the analysis of "
-                     "another function; citations name each citing unit with its own structural "
-                     "relation in this run's trace only. They are neither confirmed vulnerable nor "
-                     "dismissed; also_analyzed marks a cited function that was additionally analyzed "
-                     "on its own. analyzed_target marks functions the analysis unit itself analyzed.")}
+            "note": ("Findings with analysis_role unknown_suspect are retained proposals whose "
+                     "vulnerable status is not established: they are neither confirmed vulnerable "
+                     "nor dismissed. citations, when present, name each analysis unit that cited "
+                     "the finding with its own structural relation in this run's trace only; a "
+                     "finding without citations has undetermined provenance - it was neither "
+                     "analyzed nor recorded as cited. also_analyzed marks a cited function that "
+                     "was additionally analyzed on its own. analyzed_target marks functions the "
+                     "analysis unit itself analyzed.")}
 
     def annotate_result(self, value):
         self.assert_healthy()

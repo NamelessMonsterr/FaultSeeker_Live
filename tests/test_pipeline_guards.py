@@ -1027,3 +1027,23 @@ def test_console_js_relabels_rule_confidence_and_renders_role():
     assert "Rule confidence (deterministic)" in source
     assert "Role: unknown suspect" in source
     assert "cited during analysis of" in source
+
+
+def test_uncited_unknown_suspect_claims_no_citation():
+    # PR2-F1: a finding absent from both the analyzed set and every citation
+    # list has undetermined provenance. Neither the JSON context, the global
+    # note, nor the console copy may claim it was cited.
+    runtime, unit = _provenance_runtime()
+    ghost = "0xdeadbeef_0x0000000000000000000000000000000000000001"
+    result = {"potentially_vulnerable_functions": {
+        ghost: {"evidence": ["x"], "confidence_score": [0.5], "depth": 3}}}
+    out = runtime.annotate_result(result)
+    ctx = out["potentially_vulnerable_functions"][ghost]["analysis_context"]
+    assert ctx["analysis_role"] == "unknown_suspect"
+    assert ctx["citations"] == []
+    assert ctx["trace_relation"] == "undetermined"
+    note = out["finding_provenance"]["note"]
+    assert "without citations has undetermined provenance" in note
+    assert "were cited during the analysis of" not in note
+    source = (ROOT / "app/web/assets/console.js").read_text()
+    assert "provenance undetermined (not recorded as analyzed or cited)" in source
