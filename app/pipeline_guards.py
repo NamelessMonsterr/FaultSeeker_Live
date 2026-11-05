@@ -46,6 +46,30 @@ SEL_DEX_READS = {
     "0xd21220a7",  # token1()
     "0x0902f1ac",  # getReserves()
 }
+# Full standard token surface (reads + state-changing). Used only for
+# DEMOTION of token-like addresses, never for exclusion: an address whose
+# observed calls in this transaction are entirely within this surface behaves
+# exactly like a standard token in this trace (grounded context). An address
+# with ANY custom selector observed, or any tx-created contract, is never
+# demoted - a malicious implementation behind a standard selector stays
+# discoverable at full rank.
+SEL_TOKEN_SURFACE = SEL_ERC20_READS | SEL_DEX_READS | {
+    "0xa9059cbb",  # transfer(address,uint256)
+    "0x23b872dd",  # transferFrom(address,address,uint256)
+    "0x095ea7b3",  # approve(address,uint256),
+}
+# Canonical names for the verified standard selectors (4byte/openchain,
+# 2026-11-05). Used to ANNOTATE selection-time presentations: the upstream
+# narrow-down design assumed decoded names; on selector traces the model saw
+# bare hex and could not tell noise from signal. Labeling restores the
+# semantics without filtering anything.
+SEL_STANDARD_NAMES = {
+    "0xa9059cbb": "transfer", "0x23b872dd": "transferFrom",
+    "0x095ea7b3": "approve", "0x70a08231": "balanceOf",
+    "0xdd62ed3e": "allowance", "0x18160ddd": "totalSupply",
+    "0x313ce567": "decimals", "0x06fdde03": "name", "0x95d89b41": "symbol",
+    "0x0dfe1681": "token0", "0xd21220a7": "token1", "0x0902f1ac": "getReserves",
+}
 SEL_PRICE_READS = {"0x0902f1ac", "0x3850c7bd"}  # getReserves(), slot0()
 # Presence of any of these is an OBSERVATION about the trace, never proof of
 # a mechanism; mechanism classification belongs to the rule layer, which
@@ -101,6 +125,69 @@ def prune_static_readonly_selectors(result):
             pattern["pattern"] = entries
             kept_patterns.append(pattern)
     result.repeated_patterns = kept_patterns
+    return result
+
+
+def annotate_standard_selector_names(result):
+    """Attach the verified canonical name to each call of a standard selector,
+    in functions_to_be_inspected and created-contract call lists. Pure
+    presentation metadata: keys, counts and membership are untouched, so every
+    entry remains analyzable; the narrow-down and analysis prompts simply stop
+    being semantics-free hex."""
+    def _annotate(calls):
+        for c in calls or []:
+            nm = SEL_STANDARD_NAMES.get(str(c.get("function") or "").lower())
+            if nm:
+                c["standard_name"] = nm
+    for entry in result.functions_to_be_inspected.values():
+        fn = None
+        _annotate(entry.get("calls"))
+    for key, entry in result.functions_to_be_inspected.items():
+        nm = SEL_STANDARD_NAMES.get(key.rsplit("_", 1)[0].lower())
+        if nm:
+            entry["standard_name"] = nm
+    for entry in result.address_calls_with_created_contract_in_params.values():
+        _annotate(entry.get("calls"))
+    return result
+
+
+def order_ranked_targets(result, observed_functions_by_address, created_addresses):
+    """Selection ordering with diversity slots. Groups, count-desc within each:
+    A: entries at addresses with any custom selector observed, and all
+       tx-created contracts (exploit-relevant by construction);
+    B: ONE representative (highest count) per token-like address, so a
+       malicious ERC-20-only contract keeps a visible slot and cannot be
+       silently crowded out;
+    C: remaining duplicate token-surface entries.
+    Token-likeness is a HEURISTIC (all observed calls at the address are
+    standard-token selectors in this one transaction), not verified safe
+    behavior; nothing is dropped from the ranked targets."""
+    observed_functions_by_address = observed_functions_by_address or {}
+    created = {a.lower() for a in (created_addresses or set())}
+
+    def addr_of(key):
+        return key.rsplit("_", 1)[1].lower()
+
+    def is_token_like(addr):
+        if addr in created:
+            return False
+        observed = observed_functions_by_address.get(addr)
+        return bool(observed) and all(o.lower() in SEL_TOKEN_SURFACE for o in observed)
+
+    group_a, by_token_addr = [], {}
+    for key, val in result.functions_to_be_inspected.items():
+        addr = addr_of(key)
+        if is_token_like(addr) and key.rsplit("_", 1)[0].lower() in SEL_TOKEN_SURFACE:
+            by_token_addr.setdefault(addr, []).append((key, val))
+        else:
+            group_a.append((key, val))
+    group_b, group_c = [], []
+    for addr, entries in by_token_addr.items():
+        entries.sort(key=lambda kv: kv[1].get("count", 0), reverse=True)
+        group_b.append(entries[0])
+        group_c.extend(entries[1:])
+    group_b.sort(key=lambda kv: kv[1].get("count", 0), reverse=True)
+    result.functions_to_be_inspected = dict(group_a + group_b + group_c)
     return result
 
 
@@ -284,6 +371,17 @@ class PipelineRuntime:
                 raise TraceIdentityError("Cannot rank targets without a checked canonical trace.")
             result = original_rank(ranker, *args, **kwargs)
             result = prune_static_readonly_selectors(result)
+            observed_by_addr = {}
+            created_addrs = set()
+            for n in walk(self.sequence["trace"]):
+                fn = n.get("function")
+                addr = (n.get("address") or "").lower()
+                if fn and addr:
+                    observed_by_addr.setdefault(addr, set()).add(fn)
+                if str(n.get("call_type") or n.get("type") or "").lower() in ("create", "create2"):
+                    created_addrs.add(addr)
+            result = order_ranked_targets(result, observed_by_addr, created_addrs)
+            result = annotate_standard_selector_names(result)
             allowed = {f"{n['function']}_{n['address']}".lower() for n in walk(self.sequence["trace"])}
             if any(key.lower() not in allowed for key in result.functions_to_be_inspected):
                 raise TraceIdentityError("Ranked target is not an observed canonical selector/address pair.")

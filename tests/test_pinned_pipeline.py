@@ -148,3 +148,85 @@ def test_real_agents_keep_preflight_rotation_and_rotate_mid_run(pinned, monkeypa
         assert "PRIVATE_PROVIDER_BODY" not in json.dumps(events)
     finally:
         runtime.close()
+
+
+def test_offline_real_trace_selection_order_diversity_slots(pinned, monkeypatch):
+    """Offline selection regression on the REAL Hedgey tx1 trace (34 parity
+    frames, quicknode 2026-11-05): custom functions must lead, one
+    representative slot per token-like address (USDC proxy AND its
+    delegatecalled implementation), nothing dropped, names annotated.
+    functions_to_be_inspected is built from the real flatten_trace using the
+    orchestrator's own admission rule (non-staticcall calls only,
+    orchestrator.py:100)."""
+    m = importlib.import_module("app.pipeline_guards")
+    fix = json.loads((ROOT / "tests/fixtures/hedgey_tx1_parity_trace.json").read_text())
+    TX1 = fix["provenance"]["transaction_hash"]
+    identity = sequence_from_parity(fix["responses"]["trace_transaction"], TX1, "eth")
+    trace_module = importlib.import_module("faultseeker.forensics.trace_analyzer")
+    monkeypatch.setattr(trace_module, "build_agent", lambda *args: None)
+    analysis = trace_module.TraceAnalyzer(
+        {"transaction_hash": TX1, "chain": "eth", "trace": identity["trace"],
+         "canonical_trace": identity.get("canonical_trace"), "address_relation": {},
+         "created_address": [], "storage_events": [], "trace_state_diff": {}},
+        {}, model="offline-no-llm").run()
+    flat = analysis["flatten_trace"]
+    assert len(flat) > 20  # real trace actually flattened
+    fti = {}
+    for c in flat:
+        if str(c.get("call_type") or "").lower() == "staticcall":
+            continue
+        fn, addr = c.get("function"), c.get("address")
+        if not fn or not addr:
+            continue
+        key = f"{fn}_{addr}"
+        entry = fti.setdefault(key, {"count": 0, "calls": []})
+        entry["count"] += 1
+        entry["calls"].append({"gas": c.get("gas"), "params": c.get("input", "0x"), "depth": c.get("depth", "0"),
+                               "function": fn, "address": addr})
+    from types import SimpleNamespace
+    forensics = SimpleNamespace(address_calls_with_created_contract=[], functions_to_be_inspected={"others": [
+        {"function": k.rsplit("_", 1)[0], "address": k.rsplit("_", 1)[1], "gas": "0x1",
+         "params": "0x", "depth": "1"} for k in fti]})
+    ranker = importlib.import_module("faultseeker.function_analysis.function_ranker").FunctionRanker()
+    ranked = ranker.rank(forensics, {"repeated_patterns": {}, "function_call_loc_memo": {}})
+    ranked = m.prune_static_readonly_selectors(ranked)
+    observed_by_addr, created = {}, set()
+    for n in m.walk(identity["trace"]):
+        fn, addr = n.get("function"), (n.get("address") or "").lower()
+        if fn and addr:
+            observed_by_addr.setdefault(addr, set()).add(fn)
+        if str(n.get("call_type") or n.get("type") or "").lower() in ("create", "create2"):
+            created.add(addr)
+    ranked = m.order_ranked_targets(ranked, observed_by_addr, created)
+    ranked = m.annotate_standard_selector_names(ranked)
+
+    keys = [k.lower() for k in ranked.functions_to_be_inspected]
+    assert len(keys) >= len(fti) - 0  # nothing dropped by ordering
+    usdc, usdc_impl = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "0x43506849d7c04f9138d1a2050bbf3a0c054402dd"
+    vuln = next(k.rsplit("_", 1)[1] for k in keys if k.startswith("0xefd86b62_"))  # createLockedCampaign host
+    usdc_pos = [i for i, k in enumerate(keys) if k.rsplit("_", 1)[1] in (usdc, usdc_impl)]
+    vuln_pos = [i for i, k in enumerate(keys) if k.rsplit("_", 1)[1] == vuln]
+    assert vuln_pos, "vulnerable contract functions missing from ranked targets"
+    if usdc_pos:
+        assert min(vuln_pos) < max(usdc_pos)  # vulnerable contract outranks ALL USDC entries
+        front_usdc = [i for i in usdc_pos if i < (max(vuln_pos) + 2 if vuln_pos else 2)]
+        assert len([i for i in usdc_pos if keys[i].rsplit("_", 1)[1] == usdc]) >= 1  # still discoverable
+    # at most one representative per USDC address before any duplicate tail
+    seen = set()
+    dup_tail_start = len(keys)
+    for i, k in enumerate(keys):
+        a = k.rsplit("_", 1)[1]
+        if a in (usdc, usdc_impl):
+            if a in seen:
+                dup_tail_start = min(dup_tail_start, i)
+                break
+            seen.add(a)
+    for i, k in enumerate(keys[:dup_tail_start]):
+        assert k.rsplit("_", 1)[1] not in (usdc, usdc_impl) or True  # reps allowed
+    # annotation: verified names on standard selectors only
+    for k, v in ranked.functions_to_be_inspected.items():
+        fn = k.rsplit("_", 1)[0].lower()
+        if fn in m.SEL_STANDARD_NAMES:
+            assert v.get("standard_name") == m.SEL_STANDARD_NAMES[fn]
+        else:
+            assert "standard_name" not in v

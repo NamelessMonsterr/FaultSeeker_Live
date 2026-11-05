@@ -721,3 +721,75 @@ def test_canonical_flash_callbacks_detected_as_selectors(pinned_fork):
     ex._check_flash_loan()
     assert ex.signals.flash_loan_detected is True
     assert ex.signals.flash_callback_detected is True
+
+
+def test_token_like_address_gets_one_diversity_slot(pinned_fork):
+    # Real-run defect (ETH Mercury run 2): the ranked/analyzed top-5 were
+    # entirely USDC proxy + USDC implementation standard functions, crowding
+    # the vulnerable contract out. New strategy: custom functions first, ONE
+    # representative slot per token-like address, duplicates demoted, nothing
+    # dropped, standard selectors labeled with verified names.
+    m = importlib.import_module("app.pipeline_guards")
+    from types import SimpleNamespace
+    res = SimpleNamespace(
+        address_calls_with_created_contract_in_params={},
+        functions_to_be_inspected={
+            "0xa9059cbb_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": {"count": 9, "calls": []},
+            "0x095ea7b3_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": {"count": 8, "calls": []},
+            "0xefd86b62_0xbc452fdc": {"count": 1, "calls": []},
+            "0x70a08231_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": {"count": 7, "calls": []},
+        })
+    observed = {"0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": {"0xa9059cbb", "0x095ea7b3", "0x70a08231"},
+                "0xbc452fdc": {"0xefd86b62", "0xf412e4c7"}}
+    m.order_ranked_targets(res, observed, set())
+    m.annotate_standard_selector_names(res)
+    keys = list(res.functions_to_be_inspected)
+    assert keys[0] == "0xefd86b62_0xbc452fdc"                    # custom first
+    assert keys[1] == "0xa9059cbb_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"  # one USDC slot
+    assert len(keys) == 4                                        # nothing dropped
+    assert res.functions_to_be_inspected[keys[1]]["standard_name"] == "transfer"
+    assert "standard_name" not in res.functions_to_be_inspected[keys[0]]
+
+
+def test_token_only_malicious_address_keeps_visible_slot(pinned_fork):
+    # Adversarial case (parent review): a malicious contract implementing ONLY
+    # the ERC-20 surface must not be pushed entirely to the tail where a
+    # bounded selection can never reach it - its top entry keeps a group-B slot.
+    m = importlib.import_module("app.pipeline_guards")
+    from types import SimpleNamespace
+    res = SimpleNamespace(
+        address_calls_with_created_contract_in_params={},
+        functions_to_be_inspected={
+            "0xdeadbeef_0xc1": {"count": 3, "calls": []},
+            "0xa9059cbb_0xmal": {"count": 6, "calls": []},   # token-only address
+            "0x70a08231_0xmal": {"count": 4, "calls": []},
+            "0x095ea7b3_0xmal": {"count": 2, "calls": []},
+        })
+    observed = {"0xc1": {"0xdeadbeef"}, "0xmal": {"0xa9059cbb", "0x70a08231", "0x095ea7b3"}}
+    m.order_ranked_targets(res, observed, set())
+    keys = list(res.functions_to_be_inspected)
+    assert keys[:2] == ["0xdeadbeef_0xc1", "0xa9059cbb_0xmal"]  # representative visible
+    assert set(keys[2:]) == {"0x70a08231_0xmal", "0x095ea7b3_0xmal"}
+    assert len(keys) == 4
+
+
+def test_mixed_or_created_addresses_never_demoted(pinned_fork):
+    # An address with ANY custom selector observed is not token-like; a
+    # tx-created contract is exempt too (attacker-deployed tokens matter).
+    m = importlib.import_module("app.pipeline_guards")
+    from types import SimpleNamespace
+    res = SimpleNamespace(
+        address_calls_with_created_contract_in_params={},
+        functions_to_be_inspected={
+            "0xa9059cbb_0xaaaa": {"count": 5, "calls": []},   # mixed address
+            "0xa9059cbb_0xbbbb": {"count": 5, "calls": []},   # created, token-like
+            "0x022c0d9f_0xcccc": {"count": 1, "calls": []},
+        })
+    observed = {"0xaaaa": {"0xa9059cbb", "0xdeadbeef"},
+                "0xbbbb": {"0xa9059cbb", "0x70a08231"},
+                "0xcccc": {"0x022c0d9f"}}
+    m.order_ranked_targets(res, observed, {"0xbbbb"})
+    keys = list(res.functions_to_be_inspected)
+    assert keys[0] == "0xa9059cbb_0xaaaa"
+    assert "0xa9059cbb_0xbbbb" in keys[:2]
+    assert len(keys) == 3
