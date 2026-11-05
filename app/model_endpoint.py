@@ -252,12 +252,12 @@ class ModelEndpointSession:
                 except Exception as exc:
                     error, retryable = classify(exc, phase)
                     # User-granted narrow exception (2026-11-05, comparison task):
-                    # a Mercury blank completion (invalid_response) may be re-asked
-                    # exactly once per call. The blank answer still consumed tokens
-                    # and the re-ask is another real, ledgered call; every other
-                    # failure kind and every other model keeps the zero-retry rule.
-                    blank_retry = (not retryable and phase != "preflight"
-                                   and not blank_retried
+                    # any Mercury blank completion (invalid_response) may be
+                    # re-asked exactly once per call, preflight included (bounded
+                    # by the existing preflight deadline). The blank answer still
+                    # consumed tokens and the re-ask is another real, ledgered
+                    # call; every other failure kind and model keeps zero retries.
+                    blank_retry = (not retryable and not blank_retried
                                    and str(model).startswith("mercury-")
                                    and getattr(error, "kind", None) == "invalid_response")
                     if blank_retry:

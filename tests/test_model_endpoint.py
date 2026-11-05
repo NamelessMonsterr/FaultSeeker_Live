@@ -405,3 +405,23 @@ def test_mercury_other_failures_still_get_zero_retries():
     assert failure.value.kind == "authentication"
     assert len(calls) == 1
     assert session.blank_answer_retries == 0
+
+
+def test_mercury_blank_preflight_gets_one_granted_retry_within_deadline():
+    # The grant covers any blank Mercury answer, preflight included; the
+    # existing preflight deadline still bounds it.
+    m, session, factory, calls, events, _ = setup([httpx.Response(200, json=BLANK),
+                                                   httpx.Response(200, json=OK_MERCURY)], retry_limit=0)
+    out = session.preflight(factory, MERCURY, timeout=20)
+    assert out.choices[0].message.content == "analysis"
+    assert len(calls) == 2
+    assert session.blank_answer_retries == 1
+
+
+def test_mercury_blank_preflight_second_blank_fails():
+    m, session, factory, calls, _, _ = setup([httpx.Response(200, json=BLANK)] * 3, retry_limit=0)
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.preflight(factory, MERCURY, timeout=20)
+    assert failure.value.kind == "invalid_response"
+    assert len(calls) == 2
+    assert session.blank_answer_retries == 1
