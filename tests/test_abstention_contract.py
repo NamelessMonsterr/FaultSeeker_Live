@@ -187,19 +187,35 @@ def test_env_disable_reports_no_mismatch(monkeypatch):
 def test_pinned_engine_template_matches_embedded_identity():
     # Drift tripwire: the embedded trusted template is verified against the
     # REAL pinned engine prompt source, so upstream prompt rewording fails
-    # this suite loudly instead of silently disabling the repair.
+    # this suite loudly instead of silently disabling the repair. This check
+    # is the release verification of the repair's targeting authority: it
+    # FAILS when the pinned checkout is unavailable (a skipped tripwire is
+    # not a verified one), and it proves the imported module resolved from
+    # the pinned checkout, not a previously cached import.
     import os
     location = os.getenv("FAULTSEEKER_TEST_PIPELINE_REPO")
-    if not location:
-        pytest.skip("pinned engine unavailable: set FAULTSEEKER_TEST_PIPELINE_REPO")
+    assert location, ("pinned engine checkout required: set "
+                      "FAULTSEEKER_TEST_PIPELINE_REPO (release verification "
+                      "of the abstention repair's targeting authority)")
+    import pathlib
     import sys
-    sys.path.insert(0, location)
+    root = pathlib.Path(location).resolve()
+    assert (root / "faultseeker/prompts/function_analysis/"
+            "vulnerability_analysis_prompts.py").is_file(), \
+        f"no engine prompt source under pinned checkout {root}"
+    # Purge any previously imported engine modules so the import below
+    # cannot silently resolve to a different cached checkout.
+    for name in [n for n in list(sys.modules) if n == "faultseeker" or n.startswith("faultseeker.")]:
+        del sys.modules[name]
+    sys.path.insert(0, str(root))
     try:
-        from faultseeker.prompts.function_analysis.vulnerability_analysis_prompts \
-            import VulnerabilityAnalysisPrompts
-        actual = VulnerabilityAnalysisPrompts().update_potentially_vulnerable_function
+        from faultseeker.prompts.function_analysis import vulnerability_analysis_prompts as vap
+        resolved = pathlib.Path(vap.__file__).resolve()
+        assert resolved.is_relative_to(root), \
+            f"engine module resolved outside pinned checkout: {resolved}"
+        actual = vap.VulnerabilityAnalysisPrompts().update_potentially_vulnerable_function
     finally:
-        sys.path.remove(location)
+        sys.path.remove(str(root))
     assert me.ENGINE_VULN_ANALYSIS_TEMPLATE == actual
     lowered = actual.lower()
     assert any(topic in lowered for topic in me._VULN_PROMPT_TOPICS)
@@ -308,3 +324,23 @@ def test_dispatch_ordinary_prompt_raises_no_mismatch():
                            "messages": [{"role": "user", "content": "Rank these functions."}]},
                  "mercury-3")
     assert session.abstention_targeting_mismatches == 0
+
+
+@pytest.mark.parametrize("bad_content", [None, 42, [{"type": "text", "text": "New request"}],
+                                         {"nested": True}])
+def test_unsupported_current_message_never_falls_back_to_history(bad_content):
+    kw = {"messages": [{"role": "user", "content": VULN_PROMPT},
+                       {"role": "assistant", "content": "Previous analysis"},
+                       {"role": "user", "content": bad_content}]}
+    out, augmented, mismatch = me.augment_vulnerability_prompt(kw, "analysis")
+    assert not augmented and not mismatch
+    assert me.ABSTENTION_SENTINEL not in out["messages"][0]["content"]
+
+
+def test_missing_content_key_current_message_no_fallback():
+    kw = {"messages": [{"role": "user", "content": VULN_PROMPT},
+                       {"role": "assistant", "content": "Previous analysis"},
+                       {"role": "user"}]}
+    out, augmented, mismatch = me.augment_vulnerability_prompt(kw, "analysis")
+    assert not augmented and not mismatch
+    assert me.ABSTENTION_SENTINEL not in out["messages"][0]["content"]

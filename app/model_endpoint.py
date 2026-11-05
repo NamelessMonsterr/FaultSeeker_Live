@@ -101,16 +101,21 @@ def augment_vulnerability_prompt(kwargs, phase):
         return kwargs, False, False
     # Temporal correctness: only the LAST user message can be the current
     # invocation's prompt. Historical messages (engine conversation memory)
-    # are never augmented and never satisfy or suppress targeting.
+    # are never augmented and never satisfy or suppress targeting. The last
+    # user message is selected regardless of content type: if its content is
+    # not a plain string, the current prompt is unsupported and nothing is
+    # augmented - never search backward for a historical substitute.
     idx = None
     for i in range(len(messages) - 1, -1, -1):
         m = messages[i]
-        if isinstance(m, dict) and m.get("role") == "user" and isinstance(m.get("content"), str):
+        if isinstance(m, dict) and m.get("role") == "user":
             idx = i
             break
     if idx is None:
         return kwargs, False, False
-    content = messages[idx]["content"]
+    content = messages[idx].get("content")
+    if not isinstance(content, str):
+        return kwargs, False, False
     if _normalized(content).startswith(_TEMPLATE_PREFIX):
         kwargs = dict(kwargs)
         messages = [dict(m) if isinstance(m, dict) else m for m in messages]
