@@ -79,7 +79,8 @@ def augment_vulnerability_prompt(kwargs, phase):
                 and _VULN_PROMPT_KEYSHAPE in lowered):
             idx = i
             break
-    if idx is None or ABSTENTION_SENTINEL in messages[idx]["content"]:
+    if (idx is None
+            or ABSTENTION_SENTINEL.casefold() in messages[idx]["content"].casefold()):
         return kwargs, False
     kwargs = dict(kwargs)
     messages = [dict(m) if isinstance(m, dict) else m for m in messages]

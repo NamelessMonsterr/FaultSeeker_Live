@@ -93,6 +93,15 @@ def test_env_disable(monkeypatch, value):
     assert not augmented and out is kw
 
 
+@pytest.mark.parametrize("variant", [lambda t: t.lower(), lambda t: t.upper(),
+                                     lambda t: t.title()])
+def test_sentinel_idempotence_is_case_insensitive(variant):
+    kw = kwargs_with(VULN_PROMPT + " " + variant(me.ABSTENTION_SENTINEL))
+    out, augmented = me.augment_vulnerability_prompt(kw, "analysis")
+    assert not augmented
+    assert out["messages"][-1]["content"].lower().count(me.ABSTENTION_SENTINEL.lower()) == 1
+
+
 # --- Dispatch-level integration through ModelEndpointSession.call ----------
 
 import json as _json
