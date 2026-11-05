@@ -939,9 +939,9 @@ def test_cited_direct_child_bound_to_analyzing_unit_not_promoted():
     out = runtime.annotate_result(result)
     ctx = out["potentially_vulnerable_functions"][f"0xa9059cbb_{USDC}"]["analysis_context"]
     assert ctx["analysis_role"] == "unknown_suspect"
-    assert ctx["cited_by"] == [unit]
-    assert ctx["trace_relation"] == "direct_child"
-    assert "never" not in out["finding_provenance"]["note"] or "dismissed" in out["finding_provenance"]["note"]
+    assert ctx["citations"] == [{"unit": unit, "trace_relation": "direct_child"}]
+    assert "also_analyzed" not in ctx
+    assert "dismissed" in out["finding_provenance"]["note"]
 
 
 def test_cited_transitive_descendant_relation():
@@ -951,7 +951,7 @@ def test_cited_transitive_descendant_relation():
     out = runtime.annotate_result(result)
     ctx = out["potentially_vulnerable_functions"][f"0x70a08231_{USDC}"]["analysis_context"]
     assert ctx["analysis_role"] == "unknown_suspect"
-    assert ctx["trace_relation"] == "transitive_descendant"
+    assert ctx["citations"] == [{"unit": unit, "trace_relation": "transitive_descendant"}]
 
 
 def test_cross_contract_citation_stays_unknown_suspect_referenced():
@@ -964,8 +964,7 @@ def test_cross_contract_citation_stays_unknown_suspect_referenced():
     out = runtime.annotate_result(result)
     ctx = out["potentially_vulnerable_functions"][f"0x70a08231_{OTHER}"]["analysis_context"]
     assert ctx["analysis_role"] == "unknown_suspect"
-    assert ctx["cited_by"] == [unit]
-    assert ctx["trace_relation"] == "referenced"
+    assert ctx["citations"] == [{"unit": unit, "trace_relation": "referenced"}]
 
 
 def test_analyzed_unit_itself_is_analyzed_target():
@@ -991,7 +990,40 @@ def test_score_provenance_labels_rule_confidence_without_changing_numbers():
     assert out["score_provenance"]["formula"].startswith("total = 1 - product")
 
 
+def test_analyzed_and_cited_keeps_unknown_suspect_with_also_analyzed():
+    # PR1-F1: citation provenance is never overwritten by an independent
+    # analysis record. The cited unit itself was also analyzed; both facts
+    # survive, role stays unknown_suspect.
+    runtime, unit = _provenance_runtime()
+    cited = f"0xa9059cbb_{USDC}"
+    runtime.function_verdicts[0]["proposals"][cited] = [f"0x70a08231_{USDC}"]
+    result = {"potentially_vulnerable_functions": {
+        cited: {"evidence": ["x"], "confidence_score": [0.5], "depth": 5}}}
+    out = runtime.annotate_result(result)
+    ctx = out["potentially_vulnerable_functions"][cited]["analysis_context"]
+    assert ctx["analysis_role"] == "unknown_suspect"
+    assert ctx["citations"] == [{"unit": unit, "trace_relation": "direct_child"}]
+    assert ctx["also_analyzed"] is True
+
+
+def test_multiple_citing_units_keep_per_unit_relations():
+    # PR1-F2: unit A cites the call as its direct child; unit B (a sibling
+    # branch) cites the same call with no subtree relation. Each citation
+    # keeps its own trace relation - no strongest-relation collapse.
+    runtime, unit = _provenance_runtime()
+    second = f"0x70a08231_{OTHER}"
+    runtime.function_verdicts[0]["proposals"][second] = [f"0xa9059cbb_{USDC}"]
+    result = {"potentially_vulnerable_functions": {
+        f"0xa9059cbb_{USDC}": {"evidence": ["x"], "confidence_score": [0.5], "depth": 5}}}
+    out = runtime.annotate_result(result)
+    ctx = out["potentially_vulnerable_functions"][f"0xa9059cbb_{USDC}"]["analysis_context"]
+    assert ctx["analysis_role"] == "unknown_suspect"
+    relations = {c["unit"]: c["trace_relation"] for c in ctx["citations"]}
+    assert relations == {unit: "direct_child", second: "referenced"}
+
+
 def test_console_js_relabels_rule_confidence_and_renders_role():
     source = (ROOT / "app/web/assets/console.js").read_text()
     assert "Rule confidence (deterministic)" in source
+    assert "Role: unknown suspect" in source
     assert "cited during analysis of" in source

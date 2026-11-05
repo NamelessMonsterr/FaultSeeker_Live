@@ -784,18 +784,27 @@ class PipelineRuntime:
         paths = self._trace_call_paths()
 
         def context_for(key):
+            # PR1-F1: a function can be BOTH independently analyzed AND cited
+            # by another unit. Citation provenance is never overwritten by an
+            # analysis record: unknown_suspect + citations are preserved, with
+            # independent analysis recorded as a separate fact (also_analyzed).
+            # PR1-F2: trace_relation is computed PER citing unit - units can
+            # relate to the same call differently (direct child of one,
+            # cross-contract reference of another) and must not be collapsed.
             key = str(key).lower()
+            units = cited_by.get(key) or []
+            if units:
+                ctx = {"analysis_role": "unknown_suspect",
+                       "citations": [{"unit": unit,
+                                      "trace_relation": self._trace_relation(paths, key, unit)}
+                                     for unit in units]}
+                if key in analyzed:
+                    ctx["also_analyzed"] = True
+                return ctx
             if key in analyzed:
                 return {"analysis_role": "analyzed_target"}
-            units = cited_by.get(key) or []
-            if not units:
-                return {"analysis_role": "unknown_suspect", "cited_by": [],
-                        "trace_relation": "undetermined"}
-            relations = sorted({self._trace_relation(paths, key, unit) for unit in units},
-                               key=lambda r: ("direct_child", "transitive_descendant", "referenced").index(r)
-                               if r in ("direct_child", "transitive_descendant", "referenced") else 3)
-            return {"analysis_role": "unknown_suspect", "cited_by": units,
-                    "trace_relation": relations[0] if relations else "undetermined"}
+            return {"analysis_role": "unknown_suspect", "citations": [],
+                    "trace_relation": "undetermined"}
 
         pvf = result.get("potentially_vulnerable_functions")
         if isinstance(pvf, dict):
@@ -817,9 +826,10 @@ class PipelineRuntime:
         result["finding_provenance"] = {
             "analyzed_units": sorted(analyzed),
             "note": ("Findings with analysis_role unknown_suspect were cited during the analysis of "
-                     "another function; cited_by names that unit and trace_relation is the structural "
+                     "another function; citations name each citing unit with its own structural "
                      "relation in this run's trace only. They are neither confirmed vulnerable nor "
-                     "dismissed. analyzed_target marks functions the analysis unit itself analyzed.")}
+                     "dismissed; also_analyzed marks a cited function that was additionally analyzed "
+                     "on its own. analyzed_target marks functions the analysis unit itself analyzed.")}
 
     def annotate_result(self, value):
         self.assert_healthy()
