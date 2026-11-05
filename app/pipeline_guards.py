@@ -396,7 +396,12 @@ class PipelineRuntime:
         if any('blockscout' in str(url) for url, *_ in specs):
             return
         merged = dict(_xp._CHAIN_EXPLORERS)
-        merged['eth'] = [('https://eth.blockscout.com/api', '', 95)] + list(specs)
+        # V1 entries kept for documentation/future V2 swap but demoted below the
+        # jitter band (95 vs 10): endpoint scores get +-4 random jitter at
+        # construction, which otherwise intermittently re-sorts the dead V1 route
+        # ahead and its deprecation NOTOK short-circuits acquisition again.
+        merged['eth'] = [('https://eth.blockscout.com/api', '', 95)] + [
+            (url, env, 10) for url, env, _score in specs]
         self.replace(_xp, '_CHAIN_EXPLORERS', merged)
         # Rebuild exactly once; the pinned engine always provides _ExplorerRegistry.
         self.replace(_xp, '_registry', _xp._ExplorerRegistry())

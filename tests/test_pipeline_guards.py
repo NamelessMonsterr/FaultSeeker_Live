@@ -1102,7 +1102,9 @@ def test_eth_explorer_fallback_registers_blockscout_once_and_restores():
     runtime = m.PipelineRuntime(TX, "eth")
     runtime._ensure_eth_explorer_fallback()
     specs = xp._CHAIN_EXPLORERS['eth']
-    assert [list(t) for t in specs[1:]] == original  # originals kept, untouched order
+    # originals kept in order, but demoted to score 10 (below jitter band) since V1 is deprecated upstream
+    assert [(u, e) for u, e, _ in specs[1:]] == [(t[0], t[1]) for t in original]
+    assert all(sc == 10 for *_x, sc in [tuple(t) for t in specs[1:]])
     assert specs[0][0] == 'https://eth.blockscout.com/api' and specs[0][1] == ''  # keyless, tried first
     runtime._ensure_eth_explorer_fallback()  # idempotent
     assert len(xp._CHAIN_EXPLORERS['eth']) == len(original) + 1
@@ -1111,6 +1113,9 @@ def test_eth_explorer_fallback_registers_blockscout_once_and_restores():
     ordered = [e.base_url for e in xp._registry.sorted_endpoints('eth')]
     assert ordered[0] == 'https://eth.blockscout.com/api'
     assert ordered[1:] == [t[0] for t in original]
+    # Dead V1 entries demoted below the +-4 score jitter band: blockscout always sorts first.
+    endpoints = xp._registry.sorted_endpoints('eth')
+    assert all(e.score <= 14 for e in endpoints[1:])
     for owner, name, value in reversed(runtime.restorers):
         setattr(owner, name, value)
     assert [list(t) for t in xp._CHAIN_EXPLORERS['eth']] == original
