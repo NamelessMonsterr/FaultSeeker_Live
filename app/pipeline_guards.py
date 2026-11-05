@@ -562,13 +562,20 @@ class PipelineRuntime:
         return base + suffix
 
     @staticmethod
-    def _source_param_types(source_code):
-        """Canonical input types from a parsed function body's header, or None
-        when the header cannot be isolated or any parameter is non-elementary
-        (struct/enum/contract/function - not parser-comparable to ABI tuples)."""
+    def _source_header_params(source_code):
+        """Tri-state parse of a candidate function's source header.
+
+        ("ok", [canonical types]) - header isolated, every parameter elementary.
+        ("non_elementary", None)  - header isolated and parsed, but at least one
+            parameter is user-defined (struct/enum/contract/function type):
+            parsed, just not parser-comparable to canonical ABI tuples.
+        ("unparseable", None)     - header could not be isolated or parsed
+            (no function keyword, unbalanced parens, malformed parameter,
+            misspelled elementary type). Unparseable is NOT non-elementary.
+        """
         m = re.search(r"function\s+\w+\s*\(", source_code or "")
         if not m:
-            return None
+            return "unparseable", None
         depth, params, buf = 0, [], []
         for ch in source_code[m.end() - 1:]:
             if ch == "(":
@@ -588,7 +595,7 @@ class PipelineRuntime:
             else:
                 buf.append(ch)
         else:
-            return None
+            return "unparseable", None  # unbalanced parens: header never closed
         out = []
         for raw in params:
             tokens = [t for t in raw.strip().split() if t not in ("memory", "calldata", "storage", "payable")]
@@ -597,12 +604,16 @@ class PipelineRuntime:
             elif len(tokens) == 2:
                 type_tok = tokens[0]
             else:
-                return None
+                return "unparseable", None  # malformed parameter list
             canon = PipelineRuntime._normalize_source_type(type_tok)
             if canon is None:
-                return None
+                if re.match(r"^(u?int\d*|bytes\d*|ufixed|fixed)", type_tok):
+                    return "unparseable", None  # misspelled elementary type
+                if re.fullmatch(r"[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*)?(\[\d*\])*", type_tok):
+                    return "non_elementary", None  # user-defined type, parsed
+                return "unparseable", None  # unsupported syntax
             out.append(canon)
-        return out
+        return "ok", out
 
     def _install_selector_source_binding(self):
         # Analysis-input root cause #2 (2026-11-05, verified): canonical traces
@@ -728,7 +739,7 @@ class PipelineRuntime:
                     # parameter is not parser-comparable, so such candidates
                     # cannot be distinguished and must fail unresolved.
                     matched = [c for c in candidates
-                               if runtime._source_param_types(c.get("source_code")) == entry.get("input_types")]
+                               if runtime._source_header_params(c.get("source_code")) == ("ok", entry.get("input_types"))]
                     if len(matched) == 1:
                         out = matched
                         unit = {"candidates": len(candidates), "selected_path": matched[0].get("path"),
@@ -741,8 +752,9 @@ class PipelineRuntime:
                              "matching_signature": len(matched), "source_entries": 0})
                         return []
                 elif candidates:
-                    parsed_types = runtime._source_param_types(candidates[0].get("source_code"))
-                    if parsed_types is not None and parsed_types != entry.get("input_types"):
+                    header_status, parsed_types = runtime._source_header_params(
+                        candidates[0].get("source_code"))
+                    if header_status == "ok" and parsed_types != entry.get("input_types"):
                         # Source header disagrees with the ABI signature: the
                         # source and ABI do not describe the same function.
                         runtime.selector_resolution_log.append(
@@ -750,9 +762,20 @@ class PipelineRuntime:
                              "reason": "signature_mismatch", "resolved_name": entry["name"],
                              "signature": entry["signature"], "source_entries": 0})
                         return []
+                    if header_status == "unparseable":
+                        # Header could not be isolated or parsed: no evidence
+                        # this source unit is the ABI-matched function.
+                        runtime.selector_resolution_log.append(
+                            {**base, **context, "status": "unresolved",
+                             "reason": "unparseable_header", "resolved_name": entry["name"],
+                             "signature": entry["signature"], "source_entries": 0})
+                        return []
                     unit = {"candidates": 1, "selected_path": candidates[0].get("path"),
-                            "disambiguated_by": ("single_candidate" if parsed_types is None
-                                                 else "single_candidate_signature_match")}
+                            "disambiguated_by": ("single_candidate" if header_status == "non_elementary"
+                                                 else "single_candidate_signature_match"),
+                            "evidence_basis": ("parsed_header_non_elementary_types"
+                                               if header_status == "non_elementary"
+                                               else "canonical_input_types_vs_source_header")}
                 runtime.selector_resolution_log.append(
                     {**base, **context, "status": "resolved", "resolved_name": entry["name"],
                      "signature": entry["signature"], "source_entries": len(out),

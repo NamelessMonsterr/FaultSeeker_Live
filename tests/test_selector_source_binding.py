@@ -446,24 +446,46 @@ def test_overloaded_source_units_disambiguated_or_fail(pinned_fork):
         out4 = FA4._retrieve_source_code(stub4, addr, "0xefd86b62")
         assert len(out4) == 1
         assert rt.selector_resolution_log[-1]["unit_binding"]["disambiguated_by"] == "single_candidate"
+        assert (rt.selector_resolution_log[-1]["unit_binding"]["evidence_basis"]
+                == "parsed_header_non_elementary_types")
+        # Single candidate whose header CANNOT be parsed (not merely
+        # non-elementary): uniqueness of a name-based lookup is not evidence
+        # that this unit is the ABI-matched function -> unresolved, not bound.
+        rt.selector_bindings[addr] = {"selectors": {
+            "0xefd86b62": {"name": "foo", "signature": "foo(uint256)",
+                           "input_count": 1, "input_types": ["uint256"]}}}
+        stub5, FA5 = _analyzer_stub({addr: {"foo": [
+            {"path": "./X.sol", "start_line": 1, "end_line": 1,
+             "content": "// truncated body, no header"}]}})
+        out5 = FA5._retrieve_source_code(stub5, addr, "0xefd86b62")
+        assert out5 == []
+        assert rt.selector_resolution_log[-1]["status"] == "unresolved"
+        assert rt.selector_resolution_log[-1]["reason"] == "unparseable_header"
     finally:
         _restore(rt)
 
 
-def test_source_param_types_vectors(pinned_fork):
+def test_source_header_params_vectors(pinned_fork):
     m = importlib.import_module("app.pipeline_guards")
-    f = m.PipelineRuntime._source_param_types
-    assert f("function transfer(address to) external {}") == ["address"]
-    assert f("function transfer(address to, uint256 amt) external {}") == ["address", "uint256"]
-    assert f("function f() {}") == []
-    assert f("function u(uint x) {}") == ["uint256"]            # alias normalized
-    assert f("function b(byte x) {}") == ["bytes1"]             # alias normalized
-    assert f("function p(address payable to) {}") == ["address"]
-    assert f("function g(bytes32[] calldata xs, uint256 amt) {}") == ["bytes32[]", "uint256"]
-    assert f("function h(uint8[3] memory xs) {}") == ["uint8[3]"]
-    assert f("function s(Campaign memory c) {}") is None        # struct: not comparable
-    assert f("function e(TokenLockup t) {}") is None            # enum: not comparable
-    assert f("no function here") is None
+    f = m.PipelineRuntime._source_header_params
+    assert f("function transfer(address to) external {}") == ("ok", ["address"])
+    assert f("function transfer(address to, uint256 amt) external {}") == ("ok", ["address", "uint256"])
+    assert f("function f() {}") == ("ok", [])
+    assert f("function u(uint x) {}") == ("ok", ["uint256"])            # alias normalized
+    assert f("function b(byte x) {}") == ("ok", ["bytes1"])             # alias normalized
+    assert f("function p(address payable to) {}") == ("ok", ["address"])
+    assert f("function g(bytes32[] calldata xs, uint256 amt) {}") == ("ok", ["bytes32[]", "uint256"])
+    assert f("function h(uint8[3] memory xs) {}") == ("ok", ["uint8[3]"])
+    assert f("function s(Campaign memory c) {}") == ("non_elementary", None)   # struct: parsed, not comparable
+    assert f("function e(TokenLockup t) {}") == ("non_elementary", None)       # enum: parsed, not comparable
+    assert f("function s(Campaign[] memory c) {}") == ("non_elementary", None) # struct array
+    assert f("function d(IERC20.Token memory t) {}") == ("non_elementary", None)  # dotted user type
+    # unparseable is NOT non_elementary: no single-candidate exception for these
+    assert f("no function here") == ("unparseable", None)
+    assert f("function broken(address to {}") == ("unparseable", None)         # unbalanced parens
+    assert f("function u(uint257 x) {}") == ("unparseable", None)              # misspelled elementary
+    assert f("function b(bytes33 x) {}") == ("unparseable", None)              # misspelled elementary
+    assert f("function x(a b c) {}") == ("unparseable", None)                  # malformed parameter
 
 
 @pytest.mark.skipif(os.getenv("FAULTSEEKER_LIVE_NETWORK") != "1",
