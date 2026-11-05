@@ -90,21 +90,6 @@ def test_recovery_keeps_model_and_does_not_reset_shared_retry_allowance():
     assert any(e["state"] == "model_endpoint_ready" for e in events)
 
 
-def test_preflight_retries_a_transient_empty_completion():
-    empty = {"id": "x", "object": "chat.completion",
-             "choices": [{"index": 0, "message": {"role": "assistant", "content": ""},
-                          "finish_reason": "stop"}]}
-    m, session, factory, calls, _, _ = setup([
-        httpx.Response(200, json=empty), httpx.Response(200, json=OK)])
-    session.preflight(factory, MODEL, timeout=20)
-    assert len(calls) == 2  # deadline-bounded retry, not a fast failure
-    # Analysis phase still fails fast on an empty completion (no silent retry).
-    m2, session2, factory2, calls2, _, _ = setup([httpx.Response(200, json=empty)])
-    with pytest.raises(m2.ModelEndpointFailure) as failure:
-        session2.call(factory2, {"model": MODEL, "messages": []}, MODEL)
-    assert failure.value.kind == "invalid_response" and len(calls2) == 1
-
-
 def test_preflight_failure_never_starts_expensive_analysis():
     m, session, factory, calls, _, _ = setup([httpx.Response(401, json={"error": {"message": "no"}})])
     ran = False

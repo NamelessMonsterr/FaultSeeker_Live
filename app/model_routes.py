@@ -36,6 +36,11 @@ def adapt_request(model, kwargs):
         adapted["extra_body"] = extra
         if tiny:
             adapted["max_tokens"] = 64
+        # Mercury accepts temperature only in [0.5, 1.0]; out-of-range values are
+        # silently reset to 1.0 upstream (with a warning), so clamp explicitly.
+        temp = adapted.get("temperature")
+        if isinstance(temp, (int, float)) and not isinstance(temp, bool):
+            adapted["temperature"] = min(1.0, max(0.5, float(temp)))
         return adapted
     if not str(model).startswith(ITERA_PREFIX):
         return kwargs
