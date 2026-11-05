@@ -1,0 +1,21 @@
+{
+  "name": "MorphoBlue",
+  "cause": "Overpriced Asset in Oracle",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x256979ae169abb7fbbbbc14188742f4b9debf48b48ad5b5207cadcc99ccb493b"
+  ],
+  "complexity_level": "Complex",
+  "time": "2024-10-13 10:27:35 UTC",
+  "lost": "$230,000",
+  "location": {
+    "0xbbbbbbbbbb9cc5e90e3b3af64bdaf62c37eeffcb#Morpho.sol#235:31": [
+      "0xbbbbbbbbbb9cc5e90e3b3af64bdaf62c37eeffcb#Morpho#borrow",
+      "0xbbbbbbbbbb9cc5e90e3b3af64bdaf62c37eeffcb#Morpho#235:31"
+    ]
+  },
+  "disclosure": {
+    "time": "2024-10-13 17:23:00 UTC",
+    "link": "['https://x.com/omeragoldberg/status/1845515843787960661']"
+  }
+}

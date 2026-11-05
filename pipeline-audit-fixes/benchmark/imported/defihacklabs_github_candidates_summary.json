@@ -1,0 +1,33 @@
+{
+  "candidate_rows": 1128,
+  "supported_candidate_rows": 928,
+  "unsupported_candidate_rows": 200,
+  "source": "github:SunWeb3Sec/DeFiHackLabs",
+  "validation_status": "source_poc_tx_candidate_pending_rpc",
+  "chain_counts": {
+    "eth": 596,
+    "bsc": 255,
+    "unknown": 200,
+    "arbitrum": 36,
+    "base": 15,
+    "polygon": 13,
+    "avalanche": 6,
+    "gnosis": 3,
+    "zksync": 3,
+    "fantom": 1
+  },
+  "vulnerability_counts": {
+    "Flash Loan Attack": 353,
+    "Unknown": 341,
+    "Reentrancy": 167,
+    "Price Manipulation": 98,
+    "Inflation Attack": 50,
+    "Oracle Manipulation": 33,
+    "Bridge Exploit": 25,
+    "MEV/Sandwich": 18,
+    "Access Control": 14,
+    "Precision Loss": 14,
+    "Delegatecall Abuse": 11,
+    "Governance Attack": 4
+  }
+}

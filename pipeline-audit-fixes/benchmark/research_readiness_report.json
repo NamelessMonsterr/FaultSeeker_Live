@@ -1,0 +1,381 @@
+{
+  "current_verified_exploit_rows": 231,
+  "unique_transactions": 0,
+  "chain_count": 8,
+  "top_chains": {
+    "eth": 132,
+    "bsc": 30,
+    "base": 16,
+    "arbitrum": 15,
+    "optimism": 15,
+    "polygon": 11,
+    "avalanche": 8,
+    "zksync": 4
+  },
+  "top_vulnerability_types": {
+    "Price Manipulation": 23,
+    "Business Logic Flaw": 19,
+    "Logic Flaw": 15,
+    "Access Control": 14,
+    "Reentrancy": 13,
+    "Flash Loan Attack": 11,
+    "Arbitrary External Call": 8,
+    "Lack Of Access Control": 8,
+    "Precision Loss": 6,
+    "Incorrect Input Validation": 5,
+    "Incorrect Access Control": 5,
+    "Incorrect Reward Calculation": 5,
+    "Reflection Token": 5,
+    "Rug Pull": 5,
+    "Oracle Bad Price": 4
+  },
+  "tdsc_targets": {
+    "exploit_rows": 1000,
+    "benign_rows_min": 10000,
+    "benign_rows_preferred": 10000,
+    "baseline_families": [
+      "static",
+      "dynamic_trace",
+      "llm_only"
+    ],
+    "required_statistics": [
+      "bootstrap_ci",
+      "paired_t_test",
+      "wilcoxon_signed_rank",
+      "mcnemar"
+    ]
+  },
+  "remaining_empirical_work": {
+    "additional_verified_exploit_rows_needed": 769,
+    "best_case_verified_rows_after_current_candidates": 524,
+    "additional_verified_rows_needed_after_current_candidates": 476,
+    "research_pool_rows": 1059,
+    "research_pool_target_met": true,
+    "additional_research_pool_rows_needed": 0,
+    "benign_rows_needed_min": 0,
+    "run_baselines": true,
+    "produce_final_ablation_tables": true,
+    "conduct_human_explainability_study": true
+  },
+  "staged_public_imports": {
+    "path": "C:\\Users\\91701\\Downloads\\FaultSeeker--main\\benchmark\\imported\\defihacklabs_incidents.full.csv",
+    "exists": true,
+    "rows": 241,
+    "rows_with_transaction_hashes": 215
+  },
+  "additional_incident_sources": {
+    "defillama_hacks": {
+      "path": "C:\\Users\\91701\\Downloads\\FaultSeeker--main\\benchmark\\imported\\defillama_hacks.full.csv",
+      "exists": true,
+      "rows": 528,
+      "rows_with_transaction_hashes": 0,
+      "blocked_missing_transaction_hash": 528
+    },
+    "rugpull_contract_incidents": {
+      "path": "C:\\Users\\91701\\Downloads\\FaultSeeker--main\\benchmark\\imported\\rugpull_contract_incidents_summary.json",
+      "exists": true,
+      "source": "github:dianxiang-sun/rug_pull_dataset",
+      "rows": 2360,
+      "chain_counts": {
+        "eth": 2290,
+        "bsc": 70
+      },
+      "type_counts": {
+        "Transaction Limitation": 2083,
+        "Fee": 157,
+        "Token Generation": 41,
+        "Destroy Token": 23,
+        "Combination": 15,
+        "Token Distribution": 13,
+        "Funds Manipulation": 11,
+        "External Call": 7,
+        "LP Drain": 5,
+        "Vulnerability": 2,
+        "Fake LP Lock": 1,
+        "Proxy": 1,
+        "Unverified contract": 1
+      },
+      "rows_with_contract_addresses": 2360,
+      "rows_with_transaction_hashes": 0,
+      "validation_status_counts": {
+        "contract_incident_verified_tx_unresolved": 2360
+      },
+      "merge_guidance": "Use as incident/contract evidence and manual resolution queue. Rows are not transaction-level exploit ground truth until tx hashes are resolved."
+    }
+  },
+  "benign_dataset": {
+    "path": "C:\\Users\\91701\\Downloads\\FaultSeeker--main\\benchmark\\imported\\hf_ethereum_benign_transactions_summary.json",
+    "exists": true,
+    "source": "huggingface:fesevu/ethereum_fraud_dataset_by_activity",
+    "source_mode": "parquet",
+    "rows": 10000,
+    "target_rows": 10000,
+    "target_met": true,
+    "pages_scanned": 0,
+    "parquet_files_scanned": 3,
+    "unique_transactions": 10000,
+    "validation_status_counts": {
+      "address_label_benign_candidate": 10000
+    },
+    "chain_counts": {
+      "eth": 10000
+    },
+    "label_counts": {
+      "non_scam_addresses": 60086,
+      "scam_addresses_excluded": 54653
+    },
+    "merge_guidance": "Use for false-positive evaluation after downstream RPC spot checks. Do not treat as exploit ground truth."
+  },
+  "public_import_validation": {
+    "path": "C:\\Users\\91701\\Downloads\\FaultSeeker--main\\benchmark\\imported\\defihacklabs_validation_summary.full.json",
+    "exists": true,
+    "rows": 241,
+    "status_counts": {
+      "already_in_verified_benchmark": 62,
+      "blocked_missing_transaction_hash": 26,
+      "candidate_manual_review": 153
+    },
+    "candidate_unique_transaction_hashes": 293,
+    "top_chains": {
+      "Ethereum": 201,
+      "Arbitrum One": 24,
+      "Polygon": 12,
+      "Blast": 2,
+      "Gnosis": 1,
+      "Mantle": 1
+    },
+    "top_vulnerability_types": {
+      "Reentrancy": 60,
+      "Logic Error": 31,
+      "Flash Loan Attack": 22,
+      "Price Manipulation": 18,
+      "Access Control": 16,
+      "Integer Overflow/Underflow": 11,
+      "Arbitrary Call": 9,
+      "Integer Overflow": 5,
+      "Improper Access Control": 4,
+      "Improper Input Validation": 4
+    }
+  },
+  "candidate_expansion": {
+    "path": "C:\\Users\\91701\\Downloads\\FaultSeeker--main\\benchmark\\imported\\defihacklabs_candidate_expansion_summary.json",
+    "exists": true,
+    "candidate_rows": 293,
+    "supported_candidate_rows": 289,
+    "unsupported_candidate_rows": 4,
+    "chain_counts": {
+      "eth": 244,
+      "arbitrum": 32,
+      "polygon": 12,
+      "blast": 3,
+      "gnosis": 1,
+      "mantle": 1
+    },
+    "vulnerability_counts": {
+      "Reentrancy": 62,
+      "Price Manipulation": 39,
+      "Logic Error": 29,
+      "Signature Replay/Forging": 17,
+      "Arbitrary Call": 16,
+      "Business Logic Flaw": 16,
+      "Flash Loan Attack": 16,
+      "Integer Overflow/Underflow": 16,
+      "Logic Error/Reentrancy": 14,
+      "Signature Replay": 10,
+      "Access Control": 8,
+      "Price Oracle Manipulation": 6,
+      "Signature Malleability": 6,
+      "Improper Access Control": 5,
+      "Integer Overflow": 5,
+      "Improper Input Validation": 3,
+      "Order Manipulation": 2,
+      "Arbitrary Minting": 1,
+      "Arbitrary Token Transfer": 1,
+      "Callback Manipulation": 1,
+      "Denial of Service (DoS), Funds Locking": 1,
+      "Economic Drain": 1,
+      "Flash Loan": 1,
+      "Governance Attack": 1,
+      "Imbalanced Liquidity Provision": 1,
+      "Insufficient Collateral Validation": 1,
+      "Liquidation Abuse": 1,
+      "Oracle Manipulation": 1,
+      "Precision Loss": 1,
+      "Price Manipulation / Arbitrage": 1,
+      "Price Manipulation / Liquidity Exploitation": 1,
+      "Reentrancy/Callback Exploitation": 1,
+      "Reentrancy/Improper Access Control": 1,
+      "Reentrancy/Liquidation Exploit": 1,
+      "Reentrancy/Logic Error": 1,
+      "Reentrancy/Logic Error in `skim` function": 1,
+      "Token Burning Manipulation": 1,
+      "Token Inflation": 1,
+      "Unbounded Minting": 1,
+      "Unsafe Withdraw": 1
+    }
+  },
+  "github_candidate_expansion": {
+    "path": "C:\\Users\\91701\\Downloads\\FaultSeeker--main\\benchmark\\imported\\defihacklabs_github_candidates_summary.json",
+    "exists": true,
+    "candidate_rows": 1128,
+    "supported_candidate_rows": 928,
+    "unsupported_candidate_rows": 200,
+    "source": "github:SunWeb3Sec/DeFiHackLabs",
+    "validation_status": "source_poc_tx_candidate_pending_rpc",
+    "chain_counts": {
+      "eth": 596,
+      "bsc": 255,
+      "unknown": 200,
+      "arbitrum": 36,
+      "base": 15,
+      "polygon": 13,
+      "avalanche": 6,
+      "gnosis": 3,
+      "zksync": 3,
+      "fantom": 1
+    },
+    "vulnerability_counts": {
+      "Flash Loan Attack": 353,
+      "Unknown": 341,
+      "Reentrancy": 167,
+      "Price Manipulation": 98,
+      "Inflation Attack": 50,
+      "Oracle Manipulation": 33,
+      "Bridge Exploit": 25,
+      "MEV/Sandwich": 18,
+      "Access Control": 14,
+      "Precision Loss": 14,
+      "Delegatecall Abuse": 11,
+      "Governance Attack": 4
+    }
+  },
+  "research_exploit_pool": {
+    "path": "C:\\Users\\91701\\Downloads\\FaultSeeker--main\\benchmark\\research_exploit_pool_summary.json",
+    "exists": true,
+    "rows": 1059,
+    "unique_chain_transactions": 1059,
+    "verified_input_rows": 231,
+    "verified_rows": 231,
+    "source_backed_candidate_rows": 828,
+    "target_exploit_rows": 1000,
+    "target_met": true,
+    "additional_rows_needed": 0,
+    "candidate_sources": [
+      {
+        "path": "benchmark/imported/defihacklabs_candidate_expansion.csv",
+        "rows": 293,
+        "accepted_new_rows": 289
+      },
+      {
+        "path": "benchmark/imported/defihacklabs_github_candidates.csv",
+        "rows": 1128,
+        "accepted_new_rows": 539
+      }
+    ],
+    "skipped_candidate_rows": {
+      "duplicate": 389,
+      "unsupported_chain": 204
+    },
+    "chain_counts": {
+      "eth": 632,
+      "bsc": 273,
+      "arbitrum": 58,
+      "base": 30,
+      "polygon": 27,
+      "optimism": 15,
+      "avalanche": 13,
+      "zksync": 7,
+      "gnosis": 3,
+      "fantom": 1
+    },
+    "vulnerability_counts": {
+      "Flash Loan Attack": 193,
+      "Reentrancy": 185,
+      "Unknown": 163,
+      "Price Manipulation": 100,
+      "Business Logic Flaw": 35,
+      "Logic Error": 29,
+      "Access Control": 27,
+      "Oracle Manipulation": 26,
+      "Inflation Attack": 21,
+      "Signature Replay/Forging": 17,
+      "Arbitrary Call": 16,
+      "Integer Overflow/Underflow": 16,
+      "Logic Flaw": 15,
+      "Logic Error/Reentrancy": 14,
+      "Signature Replay": 10,
+      "Arbitrary External Call": 8,
+      "Lack Of Access Control": 8,
+      "Precision Loss": 7,
+      "Price Oracle Manipulation": 7,
+      "Integer Overflow": 7
+    },
+    "merge_guidance": "Use research_exploit_pool.csv for expansion planning. Only rows with pool_status=verified_benchmark belong in benchmark_classification_fixed.csv until candidate rows pass RPC/manual validation."
+  },
+  "research_artifacts": {
+    "docs/research/BASELINE_MATRIX.md": true,
+    "docs/research/ABLATION_PROTOCOL.md": true,
+    "docs/research/ERROR_TAXONOMY.md": true,
+    "docs/research/REPRODUCIBILITY_CHECKLIST.md": true,
+    "docs/research/BENIGN_DATA_ACQUISITION.md": true
+  },
+  "registered_public_sources": {
+    "exploit_sources": [
+      {
+        "name": "DeFiHackLabs Dataset",
+        "type": "incident_exploit_corpus",
+        "url": "https://huggingface.co/datasets/akshaynexus/DeFiHackLabs-Dataset",
+        "expected_use": "Exploit incident expansion, transaction links, vulnerability labels, and narrative analysis fields"
+      },
+      {
+        "name": "DeFiHackLabs Explorer",
+        "type": "incident_explorer",
+        "url": "https://defihacklabs.io/explorer/index.html",
+        "expected_use": "Cross-check exploit events and incident metadata"
+      },
+      {
+        "name": "SlowMist Hacked Archive",
+        "type": "security_incident_archive",
+        "url": "https://hacked.slowmist.io/en/statistics/?c=all&d=all",
+        "expected_use": "Incident-level validation and longitudinal trend metadata"
+      },
+      {
+        "name": "DeFiLlama Hacks",
+        "type": "security_incident_archive",
+        "url": "https://api.llama.fi/hacks",
+        "expected_use": "Incident-level expansion and cross-source triage; transaction hashes must be resolved before benchmark merge"
+      },
+      {
+        "name": "Rug Pull Dataset",
+        "type": "specialized_exploit_dataset",
+        "url": "https://github.com/dianxiang-sun/rug_pull_dataset",
+        "expected_use": "Rug-pull and access-control-heavy contract incident expansion; resolve transaction hashes before benchmark merge"
+      }
+    ],
+    "benign_or_fraud_sources": [
+      {
+        "name": "BCCC-DeFiFraudTrans-2025",
+        "type": "large_scale_transaction_benchmark",
+        "url": "https://www.yorku.ca/research/bccc/2025/09/24/new-dataset-alert-bccc-defifraudtrans-2025/",
+        "expected_use": "Benign and fraudulent transaction-scale evaluation with false-positive measurement"
+      },
+      {
+        "name": "Elliptic++",
+        "type": "graph_transaction_benchmark",
+        "url": "https://github.com/git-disl/EllipticPlusPlus",
+        "expected_use": "Graph evaluation methodology reference; Bitcoin data should not be mixed into EVM exploit metrics"
+      },
+      {
+        "name": "Ethereum Fraud Dataset by Activity",
+        "type": "labeled_ethereum_address_activity",
+        "url": "https://huggingface.co/datasets/fesevu/ethereum_fraud_dataset_by_activity",
+        "expected_use": "Large Ethereum transaction sampling with address-level scam/non-scam labels for false-positive evaluation"
+      }
+    ],
+    "notes": [
+      "Do not merge unverified rows into benchmark_classification_fixed.csv.",
+      "Every imported exploit row needs transaction hash, chain, label, source URL, and manual or reproducible validation status.",
+      "Benign rows must be sampled separately and retained for false-positive measurement."
+    ]
+  }
+}

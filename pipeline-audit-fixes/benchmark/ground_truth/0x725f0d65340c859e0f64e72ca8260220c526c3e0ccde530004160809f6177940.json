@@ -1,0 +1,21 @@
+{
+  "name": "Bedrock_DeFi",
+  "cause": "Swap ETH/BTC 1/1 in mint function",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x725f0d65340c859e0f64e72ca8260220c526c3e0ccde530004160809f6177940"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2024-09-26 18:28:23 UTC",
+  "lost": "27.83925883 BTC (~$1.7M USD)",
+  "location": {
+    "0x702696b2aa47fd1d4feaaf03ce273009dc47d901##2417:3": [
+      "0x702696b2aa47fd1d4feaaf03ce273009dc47d901#Vault#mint",
+      "0x702696b2aa47fd1d4feaaf03ce273009dc47d901#Vault#2417:3"
+    ]
+  },
+  "disclosure": {
+    "time": "2024-04-29",
+    "link": "['https://www.quillaudits.com/blog/hack-analysis/bedrock-2million-exploit']"
+  }
+}

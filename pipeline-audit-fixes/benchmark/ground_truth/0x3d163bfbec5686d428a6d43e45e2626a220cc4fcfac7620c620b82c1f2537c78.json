@@ -1,0 +1,21 @@
+{
+  "name": "Kashi",
+  "cause": "Price-caching Design Defect",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x3d163bfbec5686d428a6d43e45e2626a220cc4fcfac7620c620b82c1f2537c78"
+  ],
+  "complexity_level": "Complex",
+  "time": "2022-11-08 22:27:11 UTC",
+  "lost": "$110k",
+  "location": {
+    "0xf5bce5077908a1b7370b9ae04adc565ebd643966##870:43": [
+      "0xf5bce5077908a1b7370b9ae04adc565ebd643966#BentoBoxV1#withdraw",
+      "0xf5bce5077908a1b7370b9ae04adc565ebd643966#BentoBoxV1#870:43"
+    ]
+  },
+  "disclosure": {
+    "time": "2022-12-16 06:08:00 UTC",
+    "link": "['https://eigenphi.substack.com/p/casting-a-magic-spell-on-abracadabra', 'https://twitter.com/BlockSecTeam/status/1603633067876155393']"
+  }
+}

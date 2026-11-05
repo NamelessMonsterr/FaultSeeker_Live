@@ -1,0 +1,25 @@
+{
+  "name": "ZunamiProtocol",
+  "cause": "Price Manipulation",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x0788ba222970c7c68a738b0e08fb197e669e61f9b226ceec4cab9b85abe8cceb"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2023-08-13 22:34:47 UTC",
+  "lost": "~$2M",
+  "location": {
+    "0xb40b6608b2743e691c9b54ddbdee7bf03cd79f1c#PricableAsset.sol#31:7": [
+      "0xb40b6608b2743e691c9b54ddbdee7bf03cd79f1c#PricableAsset#cacheAssetPrice",
+      "0xb40b6608b2743e691c9b54ddbdee7bf03cd79f1c#PricableAsset#31:7"
+    ]
+  },
+  "detection": {
+    "time": "2023-08-13 22:47:00 UTC",
+    "link": "['https://x.com/peckshield/status/1690857760412610560']"
+  },
+  "disclosure": {
+    "time": "2023-08-14 00:06:00 UTC",
+    "link": "['https://x.com/peckshield/status/1690877589005778945']"
+  }
+}

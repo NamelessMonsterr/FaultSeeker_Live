@@ -1,0 +1,59 @@
+{
+  "exploit_sources": [
+    {
+      "name": "DeFiHackLabs Dataset",
+      "type": "incident_exploit_corpus",
+      "url": "https://huggingface.co/datasets/akshaynexus/DeFiHackLabs-Dataset",
+      "expected_use": "Exploit incident expansion, transaction links, vulnerability labels, and narrative analysis fields"
+    },
+    {
+      "name": "DeFiHackLabs Explorer",
+      "type": "incident_explorer",
+      "url": "https://defihacklabs.io/explorer/index.html",
+      "expected_use": "Cross-check exploit events and incident metadata"
+    },
+    {
+      "name": "SlowMist Hacked Archive",
+      "type": "security_incident_archive",
+      "url": "https://hacked.slowmist.io/en/statistics/?c=all&d=all",
+      "expected_use": "Incident-level validation and longitudinal trend metadata"
+    },
+    {
+      "name": "DeFiLlama Hacks",
+      "type": "security_incident_archive",
+      "url": "https://api.llama.fi/hacks",
+      "expected_use": "Incident-level expansion and cross-source triage; transaction hashes must be resolved before benchmark merge"
+    },
+    {
+      "name": "Rug Pull Dataset",
+      "type": "specialized_exploit_dataset",
+      "url": "https://github.com/dianxiang-sun/rug_pull_dataset",
+      "expected_use": "Rug-pull and access-control-heavy contract incident expansion; resolve transaction hashes before benchmark merge"
+    }
+  ],
+  "benign_or_fraud_sources": [
+    {
+      "name": "BCCC-DeFiFraudTrans-2025",
+      "type": "large_scale_transaction_benchmark",
+      "url": "https://www.yorku.ca/research/bccc/2025/09/24/new-dataset-alert-bccc-defifraudtrans-2025/",
+      "expected_use": "Benign and fraudulent transaction-scale evaluation with false-positive measurement"
+    },
+    {
+      "name": "Elliptic++",
+      "type": "graph_transaction_benchmark",
+      "url": "https://github.com/git-disl/EllipticPlusPlus",
+      "expected_use": "Graph evaluation methodology reference; Bitcoin data should not be mixed into EVM exploit metrics"
+    },
+    {
+      "name": "Ethereum Fraud Dataset by Activity",
+      "type": "labeled_ethereum_address_activity",
+      "url": "https://huggingface.co/datasets/fesevu/ethereum_fraud_dataset_by_activity",
+      "expected_use": "Large Ethereum transaction sampling with address-level scam/non-scam labels for false-positive evaluation"
+    }
+  ],
+  "notes": [
+    "Do not merge unverified rows into benchmark_classification_fixed.csv.",
+    "Every imported exploit row needs transaction hash, chain, label, source URL, and manual or reproducible validation status.",
+    "Benign rows must be sampled separately and retained for false-positive measurement."
+  ]
+}

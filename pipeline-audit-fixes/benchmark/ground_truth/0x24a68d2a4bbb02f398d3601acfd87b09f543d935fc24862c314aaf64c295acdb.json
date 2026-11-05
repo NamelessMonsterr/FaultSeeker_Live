@@ -1,0 +1,21 @@
+{
+  "name": "BUNN",
+  "cause": "Reflection tokens",
+  "platform": "BNBChain",
+  "transaction_hash": [
+    "0x24a68d2a4bbb02f398d3601acfd87b09f543d935fc24862c314aaf64c295acdb"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2023-06-21 20:26:55 UTC",
+  "lost": "~52BNB",
+  "location": {
+    "0xc54aaecf5fa1b6c007d019a9d14dfb4a77cc3039##554:7": [
+      "0xc54aaecf5fa1b6c007d019a9d14dfb4a77cc3039#BunnyProtocol#deliver",
+      "0xc54aaecf5fa1b6c007d019a9d14dfb4a77cc3039#BunnyProtocol#554:7"
+    ]
+  },
+  "disclosure": {
+    "time": "2023-06-22 08:53:00 UTC",
+    "link": "['https://twitter.com/DecurityHQ/status/1671803688996806656']"
+  }
+}

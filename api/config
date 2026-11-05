@@ -94,6 +94,11 @@
       "keyEnv": "ITERA_API_KEY"
     },
     {
+      "id": "inception/mercury-3",
+      "label": "Mercury 3 (Inception free allowance)",
+      "keyEnv": "INCEPTION_API_KEY"
+    },
+    {
       "id": "no-llm",
       "label": "No LLM - deterministic Stage 1 (free RPC)",
       "keyEnv": null

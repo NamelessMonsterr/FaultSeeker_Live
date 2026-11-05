@@ -1,6 +1,7 @@
 """Transport-only tests. All model HTTP is intercepted by MockTransport."""
 import importlib
 import json
+import threading
 import types
 
 import httpx
@@ -39,8 +40,9 @@ def setup(responses, **options):
                         http_client=httpx.Client(transport=httpx.MockTransport(handle)))
         clients.append(client)
         return client
+    retry_limit = options.pop("retry_limit", 2)
     session = module.ModelEndpointSession(emit=events.append, clock=clock.monotonic,
-                                         sleep=clock.sleep, retry_limit=2,
+                                         sleep=clock.sleep, retry_limit=retry_limit,
                                          time_budget=60, call_timeout=10, **options)
     return module, session, factory, calls, events, clock
 
@@ -68,6 +70,398 @@ def test_timeout_is_bounded_and_classified():
     assert failure.value.kind == "timeout"
     assert len(calls) == 7 and clock.now < 20  # deadline-bounded, not count-bounded
     assert "SECRET" not in str(failure.value)
+
+
+@pytest.mark.parametrize("reason", ["content_filter", "tool_calls", "function_call"])
+def test_explicitly_incomplete_completion_cannot_be_accepted_as_analysis(reason):
+    body = {**OK, "choices": [{"index": 0, "finish_reason": reason,
+        "message": {"role": "assistant", "content": '{"result":"PRIVATE"}'}}],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12,
+                  "completion_tokens_details": {"reasoning_tokens": 3}}}
+    m, session, factory, calls, events, _ = setup([httpx.Response(200, json=body)])
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.call(factory, {"model": MODEL, "messages": []}, MODEL)
+    assert failure.value.kind == "incomplete_response"
+    assert failure.value.as_dict()["completion_finish_reason"] == reason
+    assert len(calls) == 1 and session.retries_left == 2
+    assert session.summary()["tokens"] == {"prompt": 5, "completion": 7, "reasoning": 3}
+    assert not any(event.get("state") == "model_endpoint_ready" for event in events)
+    assert "PRIVATE" not in str(failure.value) + json.dumps(events)
+
+
+def test_length_completion_recovers_with_shared_allowance_without_accepting_truncation():
+    truncated = {**OK, 'choices': [{'index': 0, 'finish_reason': 'length',
+        'message': {'role': 'assistant', 'content': '{"truncated":true}'}}]}
+    _, session, factory, calls, events, _ = setup([
+        httpx.Response(200, json=truncated), httpx.Response(200, json=OK)])
+    result = session.call(factory, {'model': MODEL, 'messages': []}, MODEL)
+    assert result.choices[0].message.content == 'OK'
+    assert len(calls) == 2 and session.retries_left == 1
+    assert session.failure is None
+    assert any(event.get('completion_finish_reason') == 'length' for event in events)
+
+
+def test_repeated_length_completion_exhausts_shared_budget_and_stays_failed():
+    truncated = {**OK, 'choices': [{'index': 0, 'finish_reason': 'length',
+        'message': {'role': 'assistant', 'content': '{}'}}]}
+    m, session, factory, calls, _, _ = setup([httpx.Response(200, json=truncated)] * 3)
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.call(factory, {'model': MODEL, 'messages': []}, MODEL)
+    assert failure.value.kind == 'incomplete_response'
+    assert session.retries_left == 0 and len(calls) == 3
+    with pytest.raises(m.ModelEndpointFailure):
+        session.call(factory, {'model': MODEL, 'messages': []}, MODEL)
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize("code", ["free_model_monthly_limit", "free_model_tpm_limit", "provider_rate_limit"])
+def test_429_preserves_only_recognized_recovery_metadata_without_retry(code):
+    response = httpx.Response(429, headers={"Retry-After": "120", "X-Request-ID": "PRIVATE_SECRET"},
+        json={"error": {"code": code, "message": "PRIVATE_SECRET", "type": "PRIVATE_SECRET"}})
+    m, session, factory, calls, events, _ = setup([response])
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.preflight(factory, MODEL, timeout=20)
+    details = failure.value.as_dict()
+    assert details["provider_code"] == code
+    assert details["retry_after_seconds"] == 120
+    assert session.summary()["failure"] == details
+    assert len(calls) == 1 and session.retries_left == 2
+    assert "PRIVATE_SECRET" not in json.dumps(events) + json.dumps(details)
+
+
+@pytest.mark.parametrize("code,retry", [("PRIVATE_SECRET", "PRIVATE_SECRET"),
+    ({"secret": "PRIVATE_SECRET"}, "<html>PRIVATE_SECRET</html>"),
+    (None, "-1"), (None, "nan"), (None, "999999999999999999999999")])
+def test_429_unrecognized_metadata_is_not_persisted(code, retry):
+    response = httpx.Response(429, headers={"Retry-After": retry},
+        json={"error": {"code": code, "message": "PRIVATE_SECRET"}})
+    m, session, factory, calls, events, _ = setup([response])
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.preflight(factory, MODEL, timeout=20)
+    details = failure.value.as_dict()
+    assert "provider_code" not in details and "retry_after_seconds" not in details
+    assert "retry_after_utc" not in details
+    assert len(calls) == 1
+    assert "PRIVATE_SECRET" not in json.dumps(events) + json.dumps(details)
+
+
+def test_429_http_date_is_normalized_without_copying_raw_headers():
+    response = httpx.Response(429, headers={"Retry-After": "Wed, 04 Nov 2026 00:00:00 GMT"},
+                              json={"error": {"code": "provider_rate_limit"}})
+    m, session, factory, calls, events, _ = setup([response])
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.preflight(factory, MODEL, timeout=20)
+    assert failure.value.as_dict()["retry_after_utc"] == "2026-11-04T00:00:00+00:00"
+    assert len(calls) == 1 and session.retries_left == 2
+
+
+def test_expired_absolute_deadline_fails_before_factory_or_network():
+    m, session, factory, calls, _, clock = setup([])
+    made = []
+    def forbidden_factory():
+        made.append(True)
+        return factory()
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.call(forbidden_factory, {"model": MODEL, "messages": []}, MODEL,
+                     deadline=clock.now)
+    assert failure.value.kind == "request_deadline_exceeded"
+    assert made == [] and calls == []
+
+
+def test_absolute_deadline_includes_wait_for_state_lock():
+    m = importlib.import_module("app.model_endpoint")
+    clock = Clock()
+    queued = threading.Event()
+    made, errors = [], []
+    def tracked_clock():
+        value = clock.monotonic()
+        queued.set()
+        return value
+    session = m.ModelEndpointSession(clock=tracked_clock, time_budget=30, call_timeout=5)
+    def forbidden_factory():
+        made.append(True)
+        raise AssertionError("expired queued request must not build a client")
+    def invoke():
+        try:
+            session.call(forbidden_factory, {"model": MODEL, "messages": []}, MODEL,
+                         deadline=1.0)
+        except Exception as exc:
+            errors.append(exc)
+    session.state_lock.acquire()
+    worker = threading.Thread(target=invoke)
+    try:
+        worker.start()
+        assert queued.wait(timeout=2), "worker did not enter call"
+        clock.now = 2.0
+    finally:
+        session.state_lock.release()
+        worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert len(errors) == 1 and isinstance(errors[0], m.ModelEndpointFailure)
+    assert errors[0].kind == "request_deadline_exceeded"
+    assert made == [] and session.failure is None
+
+
+def test_shared_budget_deadline_expiring_in_queue_is_sticky():
+    m = importlib.import_module("app.model_endpoint")
+    clock = Clock()
+    queued = threading.Event()
+    made = []
+    def tracked_clock():
+        value = clock.monotonic()
+        queued.set()
+        return value
+    session = m.ModelEndpointSession(time_budget=1, call_timeout=0.5, clock=tracked_clock)
+    def forbidden_factory():
+        made.append(True)
+        raise AssertionError("queued request must not create a client after its shared deadline")
+    def invoke():
+        with pytest.raises(m.ModelEndpointFailure) as failure:
+            session.call(forbidden_factory, {"model": MODEL, "messages": []}, MODEL)
+        assert failure.value.kind == "budget_exhausted"
+    session.state_lock.acquire()
+    worker = threading.Thread(target=invoke)
+    try:
+        worker.start()
+        assert queued.wait(timeout=2)
+        clock.now = 2.0
+    finally:
+        session.state_lock.release()
+        worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert made == []
+    assert session.failure is not None and session.failure.kind == "budget_exhausted"
+
+
+def test_failed_attempt_at_exact_shared_budget_cannot_retry():
+    m, session, factory, calls, _, clock = setup([
+        httpx.Response(503, text="private upstream failure"),
+        httpx.Response(200, json=OK)])
+    def timed_factory():
+        client = factory()
+        transport = client._client._transport
+        original = transport.handler
+        def respond(request):
+            clock.now += 60.0
+            return original(request)
+        transport.handler = respond
+        return client
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.call(timed_factory, {"model": MODEL, "messages": []}, MODEL)
+    assert failure.value.kind == "budget_exhausted"
+    assert session.summary()["failure"]["kind"] == "budget_exhausted"
+    assert len(calls) == 1 and clock.now == 60.0
+
+
+def test_waiting_worker_is_not_failed_by_a_synthetic_admission_timeout():
+    m = importlib.import_module("app.model_endpoint")
+    entered, release = threading.Event(), threading.Event()
+    requests, outcomes = [], []
+    def handle(request):
+        body = json.loads(request.content)
+        message = body["messages"][0]["content"]
+        requests.append(message)
+        if message == "slow":
+            entered.set()
+            if not release.wait(timeout=3):
+                raise AssertionError("test did not release mocked transport")
+        return httpx.Response(200, json=OK)
+    def factory():
+        return OpenAI(api_key="test-secret-never-output", base_url="https://model.invalid/v1",
+                      http_client=httpx.Client(transport=httpx.MockTransport(handle)))
+    session = m.ModelEndpointSession(admission_timeout=0, time_budget=30, call_timeout=5)
+    def first_call():
+        try:
+            outcomes.append(("first", session.call(factory, {"model": MODEL, "messages": [
+                {"role": "user", "content": "slow"}]}, MODEL)))
+        except Exception as exc:
+            outcomes.append(("first-error", exc))
+    worker = threading.Thread(target=first_call)
+    worker.start()
+    try:
+        assert entered.wait(timeout=2), "first mocked request never reached transport"
+        # A second worker is allowed to enter once the short state lock is free;
+        # it must not manufacture a terminal failure because the first is in HTTP.
+        result = session.call(factory, {"model": MODEL, "messages": [
+            {"role": "user", "content": "quick"}]}, MODEL)
+        assert result.choices[0].message.content == "OK"
+    finally:
+        release.set()
+        worker.join(timeout=3)
+    assert not worker.is_alive()
+    assert len(requests) == 2
+    assert len(outcomes) == 1 and outcomes[0][0] == "first"
+    assert session.failure is None
+
+
+def test_two_mocked_requests_overlap_without_holding_state_lock():
+    m = importlib.import_module("app.model_endpoint")
+    rendezvous = threading.Barrier(2)
+    seen, outcomes = [], []
+    seen_lock = threading.Lock()
+    def handle(request):
+        with seen_lock:
+            seen.append(request)
+        rendezvous.wait(timeout=3)
+        return httpx.Response(200, json=OK)
+    def factory():
+        return OpenAI(api_key="test-secret-never-output", base_url="https://model.invalid/v1",
+                      http_client=httpx.Client(transport=httpx.MockTransport(handle)))
+    session = m.ModelEndpointSession(time_budget=10, call_timeout=3)
+    def invoke(index):
+        try:
+            result = session.call(factory, {"model": MODEL, "messages": [
+                {"role": "user", "content": f"worker-{index}"}]}, MODEL)
+            outcomes.append(("ok", result.choices[0].message.content))
+        except Exception as exc:
+            outcomes.append(("error", exc))
+    workers = [threading.Thread(target=invoke, args=(i,)) for i in range(2)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=4)
+    assert all(not worker.is_alive() for worker in workers), "requests did not overlap/release"
+    assert len(seen) == 2
+    assert len(outcomes) == 2 and all(outcome == ("ok", "OK") for outcome in outcomes)
+    assert session.failure is None
+    assert session.summary()["calls"]["analysis"] == {"ok": 2, "failed": 0}
+
+
+def test_concurrent_retry_reservations_are_atomic_and_bounded():
+    m = importlib.import_module("app.model_endpoint")
+    rendezvous = threading.Barrier(2)
+    requests, outcomes, reservations = [], [], []
+    guard = threading.Lock()
+    session = m.ModelEndpointSession(retry_limit=2, time_budget=20, call_timeout=5)
+    def handle(request):
+        with guard:
+            requests.append(request)
+            number = len(requests)
+            with session.state_lock:
+                reservations.append(session.spent + session.reserved)
+        if number <= 2:
+            rendezvous.wait(timeout=3)
+            return httpx.Response(502, text="private upstream failure")
+        return httpx.Response(200, json=OK)
+    def factory():
+        return OpenAI(api_key="test-secret-never-output", base_url="https://model.invalid/v1",
+                      http_client=httpx.Client(transport=httpx.MockTransport(handle)))
+    def invoke(index):
+        try:
+            result = session.call(factory, {"model": MODEL, "messages": [
+                {"role": "user", "content": f"retry-{index}"}]}, MODEL)
+            outcomes.append(("ok", result.choices[0].message.content))
+        except Exception as exc:
+            outcomes.append(("error", exc))
+    workers = [threading.Thread(target=invoke, args=(i,)) for i in range(2)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=6)
+    assert all(not worker.is_alive() for worker in workers), "concurrent retries did not finish"
+    assert len(requests) == 4
+    assert len(outcomes) == 2 and all(outcome == ("ok", "OK") for outcome in outcomes)
+    assert session.retries_left == 0
+    assert session.failure is None
+    assert reservations and max(reservations) <= session.time_budget
+
+
+def test_stale_auth_failure_does_not_reject_new_active_key():
+    m = importlib.import_module("app.model_endpoint")
+    rendezvous = threading.Barrier(2)
+    rotated = threading.Event()
+    events, requests, outcomes = [], [], []
+    requests_lock = threading.Lock()
+    def emit(event):
+        events.append(event)
+        if event.get("key_rotation"):
+            rotated.set()
+    def handle(request):
+        body = json.loads(request.content)
+        message = body["messages"][0]["content"]
+        auth = request.headers.get("authorization")
+        with requests_lock:
+            requests.append((message, auth))
+        if auth == "Bearer key-a":
+            rendezvous.wait(timeout=3)
+            if message == "stale":
+                assert rotated.wait(timeout=3), "other request did not rotate key"
+            return httpx.Response(401, json={"error": {"message": "private"}})
+        return httpx.Response(200, json=OK)
+    def factory():
+        return OpenAI(api_key="key-a", base_url="https://model.invalid/v1",
+                      http_client=httpx.Client(transport=httpx.MockTransport(handle)))
+    session = m.ModelEndpointSession(emit=emit, retry_limit=3, time_budget=10, call_timeout=3)
+    session.register_keys("https://model.invalid/v1", ["key-a", "key-b"], model=MODEL)
+    def invoke(message):
+        try:
+            session.call(factory, {"model": MODEL, "messages": [
+                {"role": "user", "content": message}]}, MODEL)
+            outcomes.append((message, "ok"))
+        except Exception as exc:
+            outcomes.append((message, exc))
+    workers = [threading.Thread(target=invoke, args=(message,)) for message in ("rotate", "stale")]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=5)
+    assert all(not worker.is_alive() for worker in workers)
+    assert sorted(outcomes) == [("rotate", "ok"), ("stale", "ok")]
+    assert session.key_pools[("https://model.invalid/v1", MODEL)]["active"] == "key-b"
+    assert "key-b" not in session.key_pools[("https://model.invalid/v1", MODEL)]["rejected"]
+    assert sum(1 for _, auth in requests if auth == "Bearer key-a") == 2
+    assert sum(1 for _, auth in requests if auth == "Bearer key-b") == 2
+    assert "key-a" not in json.dumps(events) and "key-b" not in json.dumps(events)
+
+
+def test_terminal_429_blocks_an_inflight_success_commit():
+    m = importlib.import_module("app.model_endpoint")
+    slow_entered, terminal = threading.Event(), threading.Event()
+    events, requests, outcomes = [], [], []
+    def emit(event):
+        events.append(event)
+        if event.get("state") == "model_endpoint_failed":
+            terminal.set()
+    def handle(request):
+        body = json.loads(request.content)
+        message = body["messages"][0]["content"]
+        requests.append(message)
+        if message == "slow-success":
+            slow_entered.set()
+            if not terminal.wait(timeout=3):
+                raise AssertionError("429 did not trip terminal circuit")
+            return httpx.Response(200, json=OK)
+        return httpx.Response(429, json={"error": {"message": "private quota"}})
+    def factory():
+        return OpenAI(api_key="test-secret-never-output", base_url="https://model.invalid/v1",
+                      http_client=httpx.Client(transport=httpx.MockTransport(handle)))
+    session = m.ModelEndpointSession(emit=emit, time_budget=10, call_timeout=3)
+    def slow_call():
+        try:
+            session.call(factory, {"model": MODEL, "messages": [
+                {"role": "user", "content": "slow-success"}]}, MODEL)
+            outcomes.append(("slow", "ok"))
+        except Exception as exc:
+            outcomes.append(("slow", exc))
+    worker = threading.Thread(target=slow_call)
+    worker.start()
+    try:
+        assert slow_entered.wait(timeout=2), "slow request never reached transport"
+        with pytest.raises(m.ModelEndpointFailure) as limited:
+            session.call(factory, {"model": MODEL, "messages": [
+                {"role": "user", "content": "rate-limit"}]}, MODEL)
+        assert limited.value.kind == "rate_limited"
+    finally:
+        terminal.set()
+        worker.join(timeout=4)
+    assert not worker.is_alive()
+    assert len(requests) == 2
+    assert len(outcomes) == 1 and outcomes[0][0] == "slow"
+    assert isinstance(outcomes[0][1], m.ModelEndpointFailure)
+    assert outcomes[0][1].kind == "rate_limited"
+    assert session.failure.kind == "rate_limited"
+    assert not any(event.get("state") == "model_endpoint_ready" for event in events)
+    assert "private quota" not in json.dumps(events)
 
 
 def test_recovery_keeps_model_and_does_not_reset_shared_retry_allowance():
@@ -120,6 +514,20 @@ def test_time_budget_spans_successful_queries_and_preflight():
     assert failure.value.kind == "budget_exhausted"
 
 
+def test_request_telemetry_reports_elapsed_and_queue_wait_without_payloads():
+    m, session, factory, calls, events, clock = setup([httpx.Response(200, json=OK)])
+    session.call(factory, {"model": MODEL, "messages": [{"role": "user", "content": "PRIVATE PROMPT"}]}, MODEL)
+    started = next(e for e in events if e["state"] == "model_request_started")
+    attempt = next(e for e in events if e["state"] == "model_request_attempt")
+    assert started["queue_wait_seconds"] == 0
+    assert attempt["elapsed_seconds"] >= 0
+    assert attempt["outcome"] == "ok"
+    assert attempt["error_kind"] is None
+    assert "PRIVATE PROMPT" not in json.dumps(events)
+    assert "test-secret-never-output" not in json.dumps(events)
+    assert "authorization" not in json.dumps(events).lower()
+
+
 def test_http_200_html_is_not_a_model_completion():
     m, session, factory, calls, _, _ = setup([httpx.Response(200, text="<html>SECRET</html>")])
     with pytest.raises(m.ModelEndpointFailure) as failure:
@@ -147,7 +555,8 @@ def test_permanent_rejection_has_no_retry(status, kind):
 
 
 def test_retry_after_cannot_sleep_past_shared_budget():
-    m, session, factory, calls, events, clock = setup([httpx.Response(429, headers={"Retry-After": "99999"}, json={"error": "quota"})])
+    # 503 is retryable; the long Retry-After must still respect the shared budget.
+    m, session, factory, calls, events, clock = setup([httpx.Response(503, headers={"Retry-After": "99999"}, json={"error": "temporary"})])
     with pytest.raises(m.ModelEndpointFailure) as failure:
         session.call(factory, {"model": MODEL, "messages": []}, MODEL)
     assert failure.value.kind == "budget_exhausted"
@@ -182,6 +591,81 @@ def test_valid_completion_at_shared_time_boundary(elapsed, accepted):
         assert failure.value.kind == "budget_exhausted"
     assert len(calls) == 1
 
+
+
+def test_explicit_tighter_deadline_does_not_trip_shared_budget_on_retry_after():
+    m, session, factory, calls, _, clock = setup([
+        httpx.Response(503, headers={"Retry-After": "99999"}, json={"error": "temporary"})])
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.call(factory, {"model": MODEL, "messages": []}, MODEL, deadline=1.0)
+    assert failure.value.kind == "request_deadline_exceeded"
+    assert len(calls) == 1 and clock.now == 0
+    assert session.failure is None
+
+
+def test_tighter_preflight_deadline_preserves_current_upstream_error():
+    m, session, factory, calls, events, clock = setup([
+        httpx.Response(503, headers={"Retry-After": "99999"}, text="private upstream failure")])
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.preflight(factory, MODEL, timeout=20, deadline=1.0)
+    assert failure.value.kind == "upstream_http"
+    assert failure.value.status_code == 503
+    assert failure.value.phase == "preflight"
+    assert len(calls) == 1 and clock.now == 0
+    assert session.failure is not None and session.failure.kind == "upstream_http"
+    assert "private upstream failure" not in json.dumps(events)
+
+
+def test_budget_overrun_is_sticky_and_blocks_inflight_success_commit():
+    m = importlib.import_module("app.model_endpoint")
+    local = threading.local()
+    slow_entered, terminal = threading.Event(), threading.Event()
+    requests, outcomes = [], []
+    def clock():
+        return getattr(local, "now", 0.0)
+    def emit(event):
+        if event.get("state") == "model_endpoint_failed":
+            terminal.set()
+    def handle(request):
+        message = json.loads(request.content)["messages"][0]["content"]
+        requests.append(message)
+        if message == "inflight-success":
+            slow_entered.set()
+            if not terminal.wait(timeout=3):
+                raise AssertionError("over-budget finalizer did not trip the circuit")
+            return httpx.Response(200, json=OK)
+        if not slow_entered.wait(timeout=3):
+            raise AssertionError("success request did not become in-flight")
+        local.now = 75.0
+        return httpx.Response(503, text="private upstream failure")
+    def factory():
+        return OpenAI(api_key="test-secret-never-output", base_url="https://model.invalid/v1",
+                      http_client=httpx.Client(transport=httpx.MockTransport(handle)))
+    session = m.ModelEndpointSession(emit=emit, time_budget=60, call_timeout=20, clock=clock)
+    def invoke(message):
+        try:
+            result = session.call(factory, {"model": MODEL, "messages": [
+                {"role": "user", "content": message}]}, MODEL)
+            outcomes.append((message, "ok", result.choices[0].message.content))
+        except Exception as exc:
+            outcomes.append((message, "error", exc))
+    slow = threading.Thread(target=invoke, args=("inflight-success",))
+    overrun = threading.Thread(target=invoke, args=("overrun",))
+    slow.start()
+    overrun.start()
+    for worker in (slow, overrun):
+        worker.join(timeout=5)
+    assert not slow.is_alive() and not overrun.is_alive()
+    assert len(requests) == 2
+    assert session.spent == 75.0
+    assert session.summary()["failure"]["kind"] == "budget_exhausted"
+    assert not any(item[0] == "inflight-success" and item[1] == "ok" for item in outcomes)
+    before = len(requests)
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.call(factory, {"model": MODEL, "messages": [
+            {"role": "user", "content": "must-not-start"}]}, MODEL)
+    assert failure.value.kind == "budget_exhausted"
+    assert len(requests) == before == 2
 
 
 def test_preflight_cold_start_retries_past_retry_limit():
@@ -244,14 +728,35 @@ def test_preflight_key_rotation_stays_bounded_by_key_count():
     assert "SECRET" not in json.dumps(events)
 
 
-def test_preflight_rate_limit_retry_after_beyond_deadline_stays_bounded():
-    m, session, factory, calls, _, clock = setup(
-        [httpx.Response(429, headers={"Retry-After": "99999"}, json={"error": "quota"})])
+@pytest.mark.parametrize("phase,retry_after", [
+    ("analysis", "1"),
+    ("analysis", "99999"),
+    ("preflight", "1"),
+    ("preflight", "99999"),
+])
+def test_rate_limit_is_terminal_in_both_phases_with_multiple_keys(phase, retry_after):
+    m, session, factory, calls, events, clock = setup([
+        httpx.Response(429, headers={"Retry-After": retry_after}, json={"error": {"message": "quota"}}),
+        httpx.Response(200, json=OK),
+    ])
+    session.register_keys("https://model.invalid/v1", ["first-key", "second-key"], model=MODEL)
     with pytest.raises(m.ModelEndpointFailure) as failure:
-        session.preflight(factory, MODEL, timeout=20)
-    # The deadline cannot fit the hinted wait: report the real cause, no sleep.
+        if phase == "preflight":
+            session.preflight(factory, MODEL, timeout=20)
+        else:
+            session.call(factory, {"model": MODEL, "messages": []}, MODEL)
     assert failure.value.kind == "rate_limited"
-    assert clock.now == 0 and len(calls) == 1
+    assert failure.value.phase == phase
+    assert failure.value.as_dict()["scope"] == "provider_limit"
+    assert len(calls) == 1
+    assert session.retries_left == 2
+    assert session.spent == 0
+    assert clock.now == 0
+    assert not any(e.get("key_rotation") for e in events)
+    assert not any(e.get("retry_in_seconds", 0) > 0 for e in events)
+    assert "quota" not in json.dumps(events)
+    assert "first-key" not in json.dumps(events)
+    assert "second-key" not in json.dumps(events)
 
 
 @pytest.mark.parametrize("endpoint", ["https://MODEL.invalid:443/v1", "https://model.invalid/v1/"])
@@ -311,3 +816,141 @@ def test_foreign_url_object_compatibility_contract_simulated():
     assert session.preflight(ForeignClient, MODEL).choices[0].message.content == "OK"
     assert calls == ["Bearer invalid-key", "Bearer valid-key"]
     assert session.failure is None
+
+
+@pytest.mark.parametrize("choices,problem", [
+    ([], "missing_choices"),
+    ([{"index": 0, "message": None, "finish_reason": "stop"}], "missing_message"),
+])
+def test_non_retryable_invalid_completion_fails_without_retry(choices, problem):
+    body = {**OK, "choices": choices,
+            "private_field": "PRIVATE_RAW_RESPONSE",
+            "usage": {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12}}
+    m, session, factory, calls, events, _ = setup([httpx.Response(200, json=body)])
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.call(factory, {"model": MODEL, "messages": []}, MODEL)
+    assert failure.value.kind == "invalid_response"
+    assert failure.value.as_dict()["completion_problem"] == problem
+    assert session.summary()["tokens"] == {"prompt": 5, "completion": 7, "reasoning": 0}
+    assert len(calls) == 1 and session.retries_left == 2
+    assert not any(event.get("state") == "model_endpoint_ready" for event in events)
+    assert "PRIVATE_RAW_RESPONSE" not in json.dumps(events) + str(failure.value)
+
+
+@pytest.mark.parametrize("choices,problem", [
+    ([{"index": 0, "message": {"role": "assistant", "content": None}, "finish_reason": "stop"}], "non_text_content"),
+    ([{"index": 0, "message": {"role": "assistant", "content": "  "}, "finish_reason": "stop"}], "empty_content"),
+])
+def test_retryable_invalid_completion_consumes_retry_and_recovers(choices, problem):
+    invalid_body = {**OK, "choices": choices, "usage": {"prompt_tokens": 5, "completion_tokens": 7}}
+    valid_body = {**OK, "choices": [{"index": 0, "message": {"role": "assistant", "content": "recovered"}, "finish_reason": "stop"}]}
+    m, session, factory, calls, events, _ = setup([
+        httpx.Response(200, json=invalid_body),
+        httpx.Response(200, json=valid_body),
+    ])
+    result = session.call(factory, {"model": MODEL, "messages": []}, MODEL)
+    assert result.choices[0].message.content == "recovered"
+    assert len(calls) == 2
+    assert session.retries_left == 1
+    assert session.failure is None
+
+
+@pytest.mark.parametrize("choices,problem", [
+    ([{"index": 0, "message": {"role": "assistant", "content": None}, "finish_reason": "stop"}], "non_text_content"),
+    ([{"index": 0, "message": {"role": "assistant", "content": "  "}, "finish_reason": "stop"}], "empty_content"),
+])
+def test_retryable_invalid_completion_exhausts_retries_and_propagates(choices, problem):
+    invalid_body = {**OK, "choices": choices, "usage": {"prompt_tokens": 5, "completion_tokens": 7}}
+    m, session, factory, calls, events, _ = setup([
+        httpx.Response(200, json=invalid_body),
+        httpx.Response(200, json=invalid_body),
+        httpx.Response(200, json=invalid_body),
+    ])
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.call(factory, {"model": MODEL, "messages": []}, MODEL)
+    assert failure.value.kind == "invalid_response"
+    assert failure.value.as_dict()["completion_problem"] == problem
+    assert len(calls) == 3
+    assert session.retries_left == 0
+    assert session.failure is not None
+    assert session.failure.kind == "invalid_response"
+
+
+@pytest.mark.parametrize("reason", [None, "unknown-private-marker"])
+def test_unconfirmed_finish_marker_is_not_success(reason):
+    body = {**OK, "choices": [{"index": 0, "finish_reason": reason,
+        "message": {"role": "assistant", "content": "PRIVATE"}}]}
+    m, session, factory, calls, events, _ = setup([
+        httpx.Response(200, json=body),
+        httpx.Response(200, json=body),
+        httpx.Response(200, json=body),
+    ])
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.call(factory, {"model": MODEL, "messages": []}, MODEL)
+    assert failure.value.kind == "invalid_response"
+    assert len(calls) == 3 and session.retries_left == 0
+    assert session.failure is not None
+    assert not any(event.get("state") == "model_endpoint_ready" for event in events)
+    assert "PRIVATE" not in str(failure.value) + json.dumps(events)
+    assert "unknown-private-marker" not in json.dumps(failure.value.as_dict())
+
+
+@pytest.mark.parametrize('reason,role,expected_finish,expected_role', [
+    ('stop', 'assistant', 'stop', 'assistant'),
+    (None, 'assistant', 'missing', 'assistant'),
+    ('PRIVATE_FINISH_MARKER', 'PRIVATE_ROLE_MARKER', 'other', 'other'),
+    ({'PRIVATE_FINISH_MARKER': 1}, ['PRIVATE_ROLE_MARKER'], 'other', 'other'),
+])
+def test_mercury_null_completion_retains_safe_boundary_diagnostics(reason, role, expected_finish, expected_role):
+    body = {**OK, 'choices': [{'index': 0, 'finish_reason': reason,
+        'message': {'role': role, 'content': None, 'tool_calls': None, 'refusal': 'PRIVATE_REFUSAL'}}]}
+    m, session, factory, calls, events, _ = setup([httpx.Response(200, json=body)], retry_limit=0)
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.call(factory, {'model': 'mercury-3', 'messages': []}, 'inception/mercury-3')
+    data = failure.value.as_dict()
+    assert failure.value.kind == 'invalid_response'
+    assert data['completion_finish_reason'] == expected_finish
+    assert data['completion_role'] == expected_role
+    assert data['completion_has_tool_calls'] is False
+    assert data['completion_has_refusal'] is True
+    assert data['completion_content_type'] == 'null'
+    assert len(calls) == 1
+    assert not any(event.get('state') == 'model_endpoint_ready' for event in events)
+    assert 'PRIVATE' not in json.dumps(data) + json.dumps(events)
+def test_analysis_connection_recovery_spreads_existing_retries_across_outage():
+    m, session, factory, calls, events, clock = setup([], retry_limit=2)
+    attempted = []
+    def handler(request):
+        attempted.append(clock.now)
+        if clock.now < 12:
+            raise httpx.ConnectError('PRIVATE_SECRET')
+        return httpx.Response(200, json=OK)
+    def configured():
+        return OpenAI(api_key='dummy', base_url='https://model.invalid/v1',
+                      http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    result = session.call(configured, {'model': MODEL, 'messages': []}, MODEL)
+    assert result.choices[0].message.content == 'OK'
+    assert attempted == [0, 5, 15] and session.retries_left == 0
+    assert session.spent == 15
+    assert 'PRIVATE_SECRET' not in json.dumps(events)
+
+
+def test_connection_cause_is_classified_without_error_text_or_credentials():
+    import socket
+    m, session, factory, calls, events, _ = setup([])
+    cause = socket.gaierror(-2, 'PRIVATE_HOST_AND_KEY')
+    error = httpx.ConnectError('PRIVATE_URL')
+    error.__cause__ = cause
+    failure, retryable = m.classify(error, 'analysis')
+    assert retryable and failure.as_dict()['connection_reason'] == 'dns'
+    assert 'PRIVATE' not in json.dumps(failure.as_dict())
+
+
+def test_connection_outage_retries_remain_bounded_and_preserve_safe_cause():
+    m, session, factory, calls, events, clock = setup([httpx.ConnectError('PRIVATE')] * 4, retry_limit=2)
+    with pytest.raises(m.ModelEndpointFailure) as raised:
+        session.call(factory, {'model': MODEL, 'messages': []}, MODEL)
+    assert raised.value.kind == 'connection'
+    assert len(calls) == 3 and session.retries_left == 0 and clock.now == 15
+    assert session.failure is raised.value
+    assert 'PRIVATE' not in json.dumps(events)

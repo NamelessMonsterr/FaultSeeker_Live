@@ -16,15 +16,18 @@ from contextlib import asynccontextmanager
 from urllib.parse import urlsplit, quote
 
 try:
-    from .model_routes import adapt_request, resolve_route
+    from .model_routes import adapt_request, resolve_route, model_call_timeout, model_preflight_timeout
     from .rpc_transport import PublicRPCRelay, parse_endpoint
+    from .failure_diagnostics import failure_diagnostics
 except ImportError:
     try:
-        from app.model_routes import adapt_request, resolve_route
+        from app.model_routes import adapt_request, resolve_route, model_call_timeout, model_preflight_timeout
         from app.rpc_transport import PublicRPCRelay, parse_endpoint
+        from app.failure_diagnostics import failure_diagnostics
     except ModuleNotFoundError:
-        from model_routes import adapt_request, resolve_route
+        from model_routes import adapt_request, resolve_route, model_call_timeout, model_preflight_timeout
         from rpc_transport import PublicRPCRelay, parse_endpoint
+        from failure_diagnostics import failure_diagnostics
 
 from datetime import datetime, timezone
 
@@ -246,6 +249,7 @@ def _reconcile_history():
         changed = False
         for entry in entries:
             if isinstance(entry, dict) and entry.get("status") in ("running", "cancelling", "starting") and entry.get("run_id") not in runs:
+                _recover_analysis_checkpoint(entry['run_id'])
                 entry.update(status="interrupted", detail="Server restarted before completion was recorded.")
                 changed = True
         if changed:
@@ -264,11 +268,14 @@ def _hist_log_event(run_id, ev, data):
     """Append one run event to its JSONL log (capped)."""
     path = os.path.join(RUNS_DIR, run_id + ".events.jsonl")
     try:
-        if os.path.exists(path) and os.path.getsize(path) > 2_000_000:
-            return  # cap: stop logging a runaway stream
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps({"t": round(time.time(), 1), "ev": ev,
-                                "data": _redact(data)}) + "\n")
+        record = (json.dumps({"t": round(time.time(), 1), "ev": ev,
+                              "data": _redact(data)}) + "\n").encode("utf-8")
+        with history_lock:
+            size = os.path.getsize(path) if os.path.exists(path) else 0
+            if size + len(record) > 2_000_000:
+                return  # Preserve complete JSONL records within the hard byte cap.
+            with open(path, "ab") as f:
+                f.write(record)
     except OSError:
         pass
 
@@ -339,6 +346,7 @@ MODELS = [
     {"id": "laguna-s-2.1", "label": "Laguna S 2.1 (NaraRouter free)", "keyEnv": "NARAROUTER_API_KEY"},
     {"id": "qwen/qwen3.8-27b", "label": "Qwen 3.8 27B (Groq)", "keyEnv": "GROQ_API_KEY"},
     {"id": "itera/qwen3.8-27b", "label": "Qwen 3.8 27B (Itera free)", "keyEnv": "ITERA_API_KEY"},
+    {"id": "inception/mercury-3", "label": "Mercury 3 (Inception free allowance)", "keyEnv": "INCEPTION_API_KEY"},
     {"id": "no-llm", "label": "No LLM - deterministic Stage 1 (free RPC)", "keyEnv": None},
 ]
 
@@ -457,8 +465,29 @@ def _consume_quota(store, ip, now, windows):
 
 
 
+GATE_SESSION_SECS = 7 * 24 * 3600
+
+
 def _gate_token():
-    return hmac.new(GATE.encode(), b"faultseeker-demo-gate", hashlib.sha256).hexdigest()
+    issued = str(int(time.time()))
+    signature = hmac.new(GATE.encode(), ("faultseeker-gate-v1:" + issued).encode(), hashlib.sha256).hexdigest()
+    return issued + "." + signature
+
+
+def _valid_gate_token(token):
+    if not isinstance(token, str) or len(token) > 90:
+        return False
+    try:
+        issued, signature = token.split(".", 1)
+        if not issued.isascii() or not issued.isdecimal():
+            return False
+        age = time.time() - int(issued)
+        if not 0 <= age < GATE_SESSION_SECS:
+            return False
+        expected = hmac.new(GATE.encode(), ("faultseeker-gate-v1:" + issued).encode(), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(signature.encode("utf-8"), expected.encode("utf-8"))
+    except (ValueError, OverflowError):
+        return False
 
 
 GATE_PAGE = """<!doctype html><html><head><meta charset=utf-8>
@@ -483,7 +512,7 @@ async def gate_and_limit(request: Request, call_next):
     if not GATE:
         return JSONResponse({"error": "Access gate is not configured. The operator must set DEMO_GATE_PASSWORD."}, status_code=503)
     cookie = request.cookies.get("fs_gate", "")
-    if not hmac.compare_digest(cookie.encode("utf-8"), _gate_token().encode("utf-8")):
+    if not _valid_gate_token(cookie):
         if path.startswith("/api/"):
             return JSONResponse({"error": "Session expired. Sign in again.", "login_url": "/gate"}, status_code=401)
         return RedirectResponse(url="/gate", status_code=303)
@@ -515,7 +544,7 @@ async def gate_submit(request: Request):
         with _limit_lock:
             _gate_by_ip.pop(ip, None)
         resp = RedirectResponse(url="/", status_code=303)
-        resp.set_cookie("fs_gate", _gate_token(), max_age=7 * 24 * 3600,
+        resp.set_cookie("fs_gate", _gate_token(), max_age=GATE_SESSION_SECS,
                         httponly=True, samesite="lax", secure=True)
         return resp
     return HTMLResponse(GATE_PAGE.replace("__ERR__", '<div class=err>wrong code</div>'), status_code=401)
@@ -583,6 +612,29 @@ def rpc_selftest(chain: str = "eth", mode: str = "calltracer"):
 
 
 @app.get("/api/llm-selftest")
+def llm_selftest_get(request: Request, model: str = "gemini-3.8-flash", max_keys: int = 1, replay: str = ""):
+    if "keys" in request.query_params:
+        return JSONResponse({"error": "Supply diagnostic keys in a POST JSON body."}, status_code=400)
+    return llm_selftest(model=model, max_keys=max_keys, replay=replay)
+
+
+@app.post("/api/llm-selftest")
+async def llm_selftest_post(request: Request):
+    if "keys" in request.query_params:
+        return JSONResponse({"error": "Supply diagnostic keys in the JSON body."}, status_code=400)
+    try:
+        payload = await request.json()
+    except (ValueError, UnicodeDecodeError):
+        return JSONResponse({"error": "Invalid diagnostic JSON body."}, status_code=400)
+    if (not isinstance(payload, dict)
+            or any(not isinstance(payload.get(k, ""), str) for k in ("model", "keys", "replay"))
+            or type(payload.get("max_keys", 1)) is not int):
+        return JSONResponse({"error": "Invalid diagnostic fields."}, status_code=400)
+    from starlette.concurrency import run_in_threadpool
+    return await run_in_threadpool(llm_selftest, model=payload.get("model", "gemini-3.8-flash"),
+        max_keys=payload.get("max_keys", 1), keys=payload.get("keys", ""), replay=payload.get("replay", ""))
+
+
 def llm_selftest(model: str = "gemini-3.8-flash", max_keys: int = 1,
                  keys: str = "", replay: str = ""):
     """Gated diagnostic. Default: one real 8-token LLM call per key.
@@ -626,7 +678,7 @@ def llm_selftest(model: str = "gemini-3.8-flash", max_keys: int = 1,
     for i, k in enumerate(keys[:min(max(1, max_keys), 3)]):
         client = None
         try:
-            client = _oai.OpenAI(api_key=k, base_url=base_url, timeout=(120 if model.startswith("itera/") else 30), max_retries=0)
+            client = _oai.OpenAI(api_key=k, base_url=base_url, timeout=(model_call_timeout([model]) if model.startswith("itera/") else 30), max_retries=0)
             r = client.chat.completions.create(**adapt_request(model, dict(
                 model=model,
                 messages=[{"role": "user", "content": "Reply with the single word: ok"}],
@@ -697,6 +749,32 @@ def _redact(s, secrets=()):
 def sse(ev, data, event_id=None):
     prefix = f"id: {event_id}\n" if event_id is not None else ""
     return prefix + f"event: {ev}\ndata: {json.dumps(_redact(data))}\n\n"
+
+
+def _recover_analysis_checkpoint(run_id):
+    try:
+        from app.analysis_checkpoint import recover_checkpoint
+    except ModuleNotFoundError as exc:
+        if exc.name != 'app':
+            raise
+        from analysis_checkpoint import recover_checkpoint
+    try:
+        return recover_checkpoint(RUNS_DIR, run_id)
+    except ValueError:
+        return False  # Invalid historical IDs must not become filesystem paths.
+
+
+def _configure_analysis_checkpoint(runtime, run_id, secrets):
+    if runtime is None:
+        return
+    try:
+        from app.analysis_checkpoint import save_checkpoint
+    except ModuleNotFoundError as exc:
+        if exc.name != 'app':
+            raise
+        from analysis_checkpoint import save_checkpoint
+    runtime.checkpoint_sink = lambda report: save_checkpoint(
+        RUNS_DIR, run_id, report, redact=lambda value: _redact(value, secrets))
 
 
 def _prepare_pipeline(req, mode, q):
@@ -782,7 +860,7 @@ def worker(run_id, req, q):
         mode = req.get("mode", "no-llm")
         # Groq's free tier caps output tokens/min hard; parallel Stage 2 workers
         # blow through it together. Serialize unless the caller overrides.
-        _groqish = (req.get("mode") or "").startswith(("qwen/", "itera/", "openai/gpt-oss", "allam-", "llama-", "z-ai/", "deepseek-ai/", "nvidia/", "gpt-"))
+        _groqish = (req.get("mode") or "").startswith(("qwen/", "itera/", "inception/", "openai/gpt-oss", "allam-", "llama-", "z-ai/", "deepseek-ai/", "nvidia/", "gpt-"))
         s2w = str(req.get("stage2_workers") or ("1" if _groqish else "")).strip()
         if s2w:
             env_prior["FAULTSEEKER_STAGE2_WORKERS"] = os.environ.get("FAULTSEEKER_STAGE2_WORKERS")
@@ -792,6 +870,7 @@ def worker(run_id, req, q):
         pipeline_path = os.path.join(RUNS_DIR, run_id + ".pipeline.json")
         if mode == "no-llm":
             runtime = _prepare_pipeline(req, mode, q)
+            _configure_analysis_checkpoint(runtime, run_id, request_secrets)
             from faultseeker.main import main as fs_main
             q.put(("log", "mode: no-llm (deterministic Stage 1, free RPC)"))
             result = fs_main(txn_hash=req["txn_hash"], chain=req["chain"],
@@ -844,10 +923,11 @@ def worker(run_id, req, q):
                 if not os.environ.get("OPENAI_API_KEY"):
                     os.environ["OPENAI_API_KEY"] = keys[0]
             runtime = _prepare_pipeline(req, mode, q)
+            _configure_analysis_checkpoint(runtime, run_id, request_secrets)
             runtime.model_keys = {mode: keys}
             if forensics != mode:
                 runtime.model_keys[forensics] = f_keys
-            runtime.preflight([mode, forensics], timeout=float(os.environ.get("FAULTSEEKER_MODEL_PREFLIGHT_SECS", "120")))
+            runtime.preflight([mode, forensics], timeout=model_preflight_timeout([mode, forensics]))
             from faultseeker.main import main as fs_main
             # Credential rotation belongs to the shared transport session. Never
             # rerun expensive transaction analysis after its circuit has opened.
@@ -873,6 +953,7 @@ def worker(run_id, req, q):
         os.replace(tmp_path, out_path)
         q.put(("done", {"ok": result.get("analysis_status") == "completed", "analysis_status": result.get("analysis_status")}))
     except Exception as e:  # A failed transport never becomes a no-finding verdict.
+        q.put(("diagnostic", failure_diagnostics(e)))
         if runtime is not None:
             try:
                 failed = _redact(runtime.failure_report(e), request_secrets)
@@ -902,6 +983,22 @@ def worker(run_id, req, q):
             else:
                 os.environ[k] = env_prior[k]
         q.put(("end", None))
+
+
+def _prune_finished_runs():
+    finished = []
+    for rid, state in list(runs.items()):
+        if state.get("status") in ("running", "cancelling"):
+            continue
+        proc = state.get("proc")
+        try:
+            if proc is not None and proc.is_alive():
+                continue
+        except Exception:
+            continue  # Preserve the worker handle when liveness is uncertain.
+        finished.append(rid)
+    for rid in finished[:-20]:
+        runs.pop(rid, None)
 
 
 @app.post("/api/analyze")
@@ -987,6 +1084,7 @@ async def analyze(request: Request):
                 q.put(("error", f"saved replay failed: {exc}"))
             finally:
                 q.put(("end", None))
+                _prune_finished_runs()
                 run_lock.release()
 
         try:
@@ -1010,9 +1108,7 @@ async def analyze(request: Request):
     if req.get("rpc_key") and "{key}" not in req.get("rpc_url", ""):
         return JSONResponse({"error": "Use {key} in the RPC URL when supplying a separate RPC key, or paste the complete endpoint URL and leave RPC key blank."}, status_code=400)
     # Keep recent stream buffers bounded; older completed reports remain on disk.
-    finished = [rid for rid, state in runs.items() if state.get("status") not in ("running", "cancelling")]
-    for rid in finished[:-20]:
-        runs.pop(rid, None)
+    _prune_finished_runs()
     req["mode"] = req.get("mode") or "no-llm"
     if not run_lock.acquire(blocking=False):
         return JSONResponse({"error": "a run is already in progress"}, status_code=409)
@@ -1111,12 +1207,29 @@ async def analyze(request: Request):
                 outcome_msg = f"worker exit code {proc.exitcode} (-9 usually means OOM)"
                 q.put(("error", f"worker process died unexpectedly (exit code {proc.exitcode}; -9 usually means OOM)"))
         finally:
+            # Queue/history failures must not release the run slot with a live child.
+            worker_reaped = False
+            try:
+                if proc.is_alive():
+                    proc.terminate()
+                proc.join(timeout=5)
+                if proc.is_alive():
+                    proc.kill()
+                    proc.join(timeout=5)
+                worker_reaped = not proc.is_alive()
+                if not worker_reaped:
+                    raise RuntimeError("worker remains alive after cleanup")
+            except Exception as exc:
+                outcome = "error"
+                outcome_msg = f"worker cleanup failed: {type(exc).__name__}"
+                q.put(("error", outcome_msg))
             try:
                 if runs[run_id]["cancel"].is_set():
                     outcome = "cancelled"
                 # finalize the history entry: status + brief from the result file
                 res = None
                 out_path = os.path.join(RUNS_DIR, run_id + ".json")
+                _recover_analysis_checkpoint(run_id)
                 try:
                     with open(out_path, encoding="utf-8") as f:
                         res = json.load(f)
@@ -1144,7 +1257,9 @@ async def analyze(request: Request):
                 try:
                     q.put(("end", None))
                 finally:
-                    run_lock.release()
+                    if worker_reaped:
+                        _prune_finished_runs()
+                        run_lock.release()
 
     try:
         threading.Thread(target=guarded, daemon=True).start()
@@ -1249,6 +1364,8 @@ def _adapt_result_for_view(res):
     if not isinstance(res, dict):
         return {"analysis_status": "inconclusive", "classification": {"rule_verdict": "INCONCLUSIVE"}}
     if isinstance(res.get("transaction"), dict) and isinstance(res.get("classification"), dict):
+        if res.get("analysis_status") in ("cancelled", "cancelling", "error", "died", "timeout", "stopped", "inconclusive", "interrupted", "partial", "failed"):
+            return {**res, "classification": {**res["classification"], "rule_verdict": "INCONCLUSIVE"}}
         return res
     def obj(value):
         return value if isinstance(value, dict) else {}

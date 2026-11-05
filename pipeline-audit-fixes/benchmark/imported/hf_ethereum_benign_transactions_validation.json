@@ -1,0 +1,17 @@
+{
+  "path": "benchmark\\imported\\hf_ethereum_benign_transactions.csv",
+  "rows": 10000,
+  "missing_required_fields": [],
+  "duplicate_hashes": 0,
+  "duplicate_hash_examples": [],
+  "target_min_rows": 10000,
+  "target_preferred_rows": 10000,
+  "meets_minimum_size": true,
+  "meets_preferred_size": true,
+  "chain_counts": {
+    "eth": 10000
+  },
+  "category_counts": {
+    "non_scam_address_activity": 10000
+  }
+}

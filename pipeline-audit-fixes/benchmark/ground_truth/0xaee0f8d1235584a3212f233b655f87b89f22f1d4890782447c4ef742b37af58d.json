@@ -1,0 +1,21 @@
+{
+  "name": "CompoundUni",
+  "cause": "Oracle bad price",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0xaee0f8d1235584a3212f233b655f87b89f22f1d4890782447c4ef742b37af58d"
+  ],
+  "complexity_level": "Complex",
+  "time": "2024-02-23 14:35:35 UTC",
+  "lost": "~439,537 USD",
+  "location": {
+    "0x50ce56a3239671ab62f185704caedf626352741e#UniswapAnchoredView.sol#132:11": [
+      "0x50ce56a3239671ab62f185704caedf626352741e#UniswapAnchoredView#getUnderlyingPrice",
+      "0x50ce56a3239671ab62f185704caedf626352741e#UniswapAnchoredView#132:11"
+    ]
+  },
+  "disclosure": {
+    "time": "2024-02-24 09:47:00 UTC",
+    "link": "['https://www.coinlive.com/news/compound-incurred-bad-debts-of-us-660-000-due-to-uni-s-instant']"
+  }
+}

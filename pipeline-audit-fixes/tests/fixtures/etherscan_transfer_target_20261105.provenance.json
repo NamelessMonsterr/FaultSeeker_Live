@@ -1,0 +1,6 @@
+{
+  "source": "https://etherscan.io/tx/0xa17fdb804728f226fcd10e78eae5247abd984e0f03301312315b89cae25aa517",
+  "collected_date_utc": "2026-11-05",
+  "page_sha256": "ff5c73cc5d4202f0d4539341b39f231008194184b9479f691712bf3094ae489e",
+  "scope": "Exact target HTML fragment from first ERC-20 transfer; parser regression only, not trace or verdict verification"
+}

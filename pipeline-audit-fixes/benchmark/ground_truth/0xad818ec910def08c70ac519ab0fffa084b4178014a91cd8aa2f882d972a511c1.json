@@ -1,0 +1,17 @@
+{
+  "name": "EHIVE",
+  "cause": "Business Logic Flaw",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0xad818ec910def08c70ac519ab0fffa084b4178014a91cd8aa2f882d972a511c1"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2023-07-14 08:24:59 UTC",
+  "lost": "~$15K",
+  "location": {
+    "0x4ae2cd1f5b8806a973953b76f9ce6d5fab9cdcfd##950:15": [
+      "0x4ae2cd1f5b8806a973953b76f9ce6d5fab9cdcfd#EHIVE#stake",
+      "0x4ae2cd1f5b8806a973953b76f9ce6d5fab9cdcfd#EHIVE#950:15"
+    ]
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "WIFCOIN_ETH",
+  "cause": "business logic flaw",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0xda8f6a4bed7e5689a343d111632d37480c0316f1d20b732803c4bd482823e284"
+  ],
+  "complexity_level": "Complex",
+  "time": "2024-06-16 08:35:35 UTC",
+  "lost": "~3.4 ETH (WIF token)",
+  "location": {
+    "0xa1ce40702e15d0417a6c74d0bab96772f36f4e99#WIFStaking.sol#884:27": [
+      "0xa1ce40702e15d0417a6c74d0bab96772f36f4e99#WIFStaking#stake",
+      "0xa1ce40702e15d0417a6c74d0bab96772f36f4e99#WIFStaking#884:27"
+    ]
+  },
+  "detection": {
+    "time": "2024-06-17 03:56:00 UTC",
+    "link": "['https://x.com/ChainAegis/status/1802550962977964139']"
+  }
+}

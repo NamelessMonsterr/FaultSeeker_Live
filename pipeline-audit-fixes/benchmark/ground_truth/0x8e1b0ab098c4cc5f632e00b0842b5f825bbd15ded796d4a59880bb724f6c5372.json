@@ -1,0 +1,21 @@
+{
+  "name": "HeavensGate",
+  "cause": "Rebasing logic issue",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x8e1b0ab098c4cc5f632e00b0842b5f825bbd15ded796d4a59880bb724f6c5372"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2023-09-05 15:33:47 UTC",
+  "lost": "~$8ETH",
+  "location": {
+    "0x8ebd6c7d2b79ca4dc5fbdec239a8bb0f214212b8#Staking.sol#57:4": [
+      "0x8ebd6c7d2b79ca4dc5fbdec239a8bb0f214212b8#HATEStaking#stake",
+      "0x8ebd6c7d2b79ca4dc5fbdec239a8bb0f214212b8#HATEStaking#57:4"
+    ]
+  },
+  "detection": {
+    "time": "2023-09-05 10:17:00 UTC",
+    "link": "['https://twitter.com/hexagate_/status/1699003711937216905']"
+  }
+}

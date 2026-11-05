@@ -71,13 +71,17 @@ class WallCapLedger:
             return r
         return wrapped
 
-    def wrap(self, original, kind):
+    def wrap(self, original, kind, is_local_model=None):
         ledger = self
 
         def wrapped(analyzer, *args, **kwargs):
             key = id(analyzer)
             model = getattr(analyzer, "txn_analyzer_model", "")
-            st = {"completed": 0, "exit": None, "ceiling": fork_iteration_ceiling(model, kind)}
+            ceiling = fork_iteration_ceiling(model, kind)
+            if is_local_model is not None:
+                cloud = not is_local_model(model)
+                ceiling = (3 if cloud else 8) if kind == "function" else (2 if cloud else 3)
+            st = {"completed": 0, "exit": None, "ceiling": ceiling}
             prompts = getattr(analyzer, "function_prompts", None)
             prefix = getattr(prompts, "check_analysis_adequacy" if kind == "function" else "check_analysis_adequacy_alt", None)
             agent = getattr(analyzer, "organization_agent", None)

@@ -1,0 +1,25 @@
+{
+  "name": "Burntbubba",
+  "cause": "Price Manipulation",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x2b6d0af0dc513a15e325703405739057f9de6ef3f99934b957653b8a3fade4c6"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2023-11-29 22:29:59 UTC",
+  "lost": "~$3K",
+  "location": {
+    "0xa44e79a2c9a8965e7a6fa77bf0ca8faf50e6c73e#FarmingLPToken.sol#189:10": [
+      "0xa44e79a2c9a8965e7a6fa77bf0ca8faf50e6c73e#FarmingLPToken#deposit",
+      "0xa44e79a2c9a8965e7a6fa77bf0ca8faf50e6c73e#FarmingLPToken#189:10"
+    ],
+    "0xa44e79a2c9a8965e7a6fa77bf0ca8faf50e6c73e#FarmingLPToken.sol#295:11": [
+      "0xa44e79a2c9a8965e7a6fa77bf0ca8faf50e6c73e#FarmingLPToken#emergencyWithdraw",
+      "0xa44e79a2c9a8965e7a6fa77bf0ca8faf50e6c73e#FarmingLPToken#295:11"
+    ]
+  },
+  "disclosure": {
+    "time": "2023-11-30 02:01:00 UTC",
+    "link": "['https://x.com/MetaSec_xyz/status/1730044259087315046']"
+  }
+}

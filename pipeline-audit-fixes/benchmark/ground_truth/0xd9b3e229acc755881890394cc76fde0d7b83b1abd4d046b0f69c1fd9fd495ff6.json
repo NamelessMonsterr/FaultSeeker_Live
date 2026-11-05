@@ -1,0 +1,25 @@
+{
+  "name": "ParticleTrade",
+  "cause": "lack of validation data",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0xd9b3e229acc755881890394cc76fde0d7b83b1abd4d046b0f69c1fd9fd495ff6"
+  ],
+  "complexity_level": "Complex",
+  "time": "2024-02-15 06:08:47 UTC",
+  "lost": "~50k",
+  "location": {
+    "0xe4764f9cd8ecc9659d3abf35259638b20ac536e4#ParticleExchange.sol#977:8": [
+      "0xe4764f9cd8ecc9659d3abf35259638b20ac536e4#ParticleExchange#onERC721Received",
+      "0xe4764f9cd8ecc9659d3abf35259638b20ac536e4#ParticleExchange#977:8"
+    ],
+    "0xe4764f9cd8ecc9659d3abf35259638b20ac536e4#ParticleExchange.sol#645:31": [
+      "0xe4764f9cd8ecc9659d3abf35259638b20ac536e4#ParticleExchange#offerBid",
+      "0xe4764f9cd8ecc9659d3abf35259638b20ac536e4#ParticleExchange#645:31"
+    ]
+  },
+  "detection": {
+    "time": "2024-02-15 07:19:00 UTC",
+    "link": "['https://twitter.com/Phalcon_xyz/status/1758028270770250134']"
+  }
+}

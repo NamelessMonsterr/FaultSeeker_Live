@@ -1,0 +1,24 @@
+{
+  "name": "DODO",
+  "cause": "Init function unlimited",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x0b062361e16a2ea0942cc1b4462b6584208c8c864609ff73aaa640aaa2d92428"
+  ],
+  "complexity_level": "Complex",
+  "time": "2021/3/8 20:57",
+  "location": {
+    "0x2bbd66fc4898242bdbd2583bbe1d76e8b8f71445##44054:8": [
+      "0x2bbd66fc4898242bdbd2583bbe1d76e8b8f71445#DVM#init",
+      "0x2bbd66fc4898242bdbd2583bbe1d76e8b8f71445#DVM#1419:50"
+    ]
+  },
+  "detection": {
+    "time": "2021/3/9 1:33",
+    "link": "https://twitter.com/BreederDodo/status/1369098897008648192"
+  },
+  "disclosure": {
+    "time": "2021/3/9 15:17",
+    "link": "https://dodoexhelp.zendesk.com/hc/en-us/articles/900004851126-Important-update-regarding-recent-events-on-DODO"
+  }
+}

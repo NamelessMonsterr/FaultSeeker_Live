@@ -1,0 +1,25 @@
+{
+  "name": "EulerFinance",
+  "cause": "Business Logic Flaw",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0xc310a0affe2169d1f6feec1c63dbc7f7c62a887fa48795d327d4d2da2d6b111d"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2023-03-13 08:50:59 UTC",
+  "lost": "~$200M",
+  "location": {
+    "0xe025e3ca2be02316033184551d4d3aa22024d9dc##:": [
+      "0xe025e3ca2be02316033184551d4d3aa22024d9dc##donateToReserves",
+      "0xe025e3ca2be02316033184551d4d3aa22024d9dc##:"
+    ]
+  },
+  "detection": {
+    "time": "2023-03-13 10:59:00 UTC",
+    "link": "['https://x.com/peckshield/status/1635203838939652097']"
+  },
+  "disclosure": {
+    "time": "2023-03-13 14:37:00 UTC",
+    "link": "['https://x.com/SlowMist_Team/status/1635288963580825606']"
+  }
+}

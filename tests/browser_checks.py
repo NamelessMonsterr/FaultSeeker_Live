@@ -13,7 +13,7 @@ from playwright.sync_api import sync_playwright, expect
 
 TX = "0x" + "a" * 64
 CONFIG = {"chains": ["eth"], "models": [{"id": "no-llm", "label": "Deterministic Stage 1", "keyEnv": None}], "repo_present": True, "live_available": True, "capture_available": True}
-REPORT = {"transaction_hash": TX, "chain": "eth", "analysis_status": "completed", "analysis_mode": "no-llm", "stage_completed": "stage-1", "scored_functions": [{"function": "<img src=x onerror=alert(1)>", "evidence": ["Observed function call"]}], "limitations": ["Controlled browser test fixture"]}
+REPORT = {"transaction_hash": TX, "chain": "eth", "analysis_status": "completed", "analysis_mode": "no-llm", "stage_completed": "stage-1", "scored_functions": [{"function": "<img src=x onerror=alert(1)>", "evidence": ["Observed function call"]}], "limitations": ["Controlled browser test fixture"], "calibration": {"status": "not_applied", "reason": "feature_contract_unverified"}}
 
 
 def event(number, kind, value):
@@ -130,6 +130,9 @@ def main():
         assert "<img src=x onerror=alert(1)>" in page.locator("#results").inner_text()
         page.screenshot(path=str(artifacts / "report-mobile.png"), full_page=True)
         passed.append("reload recovery, raw-schema completion, XSS-safe evidence, no blank result screen")
+        expect(page.locator("#results")).to_contain_text("Heuristic scores, not calibrated probabilities")
+        expect(page.locator("#results")).to_contain_text("feature contract is unverified or incompatible")
+        passed.append("uncalibrated scores retain an explicit visible confidence basis")
         page.locator("#history-button").click()
         expect(page.locator("#history")).to_be_visible()
         page.get_by_role("button", name="View report", exact=True).click()
@@ -177,10 +180,13 @@ def main():
         actual.locator("#capture-button").click()
         expect(actual.locator("#results")).to_be_visible()
         expect(actual.locator("#results")).to_contain_text("SAVED CAPTURE")
-        assert actual.locator(".finding").count() == 20
-        actual.get_by_role("button", name="Show 20 more findings", exact=True).click()
-        assert actual.locator(".finding").count() == 40
-        passed.append(("offline bundled capture" if args.offline else "real server saved capture") + " remains explicit and paginates 803 functions")
+        expect(actual.locator("#results")).to_contain_text("STAGE 1 ONLY")
+        assert actual.locator(".finding").count() == 0
+        assert actual.locator(".observed-call").count() == 20
+        actual.get_by_role("button", name="Show 20 more observed calls", exact=True).click()
+        assert actual.locator(".observed-call").count() == 40
+        expect(actual.locator("#results")).to_contain_text("These candidates are not scored findings")
+        passed.append(("offline bundled capture" if args.offline else "real server saved capture") + " preserves stage-1 scope and paginates observations without inventing findings")
         browser.close()
     print(json.dumps({"passed": len(passed), "checks": passed, "artifacts": str(artifacts)}, indent=2))
 

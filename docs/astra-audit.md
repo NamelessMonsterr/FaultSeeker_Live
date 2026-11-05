@@ -1,5 +1,34 @@
 # Combined audit follow-through
 
+## Current evidence addendum (2026-11-03)
+
+The PR #4 record below is historical. Current follow-through is console PR #5,
+fix/all-chain-validation, based on development main; main1 remains live.
+
+- O5/A11: the exact Docker pin fb57c3fad63784b7a63dc7fdf1845364c76ce0b7
+  is now available clean locally. The latest offline suite actually executed
+  330 cases, all passed with zero skips; frontend13 passed. The former seven
+  skipped integrations are no longer claimed blocked by source availability.
+- A2c: current transport allows concurrent HTTP outside the condition lock,
+  reserving/reconciling one shared budget under lock. Mocked concurrency tests
+  cover overlap; actual provider throughput is not measured. The historical
+  serialization-decision entry does not describe current code.
+- A3/R2: the existing offline path probe was now executed against the exact pin:
+  geth creation -> sequencer -> flattening -> ranker preserves the target, and
+  visitor RPC registry refresh is observed. Coverage ends before model/function
+  analysis; inputs are explicitly synthetic, not verified on-chain fixtures.
+- A3b: the same exact-pin probe reproduces lost Parity creation address/initcode.
+  This is now confirmed at the deployed source pin, rather than only the older
+  available checkout. A separate fix branch is in progress; not marked fixed.
+- A9: all six depth1024 probe operations returned under recursion limit20000.
+  No arbitrary-depth or complete forensic/model flow verification is claimed.
+- L8b: exact requirements are available; full transitive resolution, artifact
+  verification and Docker execution remain unverified. No installs performed.
+
+Command: `python -B tools/probe_local_pipeline.py --repo <clean exact-pin checkout>`.
+Result: exit0, exact_pin=true, network_calls=0. See all-chain-ledger.md for
+chronological evidence and remaining model-access/deployment blockers.
+
 Branch: `fix/astra-audit`; PR #4 targets `main1`. Base remains `7259d9573f2ef91368c797387e9b025b14dd5247`.
 This ledger supersedes the first-batch report. No merge, deployment, remote access, downloads, installs, live RPC or live model calls were performed in this follow-through. The current local changes have not been pushed under the local-only restriction.
 

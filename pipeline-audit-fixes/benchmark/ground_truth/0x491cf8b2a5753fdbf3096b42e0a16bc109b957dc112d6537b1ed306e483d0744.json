@@ -1,0 +1,25 @@
+{
+  "name": "Spectra_finance",
+  "cause": "Incorrect input validation",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x491cf8b2a5753fdbf3096b42e0a16bc109b957dc112d6537b1ed306e483d0744"
+  ],
+  "complexity_level": "Moderate",
+  "time": "2024-07-23 14:53:59 UTC",
+  "lost": "~73K USD",
+  "location": {
+    "0x51bdbfcd7656e2c25ad1bc8037f70572b7142ecc#Router.sol#66:40": [
+      "0x51bdbfcd7656e2c25ad1bc8037f70572b7142ecc#Router#execute",
+      "0x51bdbfcd7656e2c25ad1bc8037f70572b7142ecc#Router#66:40"
+    ]
+  },
+  "detection": {
+    "time": "2024-07-23 18:16:00 UTC",
+    "link": "['https://x.com/spectra_finance/status/1815813300111786488']"
+  },
+  "disclosure": {
+    "time": "2024-07-24 05:25:00 UTC",
+    "link": "['https://x.com/shoucccc/status/1815981585637990899']"
+  }
+}

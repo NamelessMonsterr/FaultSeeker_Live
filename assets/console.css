@@ -8,7 +8,7 @@
 .preset-chain{position:relative}
 .preset-chain-btn{border:1px solid #41484c;border-radius:3px;padding:5px 14px;font-size:11px;letter-spacing:1px;color:var(--text)}
 .preset-chain-btn:hover,.preset-chain:focus-within .preset-chain-btn{border-color:var(--amber);color:var(--amber)}
-.preset-list{position:absolute;z-index:30;top:calc(100% + 6px);left:0;min-width:330px;background:#0a0d0e;border:1px solid var(--border);border-radius:4px;box-shadow:0 10px 32px rgba(0,0,0,.55)}
+.preset-list{position:absolute;z-index:30;top:calc(100% + 6px);left:0;min-width:min(330px,calc(100vw - 20px));max-width:calc(100vw - 20px);background:#0a0d0e;border:1px solid var(--border);border-radius:4px;box-shadow:0 10px 32px rgba(0,0,0,.55)}
 .preset-item{display:block;width:100%;text-align:left;border:0;border-bottom:1px solid var(--border);background:transparent;padding:10px 14px;font-size:11px;line-height:1.5}
 .preset-item:last-child{border-bottom:0}
 .preset-item:hover,.preset-item:focus-visible{background:#1b2023}

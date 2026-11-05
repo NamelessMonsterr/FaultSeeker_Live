@@ -15,13 +15,13 @@ class Element {
   get classList(){return {add(){}};}
 }
 function boot(routes){
- const elements={};const storage=new Map();const streams=[];const requests=[];
+ const elements={};const storage=new Map();const streams=[];const requests=[];const intervals=[];
  for(const match of fs.readFileSync('app/web/index.html','utf8').matchAll(/id="([^"]+)"/g)) elements[match[1]]=new Element();
  const document={baseURI:'https://example.com/console/',getElementById(id){return elements[id]??=new Element();},createElement(tag){return new Element(tag);}};
  class EventSource{constructor(url){this.url=String(url);this.handlers={};streams.push(this);}addEventListener(key,fn){this.handlers[key]=fn;}close(){this.closed=true;}emit(key,data,id=''){this.handlers[key]?.({data:JSON.stringify(data),lastEventId:id});}}
- const context={document,window:{addEventListener(){}},URL,Blob,console,Date,EventSource,setTimeout(fn){fn();},setInterval(){return 1;},clearInterval(){},sessionStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},fetch:async(url,options)=>{const path=new URL(url).pathname;requests.push({path,options});const result=routes[path]??{status:404,data:{error:'not found'}};return {ok:!result.status||result.status<400,status:result.status||200,json:async()=>result.data};}};
+ const context={document,window:{addEventListener(){}},URL,Blob,console,Date,EventSource,setTimeout(fn){fn();},setInterval(fn){intervals.push(fn);return intervals.length;},clearInterval(){},sessionStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},fetch:async(url,options)=>{const path=new URL(url).pathname;requests.push({path,options});const result=routes[path]??{status:404,data:{error:'not found'}};return {ok:!result.status||result.status<400,status:result.status||200,json:async()=>result.data};}};
  vm.runInNewContext(fs.readFileSync('app/web/assets/console.js','utf8'),context);
- return {elements,streams,requests,storage};
+ return {elements,streams,requests,storage,intervals};
 }
 const settle=()=>new Promise(resolve=>setImmediate(resolve));
 const config={chains:['eth'],models:[{id:'no-llm',label:'Deterministic',keyEnv:null}],repo_present:true,capture_available:true};
@@ -63,6 +63,34 @@ test('large forensic reports paginate findings without dropping downloadable rep
  const button=nodes.find(n=>n.textContent==='Show 20 more findings');button.onclick();nodes=walk(app.elements.results);assert.equal(nodes.filter(n=>n.tagName==='article').length,40);assert.match(collect(app.elements.results),/Showing 40 of 803 findings/);
 });
 
+test('partial report keeps observed calls separate from absent function findings',async()=>{
+ // Synthetic UI-schema reproduction of a partial report; not an on-chain fixture.
+ const calls=Array.from({length:34},(_,i)=>({function:'observed_'+i,address:'0x'+String(i).padStart(40,'0'),params:'calldata_'+i}));
+ const report={transaction_hash:'0x123',analysis_status:'partial',sections:{function_analysis:'failed',scoring:'skipped'},scored_functions:[],evidence_cards:[],function_analysis:{functions_to_inspect:{function_name_with_hash:calls}},model_endpoint:{failure:{kind:'rate_limited',http_status:429}}};
+ const app=boot({'/console/api/config':{data:config},'/console/api/analyze':{data:{run_id:'partialcalls'}},'/console/api/result/partialcalls':{data:report}});await settle();
+ await app.elements['analysis-form'].listeners.submit({preventDefault(){}});app.streams[0].emit('error','Model endpoint returned HTTP 429','1');app.streams[0].emit('end',{},'2');await settle();
+ const walk=el=>[el,...el.children.flatMap(walk)];let nodes=walk(app.elements.results);let content=collect(app.elements.results);
+ assert.match(content,/Functions and evidence \(0\)/);assert.match(content,/Observed calls \/ unanalysed candidates \(34\)/);assert.match(content,/INCONCLUSIVE/);
+ assert.equal(nodes.filter(n=>n.className==='finding').length,0);assert.equal(nodes.filter(n=>n.className==='observed-call').length,20);
+ assert.doesNotMatch(content,/Full finding and evidence/);assert.match(content,/Showing 20 of 34 observed calls/);
+ const more=nodes.find(n=>n.textContent==='Show 20 more observed calls');more.onclick();nodes=walk(app.elements.results);content=collect(app.elements.results);
+ assert.equal(nodes.filter(n=>n.className==='observed-call').length,34);assert.match(content,/Showing 34 of 34 observed calls/);assert.equal(more.hidden,true);
+ assert.ok(nodes.some(n=>n.tagName==='pre'&&n.textContent.includes('"function_name_with_hash"')&&n.textContent.includes('observed_33')));
+ assert.ok(nodes.some(n=>n.textContent==='Download report JSON'));
+});
+
+test('scored findings do not hide separately labelled observed calls',async()=>{
+ // Synthetic UI schema: a genuine scored entry and an unanalysed candidate coexist.
+ const report={transaction_hash:'0x123',analysis_status:'completed',scored_functions:[{function:'scored_fn',evidence:['Scored evidence']}],evidence_cards:[],function_analysis:{functions_to_inspect:{function_name_with_hash:[{function:'candidate_only'}]}}};
+ const app=boot({'/console/api/config':{data:config},'/console/api/capture':{data:report}});await settle();await app.elements['capture-button'].onclick();
+ const walk=el=>[el,...el.children.flatMap(walk)],nodes=walk(app.elements.results),content=collect(app.elements.results);
+ assert.match(content,/Functions and evidence \(1\)/);assert.match(content,/Observed calls \/ unanalysed candidates \(1\)/);
+ assert.equal(nodes.filter(n=>n.className==='finding').length,1);assert.equal(nodes.filter(n=>n.className==='observed-call').length,1);
+ const finding=nodes.find(n=>n.className==='finding'),observation=nodes.find(n=>n.className==='observed-call');
+ assert.match(collect(finding),/scored_fn/);assert.doesNotMatch(collect(finding),/candidate_only/);assert.match(collect(observation),/candidate_only/);
+ assert.doesNotMatch(collect(observation),/Full finding and evidence/);
+});
+
 test('model retry status explicitly pauses analysis and never completes pending stages',async()=>{
  const app=boot({'/console/api/config':{data:config},'/console/api/analyze':{data:{run_id:'retryrun'}}});await settle();
  await app.elements['analysis-form'].listeners.submit({preventDefault(){}});
@@ -81,6 +109,16 @@ test('partial endpoint-failure report visibly lists failed and skipped sections'
  const content=collect(app.elements.results);assert.match(content,/Investigation .* partial/);assert.match(content,/Analysis coverage/);assert.match(content,/function analysis.*failed/);assert.match(content,/scoring.*skipped/);assert.match(content,/INCONCLUSIVE/);assert.doesNotMatch(content,/Investigation report/);
 });
 
+
+for (const [code,explanation] of [['free_model_monthly_limit','monthly allowance'],['free_model_tpm_limit','token-rate'],['provider_rate_limit','capacity']]) {
+ test(`rate-limit report exposes recognized recovery category ${code}`,async()=>{
+  const report={transaction_hash:'0x123',analysis_status:'partial',sections:{function_analysis:'failed',scoring:'skipped'},model_endpoint:{failure:{kind:'rate_limited',http_status:429,provider_code:code,retry_after_seconds:120}}};
+  const app=boot({'/console/api/config':{data:config},'/console/api/capture':{data:report}});await settle();await app.elements['capture-button'].onclick();
+  const content=collect(app.elements.results);
+  assert.match(content,/INCONCLUSIVE/);assert.ok(content.includes(`Provider code: ${code}`));
+  assert.ok(content.includes(explanation));assert.match(content,/Retry-After at failure: 120 seconds/);
+ });
+}
 
 test('unknown measurements do not appear as zero scores or a successful verdict',async()=>{
  const report={transaction_hash:'0x123',analysis_status:'completed',classification:{rule_verdict:'INCONCLUSIVE',priority_score:null,reentrancy:{score:null},signals:{profit_extraction_eth:null,large_transfer_to_eoa:null}}};
@@ -106,4 +144,99 @@ test('replay gaps remain visible even when EventSource inherits an old ID',async
  app.streams[0].emit('replay-gap',{message:'Older technical logs expired'},'5');
  assert.match(collect(app.elements.activity),/Older technical logs expired/);
  app.streams[0].emit('heartbeat',{},'5');assert.match(app.elements.connection.textContent,/Connected/);
+});
+
+
+test('paired scored targets and evidence cards render once without hiding distinct evidence',async()=>{
+ const report={transaction_hash:'0x123',analysis_status:'completed',
+ scored_functions:[{function:'0x12345678',address:'0xAbC',evidence:['score evidence']}],
+ evidence_cards:[{function_signature:{function:'0x12345678',address:'0xabc'},evidence:['card evidence']},
+ {function_signature:{function:'0x12345678',address:'0xdef'},evidence:['other address evidence']}],
+ function_analysis:{functions_to_inspect:{function_name_with_hash:[{function:'0x12345678',address:'0xabc'},{function:'0x99999999',address:'0xabc'}]}}};
+ const app=boot({'/console/api/config':{data:config},'/console/api/capture':{data:report}});await settle();await app.elements['capture-button'].onclick();
+ const content=collect(app.elements.results);
+ assert.match(content,/Functions and evidence \(2\)/);
+ assert.match(content,/Observed calls \/ unanalysed candidates \(1\)/);
+ for(const marker of ['score evidence','card evidence','other address evidence']) assert.ok(content.includes(marker));
+});
+
+
+test('delayed old report cannot overwrite a newer run or clear its storage',async()=>{
+ let resolveOld;const oldData=new Promise(resolve=>resolveOld=resolve);
+ const analyze={data:{run_id:'oldrun'}};
+ const app=boot({'/console/api/config':{data:config},'/console/api/analyze':analyze,'/console/api/result/oldrun':{data:oldData}});
+ await settle();const e=app.elements;e.model.value='no-llm';
+ await e['analysis-form'].listeners.submit({preventDefault(){}});
+ app.streams[0].emit('end',{},'1');await settle();
+ analyze.data={run_id:'newrun'};
+ await e['analysis-form'].listeners.submit({preventDefault(){}});
+ resolveOld({transaction_hash:'OLD_TRANSACTION',analysis_status:'completed'});await settle();
+ assert.equal(app.streams[1].closed,undefined);
+ assert.doesNotMatch(collect(e.results),/OLD_TRANSACTION/);
+ assert.ok([...app.storage.values()].some(value=>value.includes('newrun')));
+});
+
+
+test('closed old stream events cannot finish or update a newer run',async()=>{
+ const analyze={data:{run_id:'oldrun'}};
+ const app=boot({'/console/api/config':{data:config},'/console/api/analyze':analyze});await settle();
+ const e=app.elements;e.model.value='no-llm';await e['analysis-form'].listeners.submit({preventDefault(){}});
+ analyze.data={run_id:'newrun'};await e['analysis-form'].listeners.submit({preventDefault(){}});
+ const task=e['active-task'].textContent;
+ app.streams[0].emit('model_status',{state:'model_endpoint_failed'},'50');
+ app.streams[0].emit('end',{},'51');await settle();
+ assert.equal(e['active-task'].textContent,task);
+ assert.equal(app.streams[1].closed,undefined);
+ assert.ok(!app.requests.some(r=>r.path.endsWith('/result/newrun')));
+});
+
+
+test('late status response cannot finish the replacement run',async()=>{
+ let resolveStatus;const status=new Promise(resolve=>resolveStatus=resolve);const analyze={data:{run_id:'oldrun'}};
+ const app=boot({'/console/api/config':{data:config},'/console/api/analyze':analyze,'/console/api/status/oldrun':{data:status}});await settle();
+ const e=app.elements;e.model.value='no-llm';await e['analysis-form'].listeners.submit({preventDefault(){}});
+ const poll=app.intervals[1]();await settle();analyze.data={run_id:'newrun'};
+ await e['analysis-form'].listeners.submit({preventDefault(){}});
+ resolveStatus({status:'failed',model_endpoint:{state:'model_endpoint_failed'}});await poll;await settle();
+ assert.equal(app.streams[1].closed,undefined);
+ assert.equal(e['active-task'].textContent,'Connecting to the pipeline');
+ assert.ok(!app.requests.some(r=>r.path.endsWith('/result/newrun')));
+});
+
+
+for (const [reason, expected] of [['model_untrained', /not trained/], ['feature_contract_unverified', /feature contract/], ['features_unavailable', /measurements/]]) {
+ test(`uncalibrated report visibly labels heuristic scores: ${reason}`, async()=>{
+  const report={transaction_hash:'0x123',analysis_status:'completed',calibration:{status:'not_applied',reason},scored_functions:[{function:'controlled',confidence:{overall:.6}}]};
+  const app=boot({'/console/api/config':{data:config},'/console/api/capture':{data:report}});await settle();await app.elements['capture-button'].onclick();
+  const content=collect(app.elements.results);assert.match(content,/Heuristic scores/);assert.match(content,/not calibrated probabilities/);assert.match(content,expected);
+ });
+}
+
+test('matching-contract calibration is visible without claiming independent accuracy',async()=>{
+ const app=boot({'/console/api/config':{data:config},'/console/api/capture':{data:{transaction_hash:'0x123',analysis_status:'completed',calibration:{status:'applied'},scored_functions:[]}}});await settle();await app.elements['capture-button'].onclick();
+ assert.match(collect(app.elements.results),/matching feature contract/);assert.match(collect(app.elements.results),/accuracy has not been independently verified/);
+});
+
+
+test('report labels render without corrupted separator text',async()=>{
+ const app=boot({'/console/api/config':{data:config},'/console/api/capture':{data:{transaction_hash:'0x123',chain:'eth',analysis_status:'completed'}}});await settle();await app.elements['capture-button'].onclick();
+ const content=collect(app.elements.results);assert.match(content,/0x123 \| eth/);assert.doesNotMatch(content,/\u00c3/);
+});
+
+test('recovered preliminary findings stay visible and explicitly unranked',async()=>{
+ const app=boot({'/console/api/config':{data:config},'/console/api/capture':{data:{transaction_hash:'0x123',analysis_status:'partial',sections:{scoring:'skipped'},preliminary_findings:[{target:'0x12345678_0x111',status:'unranked/unverified',evidence:['retained observation <script>bad()</script>']}]}}});await settle();await app.elements['capture-button'].onclick();
+ const content=collect(app.elements.results);
+ assert.match(content,/INCONCLUSIVE/);assert.match(content,/Preliminary observations/);
+ assert.match(content,/unranked and unverified/);assert.match(content,/0x12345678_0x111/);
+ assert.match(content,/retained observation/);
+});
+
+test('missing retrieval evidence cannot display a completed exploit verdict',async()=>{
+ const app=boot({'/console/api/config':{data:config},'/console/api/capture':{data:{transaction_hash:'0x123',analysis_status:'partial',classification:{rule_verdict:'EXPLOIT'},sections:{function_analysis:'partial_missing_evidence',scoring:'not_validated'},limitations:['Requested evidence was unavailable or invalid.'],analysis_integrity:{retrieval_incomplete:true}}}});await settle();await app.elements['capture-button'].onclick();
+ const content=collect(app.elements.results);assert.match(content,/INCONCLUSIVE/);assert.match(content,/partial_missing_evidence/);assert.match(content,/evidence was unavailable/);assert.doesNotMatch(content,/Reported verdict EXPLOIT/);
+});
+
+test('unresolved model target stays visible with partial status and independent findings',async()=>{
+ const app=boot({'/console/api/config':{data:config},'/console/api/capture':{data:{transaction_hash:'0x123',analysis_status:'partial',classification:{rule_verdict:'INCONCLUSIVE'},sections:{function_analysis:'partial_missing_evidence',scoring:'not_validated'},analysis_integrity:{retrieval_incomplete:true,rejected_finding_observations:[{status:'unresolved',reason:'unobserved_target',reply_sha256:'a'.repeat(64)}]},preliminary_findings:[{target:'foo_0x111',status:'unranked/unverified',evidence:['independent controlled observation']}]}}});await settle();await app.elements['capture-button'].onclick();
+ const content=collect(app.elements.results);assert.match(content,/INCONCLUSIVE/);assert.match(content,/unresolved/);assert.match(content,/unobserved_target/);assert.match(content,/independent controlled observation/);assert.doesNotMatch(content,/Reported verdict EXPLOIT/);
 });

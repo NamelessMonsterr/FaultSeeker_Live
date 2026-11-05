@@ -1,0 +1,25 @@
+{
+  "name": "Templedao",
+  "cause": "Insufficient access control",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x8c3f442fc6d640a6ff3ea0b12be64f1d4609ea94edd2966f42c01cd9bdcf04b5"
+  ],
+  "complexity_level": "Complex",
+  "time": "2022-10-11 13:08:35 UTC",
+  "lost": "$2.3 million",
+  "location": {
+    "0xd2869042e12a3506100af1d192b5b04d65137941#StaxLPStaking.sol#241:3": [
+      "0xd2869042e12a3506100af1d192b5b04d65137941#StaxLPStaking#migrateStake",
+      "0xd2869042e12a3506100af1d192b5b04d65137941#StaxLPStaking#241:3"
+    ]
+  },
+  "detection": {
+    "time": "2022-10-11 14:09:00 UTC",
+    "link": "['https://x.com/spreekaway/status/1579836562338361345']"
+  },
+  "disclosure": {
+    "time": "2022-10-11 14:38:00 UTC",
+    "link": "['https://twitter.com/BlockSecTeam/status/1579843881893769222']"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "method": "5-fold cross-validation, deterministic fold-by-hash assignment",
+  "leakage": "none: every prediction scored by a model that never saw that row in training",
+  "folds": 5,
+  "dataset": {
+    "exploit_rows": 231,
+    "benign_rows": 1000,
+    "total": 1231
+  },
+  "cv_metrics": {
+    "tp": 154,
+    "fp": 21,
+    "tn": 979,
+    "fn": 77,
+    "precision": 0.88,
+    "recall": 0.6667,
+    "f1": 0.7586,
+    "fpr": 0.021,
+    "brier": 0.0494,
+    "n": 1231
+  }
+}

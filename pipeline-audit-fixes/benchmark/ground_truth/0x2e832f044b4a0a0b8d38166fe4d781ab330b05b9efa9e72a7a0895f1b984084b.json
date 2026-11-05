@@ -1,0 +1,17 @@
+{
+  "name": "SHOCO",
+  "cause": "Reflection token",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x2e832f044b4a0a0b8d38166fe4d781ab330b05b9efa9e72a7a0895f1b984084b"
+  ],
+  "complexity_level": "Complex",
+  "time": "2023-01-19 12:54:11 UTC",
+  "lost": "~4ETH",
+  "location": {
+    "0x31a4f372aa891b46ba44dc64be1d8947c889e9c6##956:7": [
+      "0x31a4f372aa891b46ba44dc64be1d8947c889e9c6#Shoco#deliver",
+      "0x31a4f372aa891b46ba44dc64be1d8947c889e9c6#Shoco#956:7"
+    ]
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "PeapodsFinance",
+  "cause": "Reentrancy",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x95c1604789c93f41940a7fd9eca11276975a9a65d250b89a247736287dbd2b7e"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2024-01-29 04:14:35 UTC",
+  "lost": "~1K $DAI",
+  "location": {
+    "0xdbb20a979a92cccce15229e41c9b082d5b5d7e31#WeightedIndex.sol#114:25": [
+      "0xdbb20a979a92cccce15229e41c9b082d5b5d7e31#WeightedIndex#bond",
+      "0xdbb20a979a92cccce15229e41c9b082d5b5d7e31#WeightedIndex#114:25"
+    ]
+  }
+}

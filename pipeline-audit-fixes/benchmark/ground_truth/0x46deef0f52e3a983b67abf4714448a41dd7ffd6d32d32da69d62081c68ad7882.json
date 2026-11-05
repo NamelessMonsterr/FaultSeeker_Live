@@ -1,0 +1,25 @@
+{
+  "name": "Bybit",
+  "cause": "Phishing attack",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x46deef0f52e3a983b67abf4714448a41dd7ffd6d32d32da69d62081c68ad7882"
+  ],
+  "complexity_level": "Moderate",
+  "time": "2025-02-21 14:16:11 UTC",
+  "lost": "1.5B",
+  "location": {
+    "0x34cfac646f301356faa8b21e94227e3583fe3f5f##778:43": [
+      "0x34cfac646f301356faa8b21e94227e3583fe3f5f#GnosisSafe#execTransaction",
+      "0x34cfac646f301356faa8b21e94227e3583fe3f5f#GnosisSafe#778:43"
+    ]
+  },
+  "detection": {
+    "time": "2025-02-21 15:43:00 UTC",
+    "link": "['https://x.com/SlowMist_Team/status/1892963250385592345']"
+  },
+  "disclosure": {
+    "time": "2025-02-21 16:36:00 UTC",
+    "link": "['https://x.com/SlowMist_Team/status/1892976621491232919']"
+  }
+}

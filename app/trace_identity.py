@@ -16,15 +16,25 @@ def canonical_to_legacy(node):
                 "function": selector, "params": calldata if creation else calldata[10:],
                 "call_type": call_type, "value": source.get("value"), "contract_type": None,
                 "function_identity": "contract_creation" if creation else ("calldata_selector" if selector != "0x" else "no_selector"),
-                "abi_verified": False, "children": []}
+                "abi_verified": False,
+                "caller": source.get("caller") or source.get("from"), "input": calldata,
+                "success": source.get("success"), "return_data": source.get("return_data"),
+                "error": source.get("error"), "children": []}
     result = frame(node)
-    pending = [(node, result)]
+    pending = [(node, result, False)]
+    active = set()
     while pending:
-        source, target = pending.pop()
-        for child in source.get("children", []):
-            converted = frame(child)
-            target["children"].append(converted)
-            pending.append((child, converted))
+        source, target, exiting = pending.pop()
+        if exiting:
+            active.remove(id(source))
+            continue
+        if id(source) in active:
+            raise ValueError("Cyclic canonical trace")
+        active.add(id(source))
+        pending.append((source, target, True))
+        children = [(child, frame(child), False) for child in source.get("children", [])]
+        target["children"] = [converted for _, converted, _ in children]
+        pending.extend(reversed(children))
     return result
 
 
@@ -32,6 +42,8 @@ def validate_trace_root(tx, root, tx_hash, receipt=None):
     """Bind a call to its transaction, or a creation to its matching receipt."""
     if not isinstance(tx, dict) or str(tx.get("hash", "")).lower() != tx_hash.lower():
         raise TraceIdentityError("Transaction identity could not be verified from the chain.")
+    if not isinstance(root, dict) or "to" not in tx:
+        raise TraceIdentityError("Transaction or trace root is missing identity fields.")
     fields = [(tx.get("from"), root.get("caller") or root.get("from")),
               (tx.get("input"), root.get("input"))]
     target = root.get("callee") or root.get("to")
@@ -45,7 +57,8 @@ def validate_trace_root(tx, root, tx_hash, receipt=None):
         fields.append((receipt["contractAddress"], target))
     else:
         fields.append((tx["to"], target))
-    if any(str(a or "").lower() != str(b or "").lower() for a, b in fields):
+    if any(not isinstance(a, str) or not a or not isinstance(b, str) or not b
+           or a.lower() != b.lower() for a, b in fields):
         raise TraceIdentityError("Structured trace root differs from on-chain transaction calldata or addresses.")
 
 
@@ -59,18 +72,30 @@ def check_structured(payload, tx_hash, chain):
 
 def sequence_from_parity(rows, tx_hash, chain, verified_chain="eth"):
     """Convert real trace_transaction frames while verifying hash/block provenance."""
-    if chain != verified_chain or not rows:
+    if chain != verified_chain or not isinstance(rows, list) or not rows:
         raise TraceIdentityError("Trace chain does not match requested chain.")
-    block_hash = rows[0].get("blockHash")
+    block_hash = rows[0].get("blockHash") if isinstance(rows[0], dict) else None
+    if not isinstance(block_hash, str) or not re.fullmatch(r"0x[0-9a-fA-F]{64}", block_hash):
+        raise TraceIdentityError("Trace block provenance is missing or malformed.")
     nodes = {}
     for row in rows:
-        if row.get("transactionHash", "").lower() != tx_hash.lower() or row.get("blockHash") != block_hash:
+        if not isinstance(row, dict):
+            raise TraceIdentityError("Trace row is malformed.")
+        row_hash = row.get("transactionHash")
+        if not isinstance(row_hash, str) or row_hash.lower() != tx_hash.lower() or row.get("blockHash") != block_hash:
             raise TraceIdentityError("Trace transaction or block provenance does not match.")
-        action = row.get("action", {})
-        location = tuple(row["traceAddress"])
+        action = row.get("action")
+        location_value = row.get("traceAddress")
+        if not isinstance(action, dict) or not isinstance(location_value, list) or any(type(i) is not int or i < 0 for i in location_value):
+            raise TraceIdentityError("Trace frame action or location is malformed.")
+        location = tuple(location_value)
+        if location in nodes:
+            raise TraceIdentityError("Trace contains a duplicate frame location.")
         nodes[location] = {"callee": action.get("to"), "caller": action.get("from"),
                            "input": action.get("input", "0x"), "gas": action.get("gas"),
                            "value": action.get("value"), "call_type": action.get("callType", row.get("type")),
+                           "success": not bool(row.get("error")), "error": row.get("error"),
+                           "return_data": (row["result"].get("output") if isinstance(row.get("result"), dict) else None),
                            "children": []}
     if () not in nodes:
         raise TraceIdentityError("Trace has no transaction root.")

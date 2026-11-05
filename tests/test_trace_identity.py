@@ -1,4 +1,5 @@
 """Canonical-target checks against a fetched historical trace, not invented calls."""
+import copy
 import importlib
 import json
 from pathlib import Path
@@ -51,6 +52,19 @@ def test_wrong_chain_or_hash_is_not_silently_accepted(chain, tx):
         m.sequence_from_parity(FIXTURE["responses"]["trace_transaction"], tx, chain, verified_chain="eth")
 
 
+@pytest.mark.parametrize("mutate", [
+    lambda rows: [row.pop("blockHash") for row in rows],
+    lambda rows: rows[1].__setitem__("traceAddress", []),  # duplicate root location
+    lambda rows: rows[1].__setitem__("traceAddress", [-1]),
+])
+def test_sequence_from_parity_rejects_malformed_frame_identity(mutate):
+    from app.trace_identity import sequence_from_parity, TraceIdentityError
+    rows = copy.deepcopy(FIXTURE["responses"]["trace_transaction"])
+    mutate(rows)
+    with pytest.raises(TraceIdentityError):
+        sequence_from_parity(rows, TX, "eth")
+
+
 @pytest.mark.parametrize("kind", ["CREATE", "CREATE2"])
 def test_creation_initcode_is_not_a_function_selector(kind):
     from app.trace_identity import canonical_to_legacy
@@ -97,3 +111,61 @@ def test_call_root_still_checks_destination():
     tx = {"hash": "0xtx", "to": "0xright", "from": "0xsender", "input": "0x12345678"}
     root = {"type": "CALL", "callee": "0xwrong", "caller": "0xsender", "input": "0x12345678"}
     with pytest.raises(TraceIdentityError): validate_trace_root(tx, root, "0xtx")
+
+
+@pytest.mark.parametrize("field", ["from", "input"])
+@pytest.mark.parametrize("missing", [None, "", False])
+def test_root_cannot_verify_two_missing_identity_fields(field, missing):
+    from app.trace_identity import validate_trace_root, TraceIdentityError
+    tx = copy.deepcopy(FIXTURE["responses"]["eth_getTransactionByHash"])
+    root = {"caller": tx["from"], "callee": tx["to"], "input": tx["input"], "type": "CALL"}
+    tx[field] = missing
+    root["caller" if field == "from" else "input"] = missing
+    with pytest.raises(TraceIdentityError):
+        validate_trace_root(tx, root, TX)
+
+
+def test_valid_empty_calldata_is_not_missing_identity():
+    from app.trace_identity import validate_trace_root
+    tx = copy.deepcopy(FIXTURE["responses"]["eth_getTransactionByHash"])
+    tx["input"] = "0x"
+    validate_trace_root(tx, {"caller": tx["from"], "callee": tx["to"], "input": "0x", "type": "CALL"}, TX)
+
+
+def test_console_legacy_trace_keeps_reverted_call_metadata():
+    from app.trace_identity import canonical_to_legacy
+    root = {"caller": "0xsender", "callee": "0xtarget", "input": "0x12345678", "success": False, "return_data": "0x08c379a0", "error": "execution reverted", "children": []}
+    converted = canonical_to_legacy(root)
+    for key in ("caller", "input", "success", "return_data", "error"):
+        assert converted[key] == root[key]
+
+
+
+def test_console_trace_conversion_rejects_cycles_without_unbounded_work():
+    from app.trace_identity import canonical_to_legacy
+    class TraversalTripwire(list):
+        # Bound the old buggy walk in this regression; no hanging thread needed.
+        iterations = 0
+        def __iter__(self):
+            self.iterations += 1
+            if self.iterations > 3:
+                raise RuntimeError("Traversal failed to reject cyclic input")
+            return super().__iter__()
+    root = {"input": "0x", "children": TraversalTripwire()}
+    root["children"].append(root)
+    with pytest.raises(ValueError, match="Cyclic"):
+        canonical_to_legacy(root)
+
+
+
+def test_parity_adapter_preserves_error_and_output_on_a_controlled_failed_frame():
+    # Mutation tests metadata handling only; not a claim the historical frame failed.
+    from app.trace_identity import sequence_from_parity
+    rows = copy.deepcopy(FIXTURE["responses"]["trace_transaction"])
+    rows[0]["error"] = "controlled revert"
+    rows[0]["result"] = {"output": "0x08c379a0"}
+    seq = sequence_from_parity(rows, TX, "eth")
+    for root in (seq["canonical_trace"], seq["trace"]):
+        assert root["success"] is False
+        assert root["error"] == "controlled revert"
+        assert root["return_data"] == "0x08c379a0"

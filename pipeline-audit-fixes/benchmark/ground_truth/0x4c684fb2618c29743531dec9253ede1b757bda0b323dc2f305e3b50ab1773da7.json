@@ -1,0 +1,21 @@
+{
+  "name": "MetaLend",
+  "cause": "CompoundV2 Inflation Attack",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x4c684fb2618c29743531dec9253ede1b757bda0b323dc2f305e3b50ab1773da7"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2023-11-25 12:36:59 UTC",
+  "lost": "~$4K",
+  "location": {
+    "0x5578f2e245e932a599c46215a0ca88707230f17b##:": [
+      "0x5578f2e245e932a599c46215a0ca88707230f17b##redeemUnderlying",
+      "0x5578f2e245e932a599c46215a0ca88707230f17b##:"
+    ]
+  },
+  "detection": {
+    "time": "2023-11-25 14:46:00 UTC",
+    "link": "['https://x.com/MetaSec_xyz/status/1728424965257691173']"
+  }
+}

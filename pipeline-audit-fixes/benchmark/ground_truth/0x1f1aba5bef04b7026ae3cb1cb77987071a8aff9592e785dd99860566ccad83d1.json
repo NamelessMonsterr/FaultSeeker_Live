@@ -1,0 +1,25 @@
+{
+  "name": "EFLeverVault",
+  "cause": "Verify flashLoan Callback",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x1f1aba5bef04b7026ae3cb1cb77987071a8aff9592e785dd99860566ccad83d1"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2022-10-14 12:27:11 UTC",
+  "lost": "750 ETH",
+  "location": {
+    "0xe39fd820b58f83205db1d9225f28105971c3d309##310:17": [
+      "0xe39fd820b58f83205db1d9225f28105971c3d309#EFLeverVault#receiveFlashLoan",
+      "0xe39fd820b58f83205db1d9225f28105971c3d309#EFLeverVault#310:17"
+    ]
+  },
+  "detection": {
+    "time": "2022-10-14 13:44:00 UTC",
+    "link": "['https://x.com/MevRefund/status/1580917351217627136']"
+  },
+  "disclosure": {
+    "time": "2022-10-14 14:58:00 UTC",
+    "link": "['https://x.com/danielvf/status/1580936010556661761']"
+  }
+}

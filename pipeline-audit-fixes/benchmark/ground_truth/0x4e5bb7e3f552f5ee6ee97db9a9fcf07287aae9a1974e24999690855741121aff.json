@@ -1,0 +1,25 @@
+{
+  "name": "Mosca",
+  "cause": "Logic Flaw",
+  "platform": "BNBChain",
+  "transaction_hash": [
+    "0x4e5bb7e3f552f5ee6ee97db9a9fcf07287aae9a1974e24999690855741121aff"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2025-01-06 05:22:49 UTC",
+  "lost": "19K",
+  "location": {
+    "0x1962b3356122d6a56f978e112d14f5e23a25037d##353:90": [
+      "0x1962b3356122d6a56f978e112d14f5e23a25037d#Mosca#join",
+      "0x1962b3356122d6a56f978e112d14f5e23a25037d#Mosca#353:90"
+    ],
+    "0x1962b3356122d6a56f978e112d14f5e23a25037d##809:27": [
+      "0x1962b3356122d6a56f978e112d14f5e23a25037d#Mosca#exitProgram",
+      "0x1962b3356122d6a56f978e112d14f5e23a25037d#Mosca#809:27"
+    ]
+  },
+  "disclosure": {
+    "time": "2025-01-13",
+    "link": "['https://blog.verichains.io/p/mosca-hack-analysis']"
+  }
+}

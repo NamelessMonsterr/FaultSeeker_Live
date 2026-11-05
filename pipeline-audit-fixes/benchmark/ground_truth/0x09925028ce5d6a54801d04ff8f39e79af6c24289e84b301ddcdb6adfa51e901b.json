@@ -1,0 +1,21 @@
+{
+  "name": "FDP",
+  "cause": "Reflection token",
+  "platform": "BNBChain",
+  "transaction_hash": [
+    "0x09925028ce5d6a54801d04ff8f39e79af6c24289e84b301ddcdb6adfa51e901b"
+  ],
+  "complexity_level": "Complex",
+  "time": "2023-02-06 11:11:21 UTC",
+  "lost": "~16 WBNB",
+  "location": {
+    "0x1954b6bd198c29c3ecf2d6f6bc70a4d41ea1cc07##575:7": [
+      "0x1954b6bd198c29c3ecf2d6f6bc70a4d41ea1cc07#FDP#deliver",
+      "0x1954b6bd198c29c3ecf2d6f6bc70a4d41ea1cc07#FDP#575:7"
+    ]
+  },
+  "disclosure": {
+    "time": "2023-02-07 03:54:00 UTC",
+    "link": "['https://twitter.com/BeosinAlert/status/1622806011269771266']"
+  }
+}

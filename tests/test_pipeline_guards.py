@@ -11,6 +11,23 @@ FIXTURE = json.loads((ROOT / "tests/fixtures/hedgey_verified_trace.json").read_t
 TX = FIXTURE["provenance"]["transaction_hash"]
 
 
+def test_failure_report_has_safe_stack_without_exception_body_or_locals():
+    from app.pipeline_guards import PipelineRuntime
+    runtime = PipelineRuntime(TX, 'eth')
+    runtime.partial = {'transaction': {'hash': TX, 'chain': 'eth'}}
+    try:
+        private_value = 'DUMMY_PRIVATE_VALUE'
+        raise IndexError(private_value)
+    except IndexError as error:
+        report = runtime.failure_report(error)
+    diagnostic = report['analysis_integrity']['failure_diagnostics']
+    assert diagnostic['exception_type'] == 'IndexError'
+    assert diagnostic['frames'][-1]['file'] == 'test_pipeline_guards.py'
+    assert diagnostic['frames'][-1]['line'] > 0
+    assert 'DUMMY_PRIVATE_VALUE' not in json.dumps(diagnostic)
+    assert str(ROOT) not in json.dumps(diagnostic)
+
+
 def test_swallowed_model_error_is_rethrown_at_agent_boundary():
     m = importlib.import_module("app.pipeline_guards")
     endpoint = importlib.import_module("app.model_endpoint")
@@ -40,6 +57,38 @@ def test_mid_run_failure_produces_explicit_sections_and_no_successful_verdict():
     assert report["sections"]["scoring"] == "skipped"
     assert report["classification"]["rule_verdict"] == "INCONCLUSIVE"
     assert report["deterministic_rule_observation"]["rule_verdict"] == "EXPLOIT"
+
+
+def test_failure_report_always_includes_analysis_integrity_and_wall_cap():
+    m = importlib.import_module("app.pipeline_guards")
+    endpoint = importlib.import_module("app.model_endpoint")
+    runtime = m.PipelineRuntime(TX, "eth", session=endpoint.ModelEndpointSession())
+    runtime.partial = {"transaction": {"hash": TX, "chain": "eth"},
+                       "classification": {"rule_verdict": "EXPLOIT"}}
+    runtime.wall_cap.add({"kind": "function", "function": "transfer@0xabc",
+                          "outcome": "likely_forced", "detail": None,
+                          "elapsed_wall_secs": 480.1, "elapsed_mono_secs": 480.1,
+                          "completed_cycles": 0, "ceiling": 3})
+    report = runtime.failure_report(RuntimeError("model failure"))
+    assert report["analysis_integrity"]["failure_path"] is True
+    assert report["analysis_integrity"]["trace_identity_checked"] is False
+    assert report["analysis_integrity"]["unverified_targets"] is None
+    assert report["analysis_integrity"]["target_validation"] == "not_assessed"
+    assert report["analysis_integrity"]["function_analysis_complete"] is False
+    assert report["analysis_integrity"]["function_wall_cap"]["likely_forced"] == 1
+    assert report["analysis_integrity"]["model_analysis"]["analysis_calls_ok"] == 0
+    assert report["failure"] == {"kind": "RuntimeError"}
+    assert "model failure" not in json.dumps(report)
+
+
+def test_failure_report_preserves_sanitized_model_failure_kind():
+    m = importlib.import_module("app.pipeline_guards")
+    endpoint = importlib.import_module("app.model_endpoint")
+    runtime = m.PipelineRuntime(TX, "eth", session=endpoint.ModelEndpointSession())
+    runtime.partial = {"transaction": {"hash": TX, "chain": "eth"}}
+    report = runtime.failure_report(endpoint.ModelEndpointFailure("rate_limited", 429))
+    assert report["failure"]["kind"] == "rate_limited"
+    assert "ModelEndpointFailure" not in json.dumps(report["failure"])
 
 
 def test_successful_model_run_cannot_validate_an_unobserved_function_label():
@@ -106,7 +155,7 @@ def rotation_runtime(monkeypatch, statuses, retry_limit=3, budget=60, seconds=1)
     return runtime, calls, events, query
 
 
-@pytest.mark.parametrize("first_status", [401, 403, 429])
+@pytest.mark.parametrize("first_status", [401, 403])
 def test_preflight_rotates_key_specific_failures_and_keeps_valid_key(monkeypatch, first_status):
     runtime, calls, events, query = rotation_runtime(monkeypatch, [first_status, 200, 200])
     runtime.preflight(["gpt-6.1-sol-low"])
@@ -116,6 +165,29 @@ def test_preflight_rotates_key_specific_failures_and_keeps_valid_key(monkeypatch
     # consumes the shared analysis retry allowance.
     assert runtime.session.retries_left == 3
     assert runtime.session.failure is None
+    assert "test-first" not in json.dumps(events)
+    assert "PRIVATE_PROVIDER_BODY" not in json.dumps(events)
+
+
+def test_preflight_429_is_terminal_without_rotation_or_backoff(monkeypatch):
+    from app.model_endpoint import ModelEndpointFailure
+    runtime, calls, events, query = rotation_runtime(monkeypatch, [429, 200, 200])
+    with pytest.raises(ModelEndpointFailure) as failure:
+        runtime.preflight(["gpt-6.1-sol-low"])
+    assert failure.value.kind == "rate_limited"
+    assert failure.value.phase == "preflight"
+    assert failure.value.as_dict()["scope"] == "provider_limit"
+    assert calls == ["Bearer test-first"]
+    assert runtime.session.retries_left == 3
+    # rotation_runtime advances its monotonic clock by one second per HTTP call;
+    # the sole request is charged, but no retry/backoff sleep is performed.
+    assert runtime.session.spent == 1.0
+    assert not any(event.get("key_rotation") for event in events)
+    assert not any(event.get("retry_in_seconds", 0) > 0 for event in events)
+    with pytest.raises(ModelEndpointFailure) as sticky:
+        query()
+    assert sticky.value.kind == "rate_limited"
+    assert calls == ["Bearer test-first"]
     assert "test-first" not in json.dumps(events)
     assert "PRIVATE_PROVIDER_BODY" not in json.dumps(events)
 
@@ -196,8 +268,9 @@ def test_preflight_deadline_is_not_restarted_by_key_rotation(monkeypatch):
     runtime, calls, events, query = rotation_runtime(monkeypatch, [401, 200], seconds=11)
     with pytest.raises(ModelEndpointFailure) as failure:
         runtime.preflight(["gpt-6.1-sol-low"], timeout=20)
-    assert failure.value.kind == "budget_exhausted"
+    assert failure.value.kind == "request_deadline_exceeded"
     assert len(calls) == 2 and runtime.session.spent == 22
+    assert runtime.session.failure is None
 
 
 def test_second_model_cannot_start_after_shared_preflight_deadline(monkeypatch):
@@ -205,8 +278,9 @@ def test_second_model_cannot_start_after_shared_preflight_deadline(monkeypatch):
     runtime, calls, events, query = rotation_runtime(monkeypatch, [200, 200], seconds=20)
     with pytest.raises(ModelEndpointFailure) as failure:
         runtime.preflight(["gpt-6.1-sol-low", "gpt-6.1-sol-medium"], timeout=20)
-    assert failure.value.kind == "budget_exhausted"
+    assert failure.value.kind == "request_deadline_exceeded"
     assert len(calls) == 1 and runtime.session.spent == 20
+    assert runtime.session.failure is None
 
 
 def test_rejected_findings_force_partial_even_with_valid_scored():
@@ -470,7 +544,7 @@ def test_offline_fixture_real_factory_hook_phase_and_status_path(pinned_fork, mo
             runtime.close()
         assert agent.PROVIDER_CONFIG is before
         assert seen and seen[0]["auth"] == "Bearer fixture-key-not-real"
-        assert seen[0]["body"]["extra_body"]["reasoning_effort"] == "none" if "extra_body" in seen[0]["body"] else seen[0]["body"].get("reasoning_effort") == "none"
+        assert seen[0]["body"]["extra_body"]["reasoning"] is False if "extra_body" in seen[0]["body"] else seen[0]["body"].get("reasoning") is False
         assert session.summary()["calls"]["analysis"]["ok"] == expect_ok
         if result is not None:
             if expect_ok:
@@ -479,3 +553,40 @@ def test_offline_fixture_real_factory_hook_phase_and_status_path(pinned_fork, mo
                 assert result["stage_completed"] == "forensics-only"
             else:
                 assert result["analysis_status"] == expect_status
+
+
+@pytest.mark.parametrize("recover", [False, True])
+def test_semantic_json_failure_cannot_be_swallowed_as_empty_success(recover):
+    from app.pipeline_guards import PipelineRuntime
+    from app.model_endpoint import ModelEndpointSession, ModelEndpointFailure
+    class Agent:
+        def _send_message(self, *args, **kwargs):
+            return "controlled"
+        def _extract_json(self, value):
+            if value == "bad":
+                raise ValueError("PRIVATE RESPONSE")
+            return {}
+        def query(self, *args, **kwargs):
+            try:
+                self._extract_json("bad")
+            except ValueError:
+                pass
+            return self._extract_json("valid-empty") if recover else {}
+    module = types.SimpleNamespace(GPTAgent=Agent, UniversalAgent=Agent)
+    session = ModelEndpointSession()
+    runtime = PipelineRuntime(TX, "eth", session=session)
+    runtime.install_model_hooks(module)
+    try:
+        if recover:
+            assert Agent().query("input") == {}
+            session.assert_healthy()
+        else:
+            with pytest.raises(ModelEndpointFailure) as failure:
+                Agent().query("input")
+            assert failure.value.kind == "invalid_response"
+            assert failure.value.as_dict()["completion_problem"] == "invalid_json"
+            assert "PRIVATE" not in str(failure.value)
+            with pytest.raises(ModelEndpointFailure):
+                runtime.assert_healthy()
+    finally:
+        runtime.close()

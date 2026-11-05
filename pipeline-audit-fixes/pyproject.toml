@@ -1,0 +1,6 @@
+[tool.ruff]
+exclude = [
+    ".agent",
+    "venv",
+    "faultseeker/utils/solidityParser"
+]

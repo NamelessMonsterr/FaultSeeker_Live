@@ -1,0 +1,6 @@
+# Sanitized configuration template. Live credentials remain local.
+# Configure the provider endpoint and matching key in your local environment.
+CODEX_PROXY_BASE_URL=
+OPENAI_DIRECT_BASE_URL=
+OPENAI_DIRECT_API_KEY=
+OPENAI_API_KEY=

@@ -1,0 +1,21 @@
+{
+  "name": "KyberSwap",
+  "cause": "precision loss",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x485e08dc2b6a4b3aeadcb89c3d18a37666dc7d9424961a2091d6b3696792f0f3"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2023-11-22 22:55:11 UTC",
+  "lost": "~$48M",
+  "location": {
+    "0xfd7b111aa83b9b6f547e617c7601efd997f64703#Pool.sol#328:193": [
+      "0xfd7b111aa83b9b6f547e617c7601efd997f64703#Pool#swap",
+      "0xfd7b111aa83b9b6f547e617c7601efd997f64703#Pool#328:193"
+    ]
+  },
+  "disclosure": {
+    "time": "2023-11-23 05:30:00 UTC",
+    "link": "['https://x.com/BlockSecTeam/status/1727560157888942331']"
+  }
+}

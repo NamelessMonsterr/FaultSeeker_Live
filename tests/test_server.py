@@ -13,6 +13,27 @@ ROOT = Path(__file__).resolve().parents[1]
 TX = "0x" + "a" * 64
 
 
+def test_worker_persists_safe_failure_location_and_no_local_values(server, monkeypatch):
+    import queue
+    from app.pipeline_guards import PipelineRuntime
+    runtime = PipelineRuntime(TX, 'eth')
+    runtime.partial = {'transaction': {'hash': TX, 'chain': 'eth'}}
+    def fail(**kwargs):
+        private_value = 'DUMMY_PRIVATE_VALUE'
+        raise IndexError(private_value)
+    monkeypatch.setattr(server, '_prepare_pipeline', lambda *args: runtime)
+    monkeypatch.setitem(sys.modules, 'faultseeker.main', types.SimpleNamespace(main=fail))
+    events = queue.Queue()
+    server.worker('diagnosticcase', {'txn_hash': TX, 'chain': 'eth', 'mode': 'no-llm',
+                                     'model_key': 'DUMMY_PRIVATE_VALUE'}, events)
+    report = json.loads((Path(server.RUNS_DIR)/'diagnosticcase.json').read_text())
+    diagnostic = report['analysis_integrity']['failure_diagnostics']
+    assert diagnostic['frames'][-1]['function'] == 'fail'
+    assert diagnostic['frames'][-1]['file'] == 'test_server.py'
+    assert 'DUMMY_PRIVATE_VALUE' not in json.dumps(report)
+    assert any(event == 'diagnostic' for event, _ in list(events.queue))
+
+
 def test_separate_rpc_key_requires_explicit_placeholder(client):
     response = client.post("/api/analyze", json={"txn_hash": TX, "rpc_key": "private-key"})
     assert response.status_code == 400
@@ -625,6 +646,42 @@ def test_dead_worker_cannot_be_changed_to_cancelled(client, server):
     assert not server.runs["finished"]["cancel"].is_set()
 
 
+def test_dead_worker_guard_recovers_checkpoint_before_history_and_result(client, server, monkeypatch):
+    import queue
+    from app.analysis_checkpoint import save_checkpoint
+    callbacks = []
+    class Thread:
+        def __init__(self, target, **kwargs): self.target = target
+        def start(self): callbacks.append(self.target)
+    class Process:
+        exitcode = 23
+        def __init__(self, target, args, **kwargs): self.args = args
+        def start(self):
+            rid, req, events = self.args
+            save_checkpoint(server.RUNS_DIR, rid, {'transaction_hash': TX,
+                'analysis_status': 'partial', 'sections': {'scoring': 'skipped'},
+                'preliminary_findings': [{'target': 'controlled_target', 'status': 'unranked/unverified',
+                                         'evidence': ['completed before abrupt exit']}]}, redact=lambda v:v)
+        def is_alive(self): return False
+        def join(self, **kwargs): pass
+    monkeypatch.setattr(server.threading, 'Thread', Thread)
+    monkeypatch.setattr(server.mp, 'Process', Process)
+    monkeypatch.setattr(server.mp, 'Queue', queue.Queue)
+    monkeypatch.setattr(server, '_gh_hist_sync', lambda *args: None)
+    response = client.post('/api/analyze', json={'txn_hash': TX})
+    assert response.status_code == 200
+    rid = response.json()['run_id']
+    callbacks.pop(0)()
+    assert server.runs[rid]['status'] == 'died'
+    assert not server.run_lock.locked()
+    recovered = client.get('/api/result/'+rid)
+    assert recovered.status_code == 200
+    assert recovered.json()['analysis_status'] == 'partial'
+    assert recovered.json()['classification']['rule_verdict'] == 'INCONCLUSIVE'
+    assert recovered.json()['preliminary_findings'][0]['target'] == 'controlled_target'
+    assert server._hist_load()[-1]['status'] == 'died'
+
+
 def test_completion_event_wins_over_late_cancel(client, server):
     import threading
     server.runs["finishing"] = {"status": "running", "finishing": True,
@@ -794,3 +851,129 @@ def test_worker_restores_environment_and_ends_when_cleanup_fails(server, monkeyp
 @pytest.mark.parametrize("field", ["api_keys", "providerApiKeys", "model_keys", "rpc_keys", "secrets", "passwords", "secretKey", "secret_token", "authorization_header", "private_keys", "access_tokens", "refresh_tokens"])
 def test_redaction_masks_credential_collections_and_common_forms(server, field):
     assert server._redact({field: ["unknown-dummy-credential"]}) == {field: "***"}
+
+
+@pytest.mark.parametrize("stubborn", [False, True])
+def test_queue_failure_reaps_worker_before_releasing_lock(client, server, monkeypatch, stubborn):
+    processes = []
+    cleanup = []
+    class DeferredThread:
+        def __init__(self, target, **kwargs):
+            self.target = target
+        def start(self):
+            with pytest.raises(OSError, match="controlled queue failure"):
+                self.target()
+    class Process:
+        exitcode = None
+        alive = True
+        def __init__(self, **kwargs):
+            processes.append(self)
+        def start(self):
+            pass
+        def is_alive(self):
+            return self.alive
+        def terminate(self):
+            cleanup.append(("terminate", server.run_lock.locked()))
+            self.alive = stubborn
+        def kill(self):
+            cleanup.append(("kill", server.run_lock.locked()))
+            self.alive = stubborn
+        def join(self, **kwargs):
+            cleanup.append(("join", server.run_lock.locked()))
+    class BrokenQueue:
+        def get(self, **kwargs):
+            raise OSError("controlled queue failure")
+    monkeypatch.setattr(server, "threading", types.SimpleNamespace(**{**vars(server.threading), "Thread": DeferredThread}))
+    monkeypatch.setattr(server.mp, "Process", Process)
+    monkeypatch.setattr(server.mp, "Queue", BrokenQueue)
+    monkeypatch.setattr(server, "_gh_hist_sync", lambda *args: None)
+    response = client.post("/api/analyze", json={"txn_hash": TX})
+    assert response.status_code == 200
+    assert processes[0].is_alive() is stubborn
+    assert any(name == "join" for name, locked in cleanup)
+    assert all(locked for name, locked in cleanup)
+    assert server.run_lock.locked() is stubborn
+
+
+@pytest.mark.parametrize("status", ["partial", "failed", "cancelled", "inconclusive"])
+def test_nested_partial_report_never_keeps_normal_verdict(server, status):
+    report = {"transaction": {"hash": TX}, "classification": {"rule_verdict": "EXPLOIT", "rule_confidence": 0.9}, "analysis_status": status}
+    result = server._adapt_result_for_view(report)
+    assert result["classification"]["rule_verdict"] == "INCONCLUSIVE"
+    assert report["classification"]["rule_verdict"] == "EXPLOIT"
+    assert result["analysis_status"] == status
+
+
+def test_selftest_rejects_query_keys_and_accepts_post_body(client, server, monkeypatch):
+    seen = []
+    monkeypatch.setattr(server, "llm_selftest", lambda **kwargs: seen.append(kwargs) or {"ok": True})
+    response = client.get("/api/llm-selftest?keys=dummy-private")
+    assert response.status_code == 400
+    assert "dummy-private" not in response.text
+    assert not seen
+    response = client.post("/api/llm-selftest", json={"model": "gpt-4o-mini", "keys": "dummy-private", "max_keys": 1})
+    assert response.status_code == 200
+    assert seen == [{"model": "gpt-4o-mini", "keys": "dummy-private", "max_keys": 1, "replay": ""}]
+
+
+def test_copied_gate_cookie_expires_on_server(client, server, monkeypatch):
+    monkeypatch.setattr(server.time, "time", lambda: 1000000)
+    token = server._gate_token()
+    monkeypatch.setattr(server.time, "time", lambda: 1000000 + 7 * 24 * 3600)
+    assert client.get("/api/config", headers={"cookie": "fs_gate=" + token}).status_code == 401
+
+
+def test_gate_cookie_cannot_be_reissued_with_forged_timestamp(client, server, monkeypatch):
+    token = server._gate_token()
+    tampered = "9999999999." + token.split(".")[-1]
+    assert client.get("/api/config", headers={"cookie": "fs_gate=" + tampered}).status_code == 401
+
+
+@pytest.mark.parametrize("initial,event_size", [(1999990, 100), (0, 2000000)])
+def test_event_log_append_cannot_cross_byte_cap(server, initial, event_size):
+    path = Path(server.RUNS_DIR) / "bounded.events.jsonl"
+    path.write_bytes(b" " * initial)
+    server._hist_log_event("bounded", "log", "x" * event_size)
+    assert path.stat().st_size == initial
+
+
+def test_event_log_under_cap_preserves_complete_json_line(server):
+    server._hist_log_event("bounded", "log", "small event")
+    path = Path(server.RUNS_DIR) / "bounded.events.jsonl"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0])["data"] == "small event"
+
+
+def test_finished_run_retention_preserves_active_and_latest_twenty(server):
+    for index in range(30):
+        server.runs[f"done{index}"] = {"status": "completed"}
+    server.runs["active"] = {"status": "running"}
+    server.runs["cancelling"] = {"status": "cancelling"}
+    server._prune_finished_runs()
+    assert list(server.runs) == [f"done{i}" for i in range(10, 30)] + ["active", "cancelling"]
+
+
+def test_successful_replay_requests_apply_stream_retention(client, server, monkeypatch, tmp_path):
+    events = tmp_path / "sample.events.jsonl"
+    events.write_text(json.dumps({"t": 0, "ev": "log", "data": "recorded"}) + "\n")
+    result = tmp_path / "sample.json"
+    result.write_text(json.dumps({"transaction_hash": TX, "scored_functions": []}))
+    monkeypatch.setattr(server, "DEMO_REPLAYS", {"demo:test": {"txn_hash": TX, "chain": "eth", "events": str(events), "result": str(result)}})
+    monkeypatch.setattr(server, "RUN_LIMIT_PER_HOUR", 100)
+    monkeypatch.setattr(server, "RUN_LIMIT_PER_DAY", 100)
+    class InlineThread:
+        def __init__(self, target, **kwargs):
+            self.target = target
+        def start(self):
+            self.target()
+    monkeypatch.setattr(server, "threading", types.SimpleNamespace(**{**vars(server.threading), "Thread": InlineThread}))
+    ids = []
+    for _ in range(25):
+        response = client.post("/api/analyze", json={"txn_hash": "demo:test"})
+        assert response.status_code == 200
+        ids.append(response.json()["run_id"])
+    assert list(server.runs) == ids[-20:]
+    assert all(state["q"].closed for state in server.runs.values())
+    assert not server.run_lock.locked()
+    assert (tmp_path / (ids[0] + ".json")).exists()

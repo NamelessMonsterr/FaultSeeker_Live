@@ -1,0 +1,17 @@
+{
+  "name": "SwarmMarkets",
+  "cause": "lack of validation",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0xc0be8c3792a5b1ba7d653dc681ff611a5b79a75fe51c359cf1aac633e9441574"
+  ],
+  "complexity_level": "Moderate",
+  "time": "2024-02-22 23:34:23 UTC",
+  "lost": "~7k $DAI",
+  "location": {
+    "0x0a3fbf5b4cf80db51fcae21efe63f6a36d45d2b2##1501:2": [
+      "0x0a3fbf5b4cf80db51fcae21efe63f6a36d45d2b2##SwarmMaXTokenrkets#burnFrom",
+      "0x0a3fbf5b4cf80db51fcae21efe63f6a36d45d2b2##XToken#1501:2"
+    ]
+  }
+}

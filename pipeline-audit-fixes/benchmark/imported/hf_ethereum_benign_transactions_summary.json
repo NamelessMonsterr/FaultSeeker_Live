@@ -1,0 +1,21 @@
+{
+  "source": "huggingface:fesevu/ethereum_fraud_dataset_by_activity",
+  "source_mode": "parquet",
+  "rows": 10000,
+  "target_rows": 10000,
+  "target_met": true,
+  "pages_scanned": 0,
+  "parquet_files_scanned": 3,
+  "unique_transactions": 10000,
+  "validation_status_counts": {
+    "address_label_benign_candidate": 10000
+  },
+  "chain_counts": {
+    "eth": 10000
+  },
+  "label_counts": {
+    "non_scam_addresses": 60086,
+    "scam_addresses_excluded": 54653
+  },
+  "merge_guidance": "Use for false-positive evaluation after downstream RPC spot checks. Do not treat as exploit ground truth."
+}

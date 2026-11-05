@@ -1,0 +1,33 @@
+{
+  "name": "Hopelend",
+  "cause": "Div Precision Loss",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x1a7ee0a7efc70ed7429edef069a1dd001fbff378748d91f17ab1876dc6d10392"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2023-10-18 11:48:59 UTC",
+  "lost": "~$825K",
+  "location": {
+    "0x6d04402c5433ff8732152d8ed7dcb542b619e86b#DefaultReserveInterestRateStrategy.sol#158:74": [
+      "0x6d04402c5433ff8732152d8ed7dcb542b619e86b#DefaultReserveInterestRateStrategy#calculateInterestRates",
+      "0x6d04402c5433ff8732152d8ed7dcb542b619e86b#DefaultReserveInterestRateStrategy#158:74"
+    ],
+    "0x3a6d9bf8286a4ada77c15ecf82d4c0c0af95be74#Pool.sol#339:27": [
+      "0x3a6d9bf8286a4ada77c15ecf82d4c0c0af95be74#Pool#flashLoan",
+      "0x3a6d9bf8286a4ada77c15ecf82d4c0c0af95be74#Pool#339:27"
+    ],
+    "0x53fbcada1201a465740f2d64ecdf6fac425f9030#Pool.sol#339:27": [
+      "0x53fbcada1201a465740f2d64ecdf6fac425f9030#Pool#flashLoan",
+      "0x53fbcada1201a465740f2d64ecdf6fac425f9030#Pool#339:27"
+    ]
+  },
+  "detection": {
+    "time": "2023-10-18 17:20:00 UTC",
+    "link": "['https://x.com/Hope_money_/status/1714692934719992075']"
+  },
+  "disclosure": {
+    "time": "2023-10-21",
+    "link": "['https://lunaray.medium.com/deep-dive-into-hopelend-hack-5962e8b55d3f','https://www.binance.com/en/square/post/1435414']"
+  }
+}

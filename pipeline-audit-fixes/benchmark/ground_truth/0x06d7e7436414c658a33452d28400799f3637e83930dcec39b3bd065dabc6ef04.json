@@ -1,0 +1,25 @@
+{
+  "name": "Zoomer",
+  "cause": "Business Logic Flaw",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x06d7e7436414c658a33452d28400799f3637e83930dcec39b3bd065dabc6ef04"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2024-02-23 15:41:35 UTC",
+  "lost": "~14 ETH",
+  "location": {
+    "0x9700204d77a67a18ea8f1b47275897b21e5efa97##:": [
+      "0x9700204d77a67a18ea8f1b47275897b21e5efa97##0x72c4cff6",
+      "0x9700204d77a67a18ea8f1b47275897b21e5efa97##"
+    ],
+    "0xc2c701110de2b9503e98619d9c9e3017877b0f72##458:28": [
+      "0xc2c701110de2b9503e98619d9c9e3017877b0f72#UniswapV2Pair#swap",
+      "0xc2c701110de2b9503e98619d9c9e3017877b0f72#UniswapV2Pair#458:28"
+    ]
+  },
+  "detection": {
+    "time": "2024-02-24 04:27:00 UTC",
+    "link": "['https://x.com/ChainAegis/status/1761246415488225668']"
+  }
+}

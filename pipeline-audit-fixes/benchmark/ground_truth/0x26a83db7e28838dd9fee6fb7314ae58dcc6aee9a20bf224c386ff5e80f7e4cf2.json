@@ -1,0 +1,29 @@
+{
+  "name": "MIMSpell",
+  "cause": "Precission Loss",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x26a83db7e28838dd9fee6fb7314ae58dcc6aee9a20bf224c386ff5e80f7e4cf2"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2024-01-30 10:14:35 UTC",
+  "lost": "~6,5M",
+  "location": {
+    "0xc4113ae18e0d3213c6a06947a2ffc70ad3517c77#CauldronV4.sol#352:7": [
+      "0xc4113ae18e0d3213c6a06947a2ffc70ad3517c77#CauldronV4#repay",
+      "0xc4113ae18e0d3213c6a06947a2ffc70ad3517c77#CauldronV4#352:7"
+    ],
+    "0x692887e8877c6dd31593cda44c382db5b289b684#CauldronV4.sol#352:7": [
+      "0x692887e8877c6dd31593cda44c382db5b289b684##repay",
+      "0x692887e8877c6dd31593cda44c382db5b289b684#CaudronV4#352:7"
+    ]
+  },
+  "detection": {
+    "time": "2024-01-30 10:35:00 UTC",
+    "link": "['https://x.com/peckshield/status/1752279373779194011']"
+  },
+  "disclosure": {
+    "time": "2024-01-31 06:37:00 UTC",
+    "link": "['https://x.com/kankodu/status/1752581744803680680']"
+  }
+}

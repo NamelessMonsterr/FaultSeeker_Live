@@ -1,0 +1,25 @@
+{
+  "name": "bZxProtocol",
+  "cause": "Inflation Attack",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0xb072f2e88058c147d8ff643694b43a42e36525b7173ce1daf76e6c06170b0e77"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2023-12-02 02:30:23 UTC",
+  "lost": "~$208k",
+  "location": {
+    "0x624f7f89414011b276c60ea2337bfba936d1cbbe##928:11": [
+      "0x624f7f89414011b276c60ea2337bfba936d1cbbe#LoanTokenLogicStandard#mint",
+      "0x624f7f89414011b276c60ea2337bfba936d1cbbe#LoanTokenLogicStandard#928:11"
+    ],
+    "0x7f3fe9d492a9a60aebb06d82cba23c6f32cad10b#LoanTokenLogicStandard.sol#928:11": [
+      "0x7f3fe9d492a9a60aebb06d82cba23c6f32cad10b#LoanTokenLogicStandard#mint",
+      "0x7f3fe9d492a9a60aebb06d82cba23c6f32cad10b#LoanTokenLogicStandard#928:11"
+    ]
+  },
+  "detection": {
+    "time": "2023-12-02 4:48:00 UTC",
+    "link": "['https://x.com/MetaSec_xyz/status/1730811240942088263']"
+  }
+}

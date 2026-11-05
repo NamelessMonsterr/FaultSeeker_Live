@@ -1,0 +1,21 @@
+{
+  "name": "BEGO",
+  "cause": "Incorrect signature verification",
+  "platform": "BNBChain",
+  "transaction_hash": [
+    "0x9f4ef3cc55b016ea6b867807a09f80d1b2e36f6cd6fccfaf0182f46060332c57"
+  ],
+  "complexity_level": "Complex",
+  "time": "2022-10-19 16:34:35 UTC",
+  "lost": "12 BNB",
+  "location": {
+    "0xc342774492b54ce5f8ac662113ed702fc1b34972##1257:6": [
+      "0xc342774492b54ce5f8ac662113ed702fc1b34972#BGeoToken#mint",
+      "0xc342774492b54ce5f8ac662113ed702fc1b34972#BGeoToken#1257:6"
+    ]
+  },
+  "disclosure": {
+    "time": "2022-10-20 00:30:00 UTC",
+    "link": "['https://twitter.com/peckshield/status/1582892058800685058']"
+  }
+}
