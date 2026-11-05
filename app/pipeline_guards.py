@@ -6,6 +6,7 @@ the same transport/identity policy while retaining the pinned source revision.
 """
 from copy import deepcopy
 import os
+import sys
 
 try:
     from .model_endpoint import ModelEndpointSession
@@ -310,6 +311,7 @@ class PipelineRuntime:
         self.sequence = None
         self.ranked_targets = []
         self.narrowdown_capture = []
+        self.dispatched_configs = []
         self.restorers = []
         self.source = None
         self.model_keys = {}
@@ -548,15 +550,42 @@ class PipelineRuntime:
         # (diagnostic, bounded: no per-function model calls are made).
         original_pccm = FunctionAnalyzer._prepare_children_call_memo
         stop_env = os.getenv("FAULTSEEKER_STOP_AFTER_NARROWDOWN") == "1"
-        model_cfg = {"model": os.getenv("FAULTSEEKER_MODEL", ""),
-                     "reasoning_effort": os.getenv("FAULTSEEKER_MERCURY_REASONING_EFFORT", ""),
-                     "retry_limit": os.getenv("FAULTSEEKER_MODEL_RETRY_LIMIT", ""),
-                     "max_functions": os.getenv("FAULTSEEKER_MAX_FUNCTIONS", "")}
+        # Environment snapshot only - NOT proof of the dispatched request
+        # config (defaults, normalization and adapter rewrites live downstream).
+        env_snapshot = {"model": os.getenv("FAULTSEEKER_MODEL", ""),
+                        "reasoning_effort": os.getenv("FAULTSEEKER_MERCURY_REASONING_EFFORT", ""),
+                        "retry_limit": os.getenv("FAULTSEEKER_MODEL_RETRY_LIMIT", ""),
+                        "max_functions": os.getenv("FAULTSEEKER_MAX_FUNCTIONS", "")}
+        # Effective configuration recorded AT the dispatch boundary: wrap
+        # adapt_request in every consumer namespace that bound it by value, so
+        # the adapted request (post temperature-clamp, reasoning-effort
+        # resolution, max_tokens cap) is what the artifact records.
+        dispatched = self.dispatched_configs
+        def _recording_adapt(original):
+            def wrapper(model, kwargs):
+                adapted = original(model, kwargs)
+                extra = adapted.get("extra_body") or {}
+                rec = {"model": str(adapted.get("model", model)),
+                       "temperature": adapted.get("temperature"),
+                       "reasoning_effort": extra.get("reasoning_effort"),
+                       "max_tokens": adapted.get("max_tokens")}
+                if rec not in dispatched:
+                    dispatched.append(rec)
+                return adapted
+            return wrapper
+        seen_mods = set()
+        for modname in ("app.model_endpoint", "app.server", "model_endpoint", "server"):
+            mod = sys.modules.get(modname)
+            if mod is None or id(mod) in seen_mods or not hasattr(mod, "adapt_request"):
+                continue
+            seen_mods.add(id(mod))
+            self.replace(mod, "adapt_request", _recording_adapt(mod.adapt_request))
         def capturing_pccm(analyzer, selected_functions, *args, **kwargs):
             post_keys = (list(selected_functions.keys()) if isinstance(selected_functions, dict)
                          else list(selected_functions or []))
             self.narrowdown_capture.append({"kind": "narrowdown_selection",
-                             "model_config": dict(model_cfg),
+                             "env_snapshot": dict(env_snapshot),
+                             "dispatched_configs": deepcopy(self.dispatched_configs),
                              "pre_candidate_count": len(getattr(analyzer, "functions_to_be_inspected", {}) or {}),
                              "pre_created_contract_candidates": list(getattr(analyzer, "address_calls_with_created_contract_in_params", {}) or {}),
                              "post_selection_count": len(post_keys),
@@ -601,6 +630,7 @@ class PipelineRuntime:
             if isinstance(dbg, dict):
                 dbg["ranked_targets"] = list(self.ranked_targets)
                 dbg["narrowdown_capture"] = deepcopy(self.narrowdown_capture)
+                dbg["dispatched_configs"] = deepcopy(self.dispatched_configs)
         allowed = {(str(n.get("address", "")).lower(), n["function"].lower()) for n in walk(self.sequence["trace"])} if self.sequence else set()
         unsupported = []
         for item in (result.get("scored_functions") or []) + (result.get("evidence_cards") or []):
@@ -760,7 +790,8 @@ class PipelineRuntime:
         # needed for offline stage evaluation.
         if self.narrowdown_capture or self.ranked_targets:
             result["_debug"] = {"ranked_targets": list(self.ranked_targets),
-                                "narrowdown_capture": deepcopy(self.narrowdown_capture)}
+                                "narrowdown_capture": deepcopy(self.narrowdown_capture),
+                                "dispatched_configs": deepcopy(self.dispatched_configs)}
         if isinstance(error, TraceIdentityError):
             result["failure"] = {"kind": "trace_identity", "message": str(error)}
         if isinstance(error, NarrowdownCaptureStop):

@@ -70,14 +70,19 @@ def pinned(monkeypatch, tmp_path):
     return location
 
 class _StubAgent:
-    """LLM boundary stub: captures every prompt, returns canned answers."""
-    def __init__(self, narrow_answer=None):
+    """LLM boundary stub: captures every prompt, returns canned answers.
+    narrow_answers (list) scripts sequential narrow-down replies (invalid /
+    empty intermediates included); once exhausted the last answer repeats."""
+    def __init__(self, narrow_answer=None, narrow_answers=None):
         self.prompts = []
         self.narrow_answer = narrow_answer
+        self.narrow_answers = list(narrow_answers) if narrow_answers else None
     def query(self, prompt, format=None):
         self.prompts.append(str(prompt))
         if format == 'dict':
             return {'unknown': 'uncategorized'}  # keep address inspectable
+        if self.narrow_answers:
+            return self.narrow_answers.pop(0)
         return self.narrow_answer
 
 
@@ -91,7 +96,8 @@ def _merged_sequence(identity, tx, chain):
             "created_address": [], "storage_events": [], "trace_state_diff": {}}
 
 
-def _run_production_path(pinned, monkeypatch, fixture, tx, chain, attacker, victim, stop_env=False):
+def _run_production_path(pinned, monkeypatch, fixture, tx, chain, attacker, victim, stop_env=False,
+                         scripted_answers=None):
     from app.trace_identity import sequence_from_parity
     m = importlib.import_module("app.pipeline_guards")
     if stop_env:
@@ -152,7 +158,8 @@ def _run_production_path(pinned, monkeypatch, fixture, tx, chain, attacker, vict
     # REAL narrow-down serializer with a capturing stub at the LLM boundary.
     fa_mod = importlib.import_module("faultseeker.function_analysis.function_analyzer")
     analyzer = fa_mod.FunctionAnalyzer(model="offline-no-llm")
-    stub = _StubAgent(narrow_answer=list(ranked.functions_to_be_inspected)[:5])
+    stub = _StubAgent(narrow_answer=list(ranked.functions_to_be_inspected)[:5],
+                      narrow_answers=scripted_answers)
     analyzer.agent = stub
     analyzer.functions_to_be_inspected = ranked.functions_to_be_inspected
     analyzer.address_calls_with_created_contract_in_params = {}
@@ -169,7 +176,8 @@ def _run_production_path(pinned, monkeypatch, fixture, tx, chain, attacker, vict
         captures = list(runtime.narrowdown_capture)
         runtime.close()
         return {"ranked": ranked, "ranked_keys": ranked_keys, "captures": captures,
-                "failure": report.get("failure"), "report": report}
+                "failure": report.get("failure"), "report": report,
+                "prompts": list(stub.prompts)}
     def _capture_selection(selected):
         captured["selected"] = list(selected) if not isinstance(selected, dict) else list(selected.keys())
         raise _SelectionCaptured()
@@ -254,5 +262,51 @@ def test_e2e_stop_after_narrowdown_is_diagnostic(pinned, monkeypatch):
     assert s["pre_candidate_count"] == len(r["ranked"].functions_to_be_inspected)
     assert 0 < s["post_selection_count"] <= 5
     assert all(k.lower() in r["ranked_keys"] for k in s["post_selection_keys"])
-    assert set(s["model_config"]) >= {"model", "reasoning_effort", "retry_limit", "max_functions"}
+    assert set(s["env_snapshot"]) >= {"model", "reasoning_effort", "retry_limit", "max_functions"}
+    assert isinstance(s["dispatched_configs"], list)  # empty offline: stub bypasses dispatch
     assert any("intentionally" in l for l in r["report"].get("limitations", []))
+
+
+def test_e2e_stop_capture_complete_across_reasks(pinned, monkeypatch):
+    """R12 finding 2: scripted narrow-down sequence - invalid, empty, then a
+    valid shrink. Every dispatched query must be captured in order with its
+    raw reply; the final selection must reflect the REAL production
+    bound-validation/reask/fallback logic, and the stop fires only after it."""
+    ranked_keys_probe = _run_production_path  # noqa - clarity alias
+    # First discover the ranked universe with the plain helper (no stop).
+    base = _run_production_path(pinned, monkeypatch, ETH_FIX, ETH_TX, "eth", ETH_ATTACKER, ETH_VULN)
+    valid = base["ranked_keys"][:3]
+    scripted = ["not-a-list", [], valid]  # invalid type, empty list, then valid shrink
+    r = _run_production_path(pinned, monkeypatch, ETH_FIX, ETH_TX, "eth", ETH_ATTACKER, ETH_VULN,
+                             stop_env=True, scripted_answers=scripted)
+    nd = [c for c in r["captures"] if c.get("kind") == "narrowdown"]
+    # Production loop: >5 candidates -> up to 3 reasks; invalid type and empty
+    # replies are rejected (0 < len < prev required) but each query is still made.
+    assert len(nd) == 3, f"expected 3 dispatched narrow-down queries: {len(nd)}"
+    assert [c["reply"] for c in nd] == scripted, "raw replies not retained in dispatch order"
+    assert all(c["candidate_count"] == len(r["ranked"].functions_to_be_inspected) for c in nd)
+    assert all(c["prompt"] for c in nd)
+    sel = [c for c in r["captures"] if c.get("kind") == "narrowdown_selection"]
+    assert len(sel) == 1
+    # Final selection = the valid scripted reply, i.e. the fallback/reask logic ran first.
+    assert [k.lower() for k in sel[0]["post_selection_keys"]] == [k.lower() for k in valid]
+    assert r["failure"]["kind"] == "diagnostic_stop"
+
+
+def test_e2e_stop_after_narrowdown_bsc(pinned, monkeypatch):
+    """R12 finding 3: the diagnostic stop path on the BSC (281-candidate-class)
+    input shape. No unconditional five-function bound: the production contract
+    permits >5 when reasks exhaust."""
+    r = _run_production_path(pinned, monkeypatch, BSC_FIX, BSC_TX, "bsc", BSC_ATTACKER, BSC_PAIR,
+                             stop_env=True)
+    assert r["failure"]["kind"] == "diagnostic_stop"
+    nd = [c for c in r["captures"] if c.get("kind") == "narrowdown"]
+    assert nd and all(c["prompt"] and c["reply"] is not None for c in nd)
+    sel = [c for c in r["captures"] if c.get("kind") == "narrowdown_selection"]
+    assert len(sel) == 1
+    s = sel[0]
+    assert s["pre_candidate_count"] == len(r["ranked"].functions_to_be_inspected)
+    assert s["post_selection_count"] >= 1  # no unconditional <=5 bound (production contract)
+    assert all(k.lower() in r["ranked_keys"] for k in s["post_selection_keys"])
+    # Selection CONTENT is the model/stub's choice; swap membership in the
+    # ranked universe is covered by test_e2e_bsc_uranium_production_path.
