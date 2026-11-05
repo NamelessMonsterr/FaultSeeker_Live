@@ -68,6 +68,9 @@ def label(value, limit=MAX_LABEL):
     return redact(str(value))[:limit]
 
 
+MAX_HASH_CHARS = 1_500_000
+
+
 def sha16(value):
     """Digest of the canonical JSON of the WHOLE value (same semantics as the
     pre-existing abstention call log). O(n) time; transient memory is about one
@@ -75,6 +78,15 @@ def sha16(value):
     by the engine's prompt cap. Identity only, not a wire hash."""
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
+def bounded_sha16(value, total_chars):
+    """sha16 only when the text size is within MAX_HASH_CHARS; otherwise an
+    explicit skip marker (non-text content is not counted, so it is also capped
+    by message count upstream)."""
+    if total_chars > MAX_HASH_CHARS:
+        return "skipped_oversize"
+    return sha16(value)
 
 
 _EDGE_MARGIN = 256
@@ -124,8 +136,24 @@ def request_features(adapted_messages):
 
 def _features(msgs):
     parts, total, scanned = [], 0, 0
+    unexamined = False
     for m in msgs[:MAX_MESSAGES_SCAN]:
         c = m.get("content") if isinstance(m, dict) else None
+        if isinstance(c, list):
+            # structured content blocks: scan text parts; anything else is
+            # unexamined content, so the scan cannot be called complete.
+            tx = []
+            for b in c[:200]:
+                if isinstance(b, dict) and isinstance(b.get("text"), str) and set(b) <= {"type", "text"}:
+                    tx.append(b["text"])
+                else:
+                    unexamined = True
+            if len(c) > 200:
+                unexamined = True
+            c = "\n".join(tx)
+        elif c is not None and not isinstance(c, str):
+            unexamined = True
+            c = None
         if isinstance(c, str):
             total += len(c)
             if scanned < MAX_FEATURE_SCAN_CHARS:
@@ -134,13 +162,14 @@ def _features(msgs):
                 scanned += len(chunk)
     full = "\n".join(parts)
     ids, ids_more = _ids(full)
-    complete = not (total > scanned or len(msgs) > MAX_MESSAGES_SCAN)
+    complete = not (total > scanned or len(msgs) > MAX_MESSAGES_SCAN or unexamined)
     return ({
         "message_count": len(msgs),
         "roles": [label(m.get("role"), 20) if isinstance(m, dict) else None for m in msgs[:60]],
         "total_chars": total,
         "scanned_chars": scanned,
-        "scan_truncated": total > scanned or len(msgs) > MAX_MESSAGES_SCAN,
+        "scan_truncated": not complete,
+        "unexamined_content": unexamined,
         "messages_not_scanned": max(0, len(msgs) - MAX_MESSAGES_SCAN),
         "source_markers": {k: len(rx.findall(full)) for k, rx in _SOURCE_MARKERS.items()},
         "call_ids_in_request": ids,
@@ -231,7 +260,10 @@ class CallEvidence:
         entry = {"seq": seq, "phase": label(phase, 40), "model": label(model),
                  "adapted_model": label(adapted_model) if adapted_model is not None else None,
                  "attempt": attempt, "prompt_family": label(family, 40) if family else None,
-                 "adapted_messages_sha256_16": sha16(msgs),
+                 "adapted_messages_sha256_16": (
+                     "skipped_oversize_or_unexamined"
+                     if (req_feats["unexamined_content"] or len(msgs) > MAX_MESSAGES_SCAN)
+                     else bounded_sha16(msgs, req_feats["total_chars"])),
                  "request": req_feats,
                  "bound_sources": bound,
                  "analyzed_bucket": "not_recorded_at_transport",

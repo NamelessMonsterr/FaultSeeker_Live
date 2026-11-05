@@ -147,7 +147,7 @@ except ImportError:  # app/server.py invoked directly
 
 def _evidence_enabled():
     import os
-    return os.environ.get("FAULTSEEKER_CALL_EVIDENCE", "1").strip().lower() not in _DISABLE_VALUES
+    return os.environ.get("FAULTSEEKER_CALL_EVIDENCE", "0").strip().lower() in ("1", "true", "yes", "on")
 
 
 class ModelEndpointFailure(RuntimeError):

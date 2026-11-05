@@ -269,3 +269,9 @@ def test_message_processing_is_bounded_and_flagged(monkeypatch):
     rec = ce.CallEvidence()
     e = rec.record_request(1, "analysis", MODEL, 1, msgs)
     assert e["last_user_message"]["text"] == "m9"  # last-user search stays within the last 3 messages
+
+
+@pytest.fixture(autouse=True)
+def _evidence_on(monkeypatch):
+    if "disabled_by_env" not in getattr(monkeypatch, "_name", ""):
+        monkeypatch.setenv("FAULTSEEKER_CALL_EVIDENCE", "1")

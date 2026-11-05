@@ -99,3 +99,9 @@ def test_worker_writes_evidence_on_success_and_failure_without_raising(server, m
         def write_private_evidence(self, d, rid): raise RuntimeError("x")
     server._write_private_evidence(Bad(), "r2")      # never raises
     server._write_private_evidence(object(), "r3")   # runtime without the method
+
+
+@pytest.fixture(autouse=True)
+def _evidence_on(monkeypatch):
+    if "disabled_by_env" not in getattr(monkeypatch, "_name", ""):
+        monkeypatch.setenv("FAULTSEEKER_CALL_EVIDENCE", "1")

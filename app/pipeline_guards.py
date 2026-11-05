@@ -1578,6 +1578,10 @@ class PipelineRuntime:
         sources = list(self.bound_source_texts)
         listed = []
         for src in sources[:20]:
+            if len(src) > 200_000:
+                listed.append({"chars": len(src), "sha256_16": None,
+                               "status": "unknown_source_too_large"})
+                continue
             forms = PipelineRuntime._source_forms(src)
             if any(f in text for f in forms if f):
                 status = "included_exact"
@@ -1600,10 +1604,22 @@ class PipelineRuntime:
             if not snap:
                 return None
             path = os.path.join(runs_dir, run_id + ".evidence.json")
-            tmp = path + ".tmp"
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(snap, f)
+            tmp = "%s.%d.%s.tmp" % (path, os.getpid(), os.urandom(6).hex())
+            # exclusive create (never follows a pre-existing path/symlink), then
+            # enforce the mode explicitly before any content is written.
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            try:
+                os.fchmod(fd, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(snap, f)
+            except Exception:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+            if os.path.islink(path):
+                os.unlink(path)
             os.replace(tmp, path)
             return path
         except Exception:
