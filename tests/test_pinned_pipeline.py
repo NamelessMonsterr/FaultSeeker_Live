@@ -227,6 +227,69 @@ def test_offline_real_trace_selection_order_diversity_slots(pinned, monkeypatch)
     for k, v in ranked.functions_to_be_inspected.items():
         fn = k.rsplit("_", 1)[0].lower()
         if fn in m.SEL_STANDARD_NAMES:
-            assert v.get("standard_name") == m.SEL_STANDARD_NAMES[fn]
+            assert v.get("possible_signature", "").startswith(m.SEL_STANDARD_NAMES[fn] + "(")
+            assert v.get("implementation_unverified") is True
         else:
-            assert "standard_name" not in v
+            assert "possible_signature" not in v
+
+
+def test_offline_narrowdown_payload_visibility(pinned, monkeypatch):
+    """The LLM narrow-down sees count + example calls per candidate in ranked
+    order. Validate the actual payload over the real trace: custom functions
+    lead, possible-signature hints are present for standard selectors, and the
+    token-like representative is a visible candidate. This proves VISIBILITY
+    only - the model's final <=5 selection is not deterministically guaranteed.
+    """
+    m = importlib.import_module("app.pipeline_guards")
+    fix = json.loads((ROOT / "tests/fixtures/hedgey_tx1_parity_trace.json").read_text())
+    TX1 = fix["provenance"]["transaction_hash"]
+    identity = sequence_from_parity(fix["responses"]["trace_transaction"], TX1, "eth")
+    trace_module = importlib.import_module("faultseeker.forensics.trace_analyzer")
+    monkeypatch.setattr(trace_module, "build_agent", lambda *args: None)
+    analysis = trace_module.TraceAnalyzer(
+        {"transaction_hash": TX1, "chain": "eth", "trace": identity["trace"],
+         "canonical_trace": identity.get("canonical_trace"), "address_relation": {},
+         "created_address": [], "storage_events": [], "trace_state_diff": {}},
+        {}, model="offline-no-llm").run()
+    flat = analysis["flatten_trace"]
+    fti = {}
+    for c in flat:
+        if str(c.get("call_type") or "").lower() == "staticcall":
+            continue
+        fn, addr = c.get("function"), c.get("address")
+        if not fn or not addr:
+            continue
+        key = f"{fn}_{addr}"
+        entry = fti.setdefault(key, {"count": 0, "calls": []})
+        entry["count"] += 1
+        entry["calls"].append({"gas": c.get("gas"), "params": c.get("input", "0x"), "depth": c.get("depth", "0"),
+                               "function": fn, "address": addr})
+    from types import SimpleNamespace
+    forensics = SimpleNamespace(address_calls_with_created_contract=[], functions_to_be_inspected={"others": [
+        {"function": k.rsplit("_", 1)[0], "address": k.rsplit("_", 1)[1], "gas": "0x1",
+         "params": "0x", "depth": "1"} for k in fti]})
+    ranker = importlib.import_module("faultseeker.function_analysis.function_ranker").FunctionRanker()
+    ranked = ranker.rank(forensics, {"repeated_patterns": {}, "function_call_loc_memo": {}})
+    observed_by_addr = {}
+    for n in m.walk(identity["trace"]):
+        fn, addr = n.get("function"), (n.get("address") or "").lower()
+        if fn and addr:
+            observed_by_addr.setdefault(addr, set()).add(fn)
+    ranked = m.order_ranked_targets(ranked, observed_by_addr, set())
+    ranked = m.annotate_standard_selector_names(ranked)
+
+    # Build the exact summary the upstream narrow-down prompt serializes.
+    summary = {}
+    for fc, v in ranked.functions_to_be_inspected.items():
+        summary[fc] = {"count_of_appearance": v["count"], "example_calls": v["calls"][:3]}
+        if "possible_signature" in v:
+            summary[fc]["possible_signature"] = v["possible_signature"]
+    keys = list(summary)
+    assert keys[0].startswith("0xc9a69562_") or keys[0].startswith("0xefd86b62_") \
+        or keys[0].startswith("0xf412e4c7_") or keys[0].startswith("0xf04f2707_"), keys[:3]
+    usdc_rep = next(k for k in keys if k.rsplit("_", 1)[1].lower() == "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48")
+    assert summary[usdc_rep]["possible_signature"].startswith("transfer(")  # visible, labeled
+    payload = json.dumps(summary)
+    assert "possible signature; implementation unverified" in payload
+    # all candidates still present in the payload (nothing pre-excluded)
+    assert len(summary) == len(ranked.functions_to_be_inspected)

@@ -58,11 +58,12 @@ SEL_TOKEN_SURFACE = SEL_ERC20_READS | SEL_DEX_READS | {
     "0x23b872dd",  # transferFrom(address,address,uint256)
     "0x095ea7b3",  # approve(address,uint256),
 }
-# Canonical names for the verified standard selectors (4byte/openchain,
-# 2026-11-05). Used to ANNOTATE selection-time presentations: the upstream
-# narrow-down design assumed decoded names; on selector traces the model saw
-# bare hex and could not tell noise from signal. Labeling restores the
-# semantics without filtering anything.
+# POSSIBLE signatures for well-known selectors (4byte/openchain, 2026-11-05).
+# A 4-byte selector is NOT an ABI identity: collisions exist and the actual
+# implementation at an address is unverified from the trace alone (a proxy or
+# custom contract can implement anything under a familiar selector). These
+# labels are presentation hints only, always emitted alongside
+# implementation_unverified=True.
 SEL_STANDARD_NAMES = {
     "0xa9059cbb": "transfer", "0x23b872dd": "transferFrom",
     "0x095ea7b3": "approve", "0x70a08231": "balanceOf",
@@ -129,23 +130,29 @@ def prune_static_readonly_selectors(result):
 
 
 def annotate_standard_selector_names(result):
-    """Attach the verified canonical name to each call of a standard selector,
-    in functions_to_be_inspected and created-contract call lists. Pure
-    presentation metadata: keys, counts and membership are untouched, so every
-    entry remains analyzable; the narrow-down and analysis prompts simply stop
-    being semantics-free hex."""
+    """Attach a POSSIBLE-signature hint to each entry/call of a well-known
+    selector, in functions_to_be_inspected and created-contract call lists.
+    Pure presentation metadata: keys, counts and membership are untouched, so
+    every entry remains analyzable; the narrow-down and analysis prompts stop
+    being semantics-free hex WITHOUT asserting verified behavior - each hint
+    carries implementation_unverified=True because a proxy or custom contract
+    can implement anything under a familiar selector, and 4-byte collisions
+    exist."""
+    def _hint(sel):
+        nm = SEL_STANDARD_NAMES.get(str(sel or "").lower())
+        return f"{nm}(...) [possible signature; implementation unverified]" if nm else None
     def _annotate(calls):
         for c in calls or []:
-            nm = SEL_STANDARD_NAMES.get(str(c.get("function") or "").lower())
-            if nm:
-                c["standard_name"] = nm
-    for entry in result.functions_to_be_inspected.values():
-        fn = None
-        _annotate(entry.get("calls"))
+            hint = _hint(c.get("function"))
+            if hint:
+                c["possible_signature"] = hint
+                c["implementation_unverified"] = True
     for key, entry in result.functions_to_be_inspected.items():
-        nm = SEL_STANDARD_NAMES.get(key.rsplit("_", 1)[0].lower())
-        if nm:
-            entry["standard_name"] = nm
+        hint = _hint(key.rsplit("_", 1)[0])
+        if hint:
+            entry["possible_signature"] = hint
+            entry["implementation_unverified"] = True
+        _annotate(entry.get("calls"))
     for entry in result.address_calls_with_created_contract_in_params.values():
         _annotate(entry.get("calls"))
     return result

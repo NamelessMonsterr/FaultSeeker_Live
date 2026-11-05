@@ -747,8 +747,9 @@ def test_token_like_address_gets_one_diversity_slot(pinned_fork):
     assert keys[0] == "0xefd86b62_0xbc452fdc"                    # custom first
     assert keys[1] == "0xa9059cbb_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"  # one USDC slot
     assert len(keys) == 4                                        # nothing dropped
-    assert res.functions_to_be_inspected[keys[1]]["standard_name"] == "transfer"
-    assert "standard_name" not in res.functions_to_be_inspected[keys[0]]
+    assert res.functions_to_be_inspected[keys[1]]["possible_signature"].startswith("transfer(")
+    assert res.functions_to_be_inspected[keys[1]]["implementation_unverified"] is True
+    assert "possible_signature" not in res.functions_to_be_inspected[keys[0]]
 
 
 def test_token_only_malicious_address_keeps_visible_slot(pinned_fork):
