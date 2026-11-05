@@ -1335,3 +1335,45 @@ def test_completed_status_never_coexists_with_retention_event_and_regex_and_sig_
             assert w.__kwdefaults__["_sig"] == inspect.signature(w.__kwdefaults__["_original"]), cls
     finally:
         _restore(rt2)
+
+
+def test_hook_rejects_oversized_source_key_request_with_empty_bound_set(pinned_fork, monkeypatch):
+    """END-TO-END through the production hook on both real agent classes (fake completion, no model/network):
+    an over-cap request carrying a source-bearing key with an EMPTY bound-source set is rejected before the
+    completion boundary; an over-cap request with no source key and no bound source proceeds (nothing to protect);
+    under-cap is byte-for-byte. Scope note: this guard provides TRUNCATION protection for over-cap requests; it does not
+    assert that every under-cap request carries its bound source."""
+    import types
+    from faultseeker.utils import agent as A
+    m = importlib.import_module("app.pipeline_guards")
+    monkeypatch.setenv("OPENAI_API_KEY", "dummy-test-value")
+    rt = _runtime()
+    sent = []
+
+    def fake_call(create_client, kwargs, model, *a, **k):
+        sent.append(kwargs["messages"][-1]["content"])
+        return types.SimpleNamespace(choices=[types.SimpleNamespace(message=types.SimpleNamespace(content="ok"))], usage=None)
+
+    rt.session = types.SimpleNamespace(assert_healthy=lambda: None, call=fake_call, route_policy=None)
+    rt._model_config = None
+    try:
+        rt.bound_source_texts[:] = []
+        rt.install_model_hooks(A)
+        for cls in (A.GPTAgent, A.UniversalAgent):
+            rt.outbound_rejection = None
+            agent = cls("system", "qwen-plus") if cls is A.GPTAgent else cls("system", "qwen-plus", api_key="dummy")
+            n = len(sent)
+            for key in ('"source-code"', '"sourceCode"', '"function_source_code"'):
+                rt.outbound_rejection = None
+                with pytest.raises(m.OutboundRequestRejected):
+                    agent._send_message("{" + key + ': "body"}' + ("k" * 10500))
+                assert len(sent) == n
+            rt.outbound_rejection = None
+            plain = "p" * 12000                      # no source key, no bound source: engine behavior stands
+            agent._send_message(plain)
+            assert len(sent) == n + 1 and "middle truncated" in sent[-1]
+            small = '{"source-code": "x"}' + "s" * 100
+            agent._send_message(small)
+            assert sent[-1] == small
+    finally:
+        _restore(rt)
