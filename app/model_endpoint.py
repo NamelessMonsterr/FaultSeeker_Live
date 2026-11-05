@@ -37,17 +37,25 @@ ABSTENTION_CONTRACT = (
     "flagged; a flagged function whose mechanism cannot be established uses "
     "\"mechanism undetermined\"."
 )
-# Trusted prompt identity (structural, not lexical): the current invocation's
-# prompt must BEGIN with the pinned engine's exact vulnerability-analysis
-# template. Engine construction (function_analyzer
-# ._update_potentially_vulnerable_function) places the template first and only
-# untrusted data after it; the agent layer's 10k truncation keeps the head;
-# conversation memory makes the current prompt the LAST user message. A
-# prefix match on the full template therefore cannot be forged by transaction
-# data, quoted text, or a historical message. The embedded template is
-# verified against the pinned engine checkout by a test tripwire; the pin is
-# fixed by Dockerfile ARG FAULTSEEKER_SHA. The 3-element signature below is
-# retained ONLY as a drift-detection signal, never as targeting authority.
+# Trusted prompt identity has TWO halves, both required and both tested:
+# (1) Boundary: every kwargs payload reaching augment_vulnerability_prompt
+#     arrives through ModelEndpointSession.call, which the fork installs ONLY
+#     as the pinned engine's internal _llm_call_with_retry
+#     (pipeline_guards.install_model_hooks). No network input, webhook, or
+#     user-controlled path calls session.call directly; every message here is
+#     constructed by the pinned engine's agent layer.
+# (2) Construction: the pinned engine builds the vulnerability prompt as
+#     template + appended data (function_analyzer
+#     ._update_potentially_vulnerable_function), so untrusted transaction
+#     content can only appear AFTER the template, and _send_message appends
+#     the constructed prompt as the LAST user message before dispatch (model
+#     output enters memory only as assistant messages). Given (1)+(2), an
+#     exact full-template prefix match on the last user message is provenance,
+#     not pattern matching: within this boundary only the engine's
+#     construction path produces it. Both halves are enforced by mandatory
+#     source-level tripwire tests against the pinned checkout (Dockerfile ARG
+#     FAULTSEEKER_SHA). The 3-element signature below is retained ONLY as a
+#     drift-detection signal, never as targeting authority.
 ENGINE_VULN_ANALYSIS_TEMPLATE = 'Based on the current understanding of the transaction, decide if any function implementation is potentially vulnerable. The vulnerable function must have the fault localized within it.\n\nReturn ONLY a valid JSON object in this exact schema — no markdown, no explanation:\n{\n  "<functionname>_<address>": {\n    "evidence": "<one-sentence explanation>",\n    "confidence_score": <float 0.0-1.0>\n  }\n}\n\nRules:\n- <functionname> and <address> must exactly match values in the provided information.\n- The <functionname>_<address> key must be one of the exact call ids shown in the provided information (for example a selector_address id such as 0xfa461e33_0x0000...). Any other key is discarded as unverifiable.\n- If no vulnerable function is found, return exactly: {}\n- Do NOT include any text outside the JSON object.\n'
 
 

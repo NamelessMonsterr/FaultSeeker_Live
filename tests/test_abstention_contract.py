@@ -204,8 +204,11 @@ def test_pinned_engine_template_matches_embedded_identity():
             "vulnerability_analysis_prompts.py").is_file(), \
         f"no engine prompt source under pinned checkout {root}"
     # Purge any previously imported engine modules so the import below
-    # cannot silently resolve to a different cached checkout.
-    for name in [n for n in list(sys.modules) if n == "faultseeker" or n.startswith("faultseeker.")]:
+    # cannot silently resolve to a different cached checkout; restore the
+    # original import state afterwards so the test leaves no global mutation.
+    saved = {n: sys.modules[n] for n in list(sys.modules)
+             if n == "faultseeker" or n.startswith("faultseeker.")}
+    for name in saved:
         del sys.modules[name]
     sys.path.insert(0, str(root))
     try:
@@ -216,6 +219,10 @@ def test_pinned_engine_template_matches_embedded_identity():
         actual = vap.VulnerabilityAnalysisPrompts().update_potentially_vulnerable_function
     finally:
         sys.path.remove(str(root))
+        for name in [n for n in list(sys.modules)
+                     if n == "faultseeker" or n.startswith("faultseeker.")]:
+            del sys.modules[name]
+        sys.modules.update(saved)
     assert me.ENGINE_VULN_ANALYSIS_TEMPLATE == actual
     lowered = actual.lower()
     assert any(topic in lowered for topic in me._VULN_PROMPT_TOPICS)
@@ -344,3 +351,69 @@ def test_missing_content_key_current_message_no_fallback():
     out, augmented, mismatch = me.augment_vulnerability_prompt(kw, "analysis")
     assert not augmented and not mismatch
     assert me.ABSTENTION_SENTINEL not in out["messages"][0]["content"]
+
+
+def _pinned_root():
+    import os
+    location = os.getenv("FAULTSEEKER_TEST_PIPELINE_REPO")
+    assert location, ("pinned engine checkout required: set "
+                      "FAULTSEEKER_TEST_PIPELINE_REPO (release verification "
+                      "of the abstention repair's trusted boundary)")
+    import pathlib
+    return pathlib.Path(location).resolve()
+
+
+def test_pinned_engine_constructs_vuln_prompt_template_first():
+    # Boundary tripwire, construction half: in the pinned engine the
+    # vulnerability prompt is the template with data only ever APPENDED, so
+    # untrusted content can never precede or replace the template.
+    import re
+    src = (_pinned_root() / "faultseeker/function_analysis/function_analyzer.py").read_text()
+    body = re.search(r"def _update_potentially_vulnerable_function\(self\):(.*?)\n    def ",
+                     src, re.S)
+    assert body, "pinned engine: _update_potentially_vulnerable_function not found"
+    lines = [l for l in body.group(1).splitlines() if l.strip().startswith("prompt")]
+    assert lines and lines[0].strip().startswith(
+        "prompt = self.vulnerability_prompts.update_potentially_vulnerable_function"), \
+        f"template is not the construction base: {lines[:2]}"
+    for later in lines[1:]:
+        assert later.strip().startswith("prompt +="), \
+            f"prompt reassigned after template (provenance broken): {later.strip()[:80]}"
+
+
+def test_pinned_engine_dispatches_constructed_prompt_as_last_user_message():
+    # Boundary tripwire, dispatch half: the agent layer appends the built
+    # prompt as a user message immediately before dispatch, and model output
+    # enters memory only under the assistant role - so the LAST user message
+    # at dispatch is always engine-constructed, never model- or data-built.
+    src = (_pinned_root() / "faultseeker/utils/agent.py").read_text()
+    user_append = src.find('_append_memory({"role": "user", "content": user_message})')
+    dispatch = src.find("messages=self._truncate_history(self.memory)")
+    assert 0 <= user_append < dispatch, "user prompt is not appended before dispatch"
+    assert '"role": "assistant"' in src[dispatch:], "model replies must enter as assistant"
+
+
+def test_fork_installs_session_call_only_as_engine_internal_hook():
+    # Boundary tripwire, fork half: session.call reaches the pipeline ONLY as
+    # a replacement for the engine's internal _llm_call_with_retry; no
+    # request/network path in the fork calls it directly.
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parents[1] / "app" / "pipeline_guards.py").read_text()
+    assert 'self.replace(agent_module, "_llm_call_with_retry", self.session.call)' in src
+    import subprocess
+    hits = subprocess.run(["grep", "-rn", "session\\.call", "app/", "--include=*.py"],
+                          capture_output=True, text=True,
+                          cwd=pathlib.Path(__file__).resolve().parents[1]).stdout
+    callers = [l for l in hits.splitlines()
+               if "call_timeout" not in l and not l.lstrip().startswith(("app/model_endpoint.py")) ]
+    assert len(callers) == 1 and "_llm_call_with_retry" in callers[0], \
+        f"unexpected session.call callers: {hits}"
+
+
+def test_template_embedded_mid_message_never_activates():
+    # The full template present anywhere except the very start of the current
+    # prompt (e.g. quoted inside data) is not provenance.
+    kw = kwargs_with("Analyze this quoted engine prompt: " + me.ENGINE_VULN_ANALYSIS_TEMPLATE)
+    out, augmented, _ = me.augment_vulnerability_prompt(kw, "analysis")
+    assert not augmented
+    assert me.ABSTENTION_SENTINEL not in out["messages"][-1]["content"]
