@@ -908,3 +908,90 @@ def test_function_verdict_capture_records_proposals_and_rejections():
     runtime.sequence = None
     result = runtime.annotate_result({"scored_functions": [], "evidence_cards": []})
     assert result["_debug"]["function_verdicts"] == runtime.function_verdicts
+
+
+HEDGEY = "0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511"
+USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+OTHER = "0x43506849d7c04f9138d1a2050bbf3a0c054402dd"
+
+
+def _provenance_runtime():
+    m = importlib.import_module("app.pipeline_guards")
+    runtime = m.PipelineRuntime(TX, "eth")
+    runtime.sequence = {"trace": {
+        "address": "0xroot", "function": "0x00", "children": [
+            {"address": HEDGEY, "function": "0xefd86b62", "children": [
+                {"address": USDC, "function": "0xa9059cbb", "children": [
+                    {"address": USDC, "function": "0x70a08231", "children": []}]}]},
+            {"address": OTHER, "function": "0x70a08231", "children": []}]}}
+    unit = f"0xefd86b62_{HEDGEY}"
+    runtime.function_verdicts = [{
+        "known_buckets": [unit, f"0xa9059cbb_{USDC}", f"0x70a08231_{USDC}", f"0x70a08231_{OTHER}"],
+        "proposals": {unit: [f"0xa9059cbb_{USDC}", f"0x70a08231_{USDC}", f"0x70a08231_{OTHER}"]},
+        "rejected_findings": []}]
+    return runtime, unit
+
+
+def test_cited_direct_child_bound_to_analyzing_unit_not_promoted():
+    runtime, unit = _provenance_runtime()
+    result = {"potentially_vulnerable_functions": {
+        f"0xa9059cbb_{USDC}": {"evidence": ["mechanism undetermined"], "confidence_score": [0.85], "depth": 5}}}
+    out = runtime.annotate_result(result)
+    ctx = out["potentially_vulnerable_functions"][f"0xa9059cbb_{USDC}"]["analysis_context"]
+    assert ctx["analysis_role"] == "unknown_suspect"
+    assert ctx["cited_by"] == [unit]
+    assert ctx["trace_relation"] == "direct_child"
+    assert "never" not in out["finding_provenance"]["note"] or "dismissed" in out["finding_provenance"]["note"]
+
+
+def test_cited_transitive_descendant_relation():
+    runtime, unit = _provenance_runtime()
+    result = {"potentially_vulnerable_functions": {
+        f"0x70a08231_{USDC}": {"evidence": ["x"], "confidence_score": [0.5], "depth": 6}}}
+    out = runtime.annotate_result(result)
+    ctx = out["potentially_vulnerable_functions"][f"0x70a08231_{USDC}"]["analysis_context"]
+    assert ctx["analysis_role"] == "unknown_suspect"
+    assert ctx["trace_relation"] == "transitive_descendant"
+
+
+def test_cross_contract_citation_stays_unknown_suspect_referenced():
+    # A cited call outside the citing unit's subtree (cross-contract or
+    # sibling) keeps its proposal as an unknown suspect - never discarded,
+    # never assigned a parent the trace does not establish.
+    runtime, unit = _provenance_runtime()
+    result = {"potentially_vulnerable_functions": {
+        f"0x70a08231_{OTHER}": {"evidence": ["x"], "confidence_score": [0.5], "depth": 5}}}
+    out = runtime.annotate_result(result)
+    ctx = out["potentially_vulnerable_functions"][f"0x70a08231_{OTHER}"]["analysis_context"]
+    assert ctx["analysis_role"] == "unknown_suspect"
+    assert ctx["cited_by"] == [unit]
+    assert ctx["trace_relation"] == "referenced"
+
+
+def test_analyzed_unit_itself_is_analyzed_target():
+    runtime, unit = _provenance_runtime()
+    result = {"potentially_vulnerable_functions": {
+        unit: {"evidence": ["mechanism undetermined"], "confidence_score": [0.85], "depth": 4}}}
+    out = runtime.annotate_result(result)
+    assert out["potentially_vulnerable_functions"][unit]["analysis_context"] == {"analysis_role": "analyzed_target"}
+
+
+def test_score_provenance_labels_rule_confidence_without_changing_numbers():
+    runtime, _ = _provenance_runtime()
+    runtime.partial = {"classification": {"rule_verdict": "EXPLOIT", "rule_confidence": 0.85,
+                                          "matched_rule": "closed_source_access_control"}}
+    priority = {"total": 0.94, "exploitability": 0.85, "reentrancy": 0.0, "flashloan": 0.6,
+                "price_manipulation": 0.0, "liquidity_drain": 0.0}
+    out = runtime.annotate_result({"priority": dict(priority), "priority_score": 0.94})
+    assert out["priority"] == priority  # original numbers untouched
+    prov = out["score_provenance"]["component_sources"]["exploitability"]
+    assert prov["source"] == "deterministic_rule_confidence"
+    assert prov["matched_rule"] == "closed_source_access_control"
+    assert "not an exploitability assessment" in prov["meaning"]
+    assert out["score_provenance"]["formula"].startswith("total = 1 - product")
+
+
+def test_console_js_relabels_rule_confidence_and_renders_role():
+    source = (ROOT / "app/web/assets/console.js").read_text()
+    assert "Rule confidence (deterministic)" in source
+    assert "cited during analysis of" in source

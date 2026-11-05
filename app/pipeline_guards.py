@@ -722,6 +722,105 @@ class PipelineRuntime:
                                       max_retries=0, timeout=min(timeout, self.session.call_timeout)),
                                    model, timeout=timeout, deadline=deadline)
 
+    def _trace_call_paths(self):
+        # Canonical selector_address -> all child-index paths at which that
+        # call appears in THIS run's trace. Trace-identity bound: identity is
+        # (address, selector) within this trace only; nothing carries across
+        # runs. Used to state structural relations between a citing analysis
+        # unit and a cited call - never to infer a causal parent.
+        paths = {}
+        root = (self.sequence or {}).get("trace")
+        if not isinstance(root, dict):
+            return paths
+        def rec(node, path):
+            sel = str(node.get("function") or "").lower()
+            addr = str(node.get("address") or "").lower()
+            if sel and addr:
+                paths.setdefault(f"{sel}_{addr}", []).append(path)
+            for i, child in enumerate(node.get("children", []) or []):
+                if isinstance(child, dict):
+                    rec(child, path + [i])
+        rec(root, [])
+        return paths
+
+    @staticmethod
+    def _trace_relation(paths, cited_key, unit_key):
+        # Strongest established structural relation wins; absence of a shared
+        # subtree means "referenced" (the trace establishes no parent/child
+        # relation - cross-contract and sibling citations land here and stay
+        # legitimate unknown suspects, never discarded).
+        cited_paths = paths.get(str(cited_key).lower()) or []
+        unit_paths = paths.get(str(unit_key).lower()) or []
+        best = None
+        for unit_path in unit_paths:
+            for cited_path in cited_paths:
+                if len(cited_path) == len(unit_path) + 1 and cited_path[:-1] == unit_path:
+                    return "direct_child"
+                if len(cited_path) > len(unit_path) + 1 and cited_path[:len(unit_path)] == unit_path:
+                    best = "transitive_descendant"
+        return best or "referenced"
+
+    def _annotate_finding_provenance(self, result):
+        # Representation repair (2026-11-05): the findings consumer binds a
+        # proposed key by identity only (canonical observed call id), so a
+        # call cited DURING the analysis of another function is presented as
+        # if it were the analyzed target. Bind each finding to its actual
+        # per-unit analysis context instead: which analyzed unit cited it,
+        # and the trace-established structural relation. A cited call keeps
+        # its proposal with role "unknown_suspect" - never promoted to
+        # analyzed/vulnerable, never silently excluded. This changes
+        # representation only, not any mechanism or causal judgment.
+        verdicts = list(self.function_verdicts or [])
+        analyzed, cited_by = set(), {}
+        for entry in verdicts:
+            if not isinstance(entry, dict):
+                continue
+            for unit, proposed in (entry.get("proposals") or {}).items():
+                analyzed.add(str(unit).lower())
+                for key in proposed or []:
+                    cited_by.setdefault(str(key).lower(), []).append(str(unit).lower())
+        if not analyzed and not cited_by:
+            return
+        paths = self._trace_call_paths()
+
+        def context_for(key):
+            key = str(key).lower()
+            if key in analyzed:
+                return {"analysis_role": "analyzed_target"}
+            units = cited_by.get(key) or []
+            if not units:
+                return {"analysis_role": "unknown_suspect", "cited_by": [],
+                        "trace_relation": "undetermined"}
+            relations = sorted({self._trace_relation(paths, key, unit) for unit in units},
+                               key=lambda r: ("direct_child", "transitive_descendant", "referenced").index(r)
+                               if r in ("direct_child", "transitive_descendant", "referenced") else 3)
+            return {"analysis_role": "unknown_suspect", "cited_by": units,
+                    "trace_relation": relations[0] if relations else "undetermined"}
+
+        pvf = result.get("potentially_vulnerable_functions")
+        if isinstance(pvf, dict):
+            for key, record in pvf.items():
+                if isinstance(record, dict):
+                    record["analysis_context"] = context_for(key)
+        elif isinstance(pvf, list):
+            for record in pvf:
+                if isinstance(record, dict):
+                    sig = record.get("function_signature") if isinstance(record.get("function_signature"), dict) else record
+                    key = f"{sig.get('function', '')}_{sig.get('address', '')}"
+                    record["analysis_context"] = context_for(key)
+        for coll in ("evidence_cards", "scored_functions"):
+            for record in (result.get(coll) or []):
+                if isinstance(record, dict):
+                    sig = record.get("function_signature") if isinstance(record.get("function_signature"), dict) else record
+                    key = f"{sig.get('function', '')}_{sig.get('address', '')}"
+                    record["analysis_context"] = context_for(key)
+        result["finding_provenance"] = {
+            "analyzed_units": sorted(analyzed),
+            "note": ("Findings with analysis_role unknown_suspect were cited during the analysis of "
+                     "another function; cited_by names that unit and trace_relation is the structural "
+                     "relation in this run's trace only. They are neither confirmed vulnerable nor "
+                     "dismissed. analyzed_target marks functions the analysis unit itself analyzed.")}
+
     def annotate_result(self, value):
         self.assert_healthy()
         result = deepcopy(value)
@@ -734,6 +833,22 @@ class PipelineRuntime:
                 with self._verdicts_lock:
                     dbg["function_verdicts"] = deepcopy(self.function_verdicts)
                 dbg["dispatched_configs"] = self._dispatched_configs()
+        self._annotate_finding_provenance(result)
+        # Score provenance: the priority "exploitability" component IS the
+        # deterministic rule's confidence (engine pipeline.py passes
+        # rule_confidence as exploitability_score); no function-level model
+        # evidence feeds the priority total. Keep the original numbers;
+        # label what they are. total = 1 - product(1 - component).
+        obs = (self.partial or {}).get("classification") if isinstance(self.partial, dict) else None
+        result["score_provenance"] = {
+            "formula": "total = 1 - product(1 - component) over the listed components",
+            "component_sources": {
+                "exploitability": {
+                    "source": "deterministic_rule_confidence",
+                    "matched_rule": (obs or {}).get("matched_rule"),
+                    "meaning": ("Deterministic pre-analysis rule confidence, not an "
+                                "exploitability assessment. No function-level model "
+                                "evidence feeds the priority score.")}}}
         allowed = {(str(n.get("address", "")).lower(), n["function"].lower()) for n in walk(self.sequence["trace"])} if self.sequence else set()
         unsupported = []
         for item in (result.get("scored_functions") or []) + (result.get("evidence_cards") or []):
