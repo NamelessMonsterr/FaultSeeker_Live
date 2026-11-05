@@ -504,10 +504,10 @@ def test_offline_fixture_real_factory_hook_phase_and_status_path(pinned_fork, mo
                 assert result["analysis_status"] == expect_status
 
 
-def test_prose_name_binds_to_trace_selector_when_address_has_one():
-    # GPT re-review fix: a bare prose name is checked against the OBSERVED
-    # selector at its address when the trace shows exactly one - the case the
-    # guard exists for can no longer slip through as unverified.
+def test_prose_name_never_binds_without_trace_verified_pair():
+    # GPT round-3: a bare prose name carries no proof it describes a particular
+    # observed invocation, even at a single-selector address - it stays an
+    # unverified label and never produces a contradiction.
     m = importlib.import_module("app.pipeline_guards")
     identity = importlib.import_module("app.trace_identity")
     seq = identity.sequence_from_parity(FIXTURE["responses"]["trace_transaction"], TX, "eth")
@@ -517,10 +517,25 @@ def test_prose_name_binds_to_trace_selector_when_address_has_one():
              "evidence": ["The transfer function moves tokens unexpectedly."]}
     report = runtime.annotate_result({"transaction_hash": TX, "chain": "eth",
                                       "analysis_status": "completed", "scored_functions": [entry]})
-    flagged = report["scored_functions"][0]["name_verification"]
-    # observed selector at that address is 0xe32a9a37, not transfer's 0xa9059cbb
-    assert flagged.startswith("contradiction")
-    assert any("Name/selector contradiction" in l for l in report["limitations"])
+    assert report["scored_functions"][0]["name_verification"] == "unverified_model_label"
+    assert not any("Name/selector contradiction" in l for l in report["limitations"])
+
+
+def test_unobserved_selector_at_single_selector_address_is_not_trusted():
+    # GPT round-3 regression: a selector-shaped model claim the trace never
+    # observed must not inherit the address's sole observed selector.
+    m = importlib.import_module("app.pipeline_guards")
+    identity = importlib.import_module("app.trace_identity")
+    seq = identity.sequence_from_parity(FIXTURE["responses"]["trace_transaction"], TX, "eth")
+    runtime = m.PipelineRuntime(TX, "eth")
+    runtime.sequence = seq
+    entry = {"address": "0xc793113f1548b97e37c409f39244ee44241bf2b3", "function": "0xdeadbeef",
+             "evidence": ["The approve function grants unlimited allowance."]}
+    report = runtime.annotate_result({"transaction_hash": TX, "chain": "eth",
+                                      "analysis_status": "completed", "scored_functions": [entry]})
+    assert report["analysis_integrity"]["unverified_targets"]
+    assert report["scored_functions"][0]["name_verification"] == "unverified_model_label"
+    assert not any("Name/selector contradiction" in l for l in report["limitations"])
 
 
 def test_prose_name_at_multi_selector_address_stays_unverified():

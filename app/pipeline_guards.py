@@ -291,12 +291,6 @@ class PipelineRuntime:
         name_claim = _re.compile(r"\b(approve|transferFrom|transfer|balanceOf|allowance)\b", _re.I)
         selector_shape = _re.compile(r"^0x[0-9a-f]{8}$")
         contradictions = []
-        # Observed identity comes from the canonical trace, never from a
-        # model-generated field: address -> set of selectors actually observed
-        # in calldata at that address during this transaction.
-        observed_by_addr = {}
-        for addr, fn in allowed:
-            observed_by_addr.setdefault(addr, set()).add(fn)
         entries = []
         for e in (result.get("scored_functions") or []) + (result.get("evidence_cards") or []):
             if not isinstance(e, dict):
@@ -307,17 +301,14 @@ class PipelineRuntime:
         for entry, address, selector in entries:
             texts = [str(t) for t in (entry.get("evidence") or [])]
             claimed = {m.group(1).lower() for t in texts for m in name_claim.finditer(t)}
-            # Contradiction requires an OBSERVED selector identity, resolved
-            # trace-first: the entry's selector counts only if that exact
-            # (address, selector) pair was observed; a bare prose name binds to
-            # the trace only when the address has exactly one observed selector.
-            # Otherwise there is no observed identity - no contradiction, the
-            # entry stays an unverified label.
-            at_address = observed_by_addr.get(address) or set()
+            # Contradiction requires a TRACE-VERIFIED identity: the entry's own
+            # selector counts only when that exact (address, selector) pair was
+            # observed in calldata. Anything else - a bare prose name, or a
+            # selector-shaped claim the trace never observed - carries no proof
+            # the entry describes a particular invocation, so it stays an
+            # unverified label and never produces a contradiction.
             if selector_shape.match(selector or "") and (address, selector) in allowed:
                 observed = selector
-            elif len(at_address) == 1:
-                observed = next(iter(at_address))
             else:
                 observed = None
             bad = (sorted(n for n in claimed if n in CANONICAL and CANONICAL[n] != observed)
