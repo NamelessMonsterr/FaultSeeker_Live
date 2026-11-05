@@ -461,6 +461,19 @@ def test_overloaded_source_units_disambiguated_or_fail(pinned_fork):
         assert out5 == []
         assert rt.selector_resolution_log[-1]["status"] == "unresolved"
         assert rt.selector_resolution_log[-1]["reason"] == "unparseable_header"
+        # Single candidate with a PARSED non-elementary header whose arity
+        # disagrees with the ABI (1 source param vs 2 ABI inputs): a concrete
+        # source/ABI disagreement, not an incomparable type -> unresolved.
+        rt.selector_bindings[addr] = {"selectors": {
+            "0xefd86b62": {"name": "foo", "signature": "foo(uint256,uint256)",
+                           "input_count": 2, "input_types": ["uint256", "uint256"]}}}
+        stub6, FA6 = _analyzer_stub({addr: {"foo": [
+            {"path": "./Y.sol", "start_line": 1, "end_line": 1,
+             "content": "function foo(Campaign memory campaign) external { _use(campaign); }"}]}})
+        out6 = FA6._retrieve_source_code(stub6, addr, "0xefd86b62")
+        assert out6 == []
+        assert rt.selector_resolution_log[-1]["status"] == "unresolved"
+        assert rt.selector_resolution_log[-1]["reason"] == "arity_mismatch"
     finally:
         _restore(rt)
 
@@ -476,10 +489,11 @@ def test_source_header_params_vectors(pinned_fork):
     assert f("function p(address payable to) {}") == ("ok", ["address"])
     assert f("function g(bytes32[] calldata xs, uint256 amt) {}") == ("ok", ["bytes32[]", "uint256"])
     assert f("function h(uint8[3] memory xs) {}") == ("ok", ["uint8[3]"])
-    assert f("function s(Campaign memory c) {}") == ("non_elementary", None)   # struct: parsed, not comparable
-    assert f("function e(TokenLockup t) {}") == ("non_elementary", None)       # enum: parsed, not comparable
-    assert f("function s(Campaign[] memory c) {}") == ("non_elementary", None) # struct array
-    assert f("function d(IERC20.Token memory t) {}") == ("non_elementary", None)  # dotted user type
+    assert f("function s(Campaign memory c) {}") == ("non_elementary", 1)   # struct: parsed, not comparable
+    assert f("function e(TokenLockup t) {}") == ("non_elementary", 1)       # enum: parsed, not comparable
+    assert f("function s(Campaign[] memory c) {}") == ("non_elementary", 1) # struct array
+    assert f("function d(IERC20.Token memory t) {}") == ("non_elementary", 1)  # dotted user type
+    assert f("function m(bytes16 id, Campaign memory c) {}") == ("non_elementary", 2)  # count retained
     # unparseable is NOT non_elementary: no single-candidate exception for these
     assert f("no function here") == ("unparseable", None)
     assert f("function broken(address to {}") == ("unparseable", None)         # unbalanced parens

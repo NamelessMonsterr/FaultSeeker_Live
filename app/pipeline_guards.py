@@ -566,9 +566,11 @@ class PipelineRuntime:
         """Tri-state parse of a candidate function's source header.
 
         ("ok", [canonical types]) - header isolated, every parameter elementary.
-        ("non_elementary", None)  - header isolated and parsed, but at least one
+        ("non_elementary", count) - header isolated and parsed, but at least one
             parameter is user-defined (struct/enum/contract/function type):
-            parsed, just not parser-comparable to canonical ABI tuples.
+            parsed, just not parser-comparable to canonical ABI tuples. The
+            parsed parameter COUNT is retained so callers can still enforce
+            arity agreement with the ABI signature.
         ("unparseable", None)     - header could not be isolated or parsed
             (no function keyword, unbalanced parens, malformed parameter,
             misspelled elementary type). Unparseable is NOT non-elementary.
@@ -597,6 +599,7 @@ class PipelineRuntime:
         else:
             return "unparseable", None  # unbalanced parens: header never closed
         out = []
+        non_elementary_seen = False
         for raw in params:
             tokens = [t for t in raw.strip().split() if t not in ("memory", "calldata", "storage", "payable")]
             if len(tokens) == 1:
@@ -610,9 +613,12 @@ class PipelineRuntime:
                 if re.match(r"^(u?int\d*|bytes\d*|ufixed|fixed)", type_tok):
                     return "unparseable", None  # misspelled elementary type
                 if re.fullmatch(r"[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*)?(\[\d*\])*", type_tok):
-                    return "non_elementary", None  # user-defined type, parsed
+                    non_elementary_seen = True  # user-defined type, parsed
+                    continue
                 return "unparseable", None  # unsupported syntax
             out.append(canon)
+        if non_elementary_seen:
+            return "non_elementary", len(params)
         return "ok", out
 
     def _install_selector_source_binding(self):
@@ -768,6 +774,16 @@ class PipelineRuntime:
                         runtime.selector_resolution_log.append(
                             {**base, **context, "status": "unresolved",
                              "reason": "unparseable_header", "resolved_name": entry["name"],
+                             "signature": entry["signature"], "source_entries": 0})
+                        return []
+                    if header_status == "non_elementary" and parsed_types != len(entry.get("input_types") or []):
+                        # Parsed header arity disagrees with the ABI signature:
+                        # a struct-typed header with the wrong parameter count
+                        # is a concrete source/ABI disagreement, not merely an
+                        # incomparable type.
+                        runtime.selector_resolution_log.append(
+                            {**base, **context, "status": "unresolved",
+                             "reason": "arity_mismatch", "resolved_name": entry["name"],
                              "signature": entry["signature"], "source_entries": 0})
                         return []
                     unit = {"candidates": 1, "selected_path": candidates[0].get("path"),
