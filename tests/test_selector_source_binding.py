@@ -848,6 +848,45 @@ def test_multiline_comment_offsets_and_scope(pinned_fork):
                                  [["address"]], idx, fn_scope="A") is False
 
 
+def test_utf8_multibyte_offsets_and_scope(pinned_fork):
+    """Multibyte UTF-8 in comments/strings before a function cannot shift scope
+    attribution: start_line is an ANTLR LINE NUMBER (ctx.start.line; the engine
+    slices lines[start_line-1:end_line] on Python str lines), and the blanked
+    text preserves exact Python length and newline positions, so the hook's
+    line->offset math is consistent in character space end to end."""
+    m = importlib.import_module("app.pipeline_guards")
+    P = m.PipelineRuntime
+    src = ("/* \xe9\xe9\xe9 \u20ac\u20ac\u20ac multibyte\n"
+           "   still comment \U0001f600 */\n"
+           "contract A {\n"
+           '    string s = "\xe9\U0001f600 } contract Z { struct Q { uint256 q; }";\n'
+           "    struct Campaign { uint256 id; }\n"
+           "    function execute(Campaign calldata c) external {}\n"
+           "}\n"
+           "contract B {\n"
+           "    struct Campaign { address owner; }\n"
+           "}\n")
+    blanked = P._strip_comments_and_strings(src)
+    assert len(blanked) == len(src)
+    assert [i for i, c in enumerate(src) if c == "\n"] == [i for i, c in enumerate(blanked) if c == "\n"]
+    idx = P._declaration_index(src)
+    # string/comment payloads with multibyte chars registered nothing
+    assert idx["decls"]["Campaign"] == [("A.Campaign", "A"), ("B.Campaign", "B")]
+    assert "Q" not in idx["decls"] and "Z" not in idx["decls"]
+    # the hook's exact line->offset algorithm places the function in contract A
+    lines = blanked.split("\n")
+    fn_line = next(i for i, l in enumerate(lines) if "function execute" in l)
+    off = sum(len(l) + 1 for l in lines[:fn_line])
+    assert next((n for n, s, e in idx["scopes"] if s <= off <= e), None) == "A"
+    body = "function execute(Campaign calldata c) external {}"
+    assert P._header_matches_abi(body, ["(uint256)"], ["struct A.Campaign"],
+                                 [["uint256"]], idx, fn_scope="A") is True
+    # invariant: missing/unparseable field info never binds on name+kind alone
+    idx_nf = {"decls": idx["decls"], "kinds": idx["kinds"], "fields": {}, "scopes": idx["scopes"]}
+    assert P._header_matches_abi(body, ["(uint256)"], ["struct A.Campaign"],
+                                 [["uint256"]], idx_nf, fn_scope="A") is None
+
+
 @pytest.mark.skipif(os.getenv("FAULTSEEKER_LIVE_NETWORK") != "1",
                     reason="keyless Blockscout route; run explicitly, not in the offline suite")
 def test_live_blockscout_binding_route(tmp_path, pinned_fork):
