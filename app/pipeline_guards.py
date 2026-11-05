@@ -1566,6 +1566,15 @@ class PipelineRuntime:
         except Exception:
             pass
 
+    def _call_evidence_snapshot(self):
+        # Observability only: any failure (or a session without the recorder)
+        # yields None and never affects the result.
+        try:
+            fn = getattr(self.session, "evidence_snapshot", None)
+            return fn() if callable(fn) else None
+        except Exception:
+            return None
+
     def _dispatched_configs(self):
         # Effective configs live on the run's model-endpoint session, recorded
         # at the provider send boundary (ModelEndpointSession.call). Offline
@@ -1747,6 +1756,11 @@ class PipelineRuntime:
                 with self._verdicts_lock:
                     dbg["function_verdicts"] = deepcopy(self.function_verdicts)
                 dbg["dispatched_configs"] = self._dispatched_configs()
+        _ce = self._call_evidence_snapshot()
+        if _ce and isinstance(result, dict):
+            _dbg = result.setdefault("_debug", {})
+            if isinstance(_dbg, dict):
+                _dbg["call_evidence"] = _ce
         self._annotate_finding_provenance(result)
         # Score provenance: the priority "exploitability" component IS the
         # deterministic rule's confidence (engine pipeline.py passes
@@ -1929,6 +1943,11 @@ class PipelineRuntime:
             result["_debug"] = {"ranked_targets": list(self.ranked_targets),
                                 "narrowdown_capture": deepcopy(self.narrowdown_capture),
                                 "dispatched_configs": self._dispatched_configs()}
+        _ce = self._call_evidence_snapshot()
+        if _ce:
+            _dbg = result.setdefault("_debug", {})
+            if isinstance(_dbg, dict):
+                _dbg["call_evidence"] = _ce
         if isinstance(error, TraceIdentityError):
             result["failure"] = {"kind": "trace_identity", "message": str(error)}
         if isinstance(error, OutboundRequestRejected) or self.outbound_rejection is not None:

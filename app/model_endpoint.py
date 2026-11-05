@@ -139,8 +139,15 @@ def augment_vulnerability_prompt(kwargs, phase):
 
 try:
     from .model_routes import adapt_request
+    from .call_evidence import CallEvidence as _CallEvidence
 except ImportError:  # app/server.py invoked directly
     from model_routes import adapt_request
+    from call_evidence import CallEvidence as _CallEvidence
+
+
+def _evidence_enabled():
+    import os
+    return os.environ.get("FAULTSEEKER_CALL_EVIDENCE", "1").strip().lower() not in _DISABLE_VALUES
 
 
 class ModelEndpointFailure(RuntimeError):
@@ -298,6 +305,9 @@ class ModelEndpointSession:
         # distinguish a length-capped reasoning blowout from a malformed
         # provider response, and that distinction chooses the remediation.
         self.attempt_log = []
+        # Private bounded request/response evidence (call_evidence.py). Observes
+        # the ADAPTED request at the provider boundary; never in summary().
+        self.call_evidence = _CallEvidence() if _evidence_enabled() else None
         self.failure = None
         self.lock = threading.RLock()
         self.blank_answer_retries = 0  # ledgered: user-granted blank-answer re-asks
@@ -407,6 +417,7 @@ class ModelEndpointSession:
             # survives the retry exactly once, un-duplicated.
             kwargs, abstention_augmented, abstention_mismatch = \
                 augment_vulnerability_prompt(kwargs, phase)
+            evidence_entry = None
             if abstention_augmented:
                 self.abstention_augmented_calls += 1
             if abstention_mismatch:
@@ -521,6 +532,16 @@ class ModelEndpointSession:
                             self.abstention_call_log.append(entry)
                         except Exception:
                             pass
+                        try:
+                            if self.call_evidence is not None:
+                                evidence_entry = self.call_evidence.record_request(
+                                    call_seq, phase, model, self.attempts,
+                                    adapted.get("messages"),
+                                    family=("cloud_vuln_update" if abstention_augmented
+                                            else "local_family_like" if abstention_mismatch
+                                            else "other"))
+                        except Exception:
+                            evidence_entry = None
                     self._record_dispatched(model, adapted, phase)
                     completion = bounded.chat.completions.create(**adapted)
                     # Token accounting happens at receipt, before any validation can
@@ -552,6 +573,15 @@ class ModelEndpointSession:
                     # _count_tokens failure can no longer lose the attempt's
                     # finish_reason/usage record - R30 finding)
                     self._count_tokens(completion)
+                    try:
+                        if self.call_evidence is not None and evidence_entry is not None:
+                            _ch = getattr(completion, "choices", None)
+                            self.call_evidence.record_response(
+                                evidence_entry,
+                                getattr(_ch[0].message, "content", None) if _ch else None,
+                                getattr(_ch[0], "finish_reason", None) if _ch else None)
+                    except Exception:
+                        pass
                     choices = getattr(completion, "choices", None)
                     content = getattr(choices[0].message, "content", None) if choices else None
                     finish = getattr(choices[0], "finish_reason", None) if choices else None
@@ -708,6 +738,12 @@ class ModelEndpointSession:
         self.tokens["completion"] += completion_tokens
         self.tokens["reasoning"] += int(getattr(details, "reasoning_tokens", 0) or 0)
         self.output_window.append((self.clock(), completion_tokens))
+
+    def evidence_snapshot(self):
+        try:
+            return self.call_evidence.snapshot() if self.call_evidence is not None else None
+        except Exception:
+            return None
 
     def summary(self):
         return {"attempts": self.attempts, "tokens": dict(self.tokens), "retries_remaining": self.retries_left,
