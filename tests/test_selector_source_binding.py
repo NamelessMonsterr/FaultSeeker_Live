@@ -906,3 +906,91 @@ def test_live_blockscout_binding_route(tmp_path, pinned_fork):
         assert rt.selector_resolution_log[-1]["status"] == "resolved"
     finally:
         _restore(rt)
+
+
+def test_model_request_construction_includes_bound_source(pinned_fork, tmp_path):
+    """Offline, no-model proof of the FULL production request construction: drive
+    the real _retrieve_related_info -> function_call_info_summary ->
+    _function_analysis_init path with the real Hedgey fixture, capture every
+    payload handed to the model agents, and assert the COMPLETE bound root
+    source bytes appear in the actual prompts (not merely that the binding
+    method returned them). Canned agent responses stand in for the model; the
+    construction code under test is the unmodified production code."""
+    import networkx as nx
+    from faultseeker.prompts.local_model_prompts import get_worker_prompts, get_vuln_prompts
+    from faultseeker.prompts.function_analysis import (
+        OrchestrationSessionPrompts, TaskCoordinatorPrompts, LocalTaskPrompts)
+    m = importlib.import_module("app.pipeline_guards")
+    rt = _runtime()
+    try:
+        rt.selector_bindings[HEDGEY] = {"selectors": m.PipelineRuntime._build_selector_map(_load_abi())}
+        rt.sequence = _hedgey_trace()
+        parsed = _parse_hedgey_source(tmp_path)
+        stub, FA = _analyzer_stub({HEDGEY: parsed})
+        bound = FA._retrieve_source_code(stub, HEDGEY, "0xefd86b62")
+        assert bound and "createLockedCampaign" in bound[0]["source_code"]
+
+        stub.fundflow_analysis = {"balance_change": {}}
+        stub.txn_seq = {"address_calls": {}}
+        stub.address_relation = nx.DiGraph()
+        stub.session_prompts = OrchestrationSessionPrompts()
+        stub.task_prompts = TaskCoordinatorPrompts()
+        stub.function_prompts = get_worker_prompts("phi3:mini")
+        stub.vulnerability_prompts = get_vuln_prompts("phi3:mini")
+        stub.local_task_prompts = LocalTaskPrompts()
+        stub.txn_analyzer_model = "gpt-4o-mini"
+        stub.cost_tracker = None
+        stub.task_tree = ""
+        stub.current_task = ""
+        stub.processing_result = ""
+        stub.understanding_result = ""
+        stub.potentially_vulnerable_functions = {}
+        stub.children_call_memo_single = {}
+        stub.children_call_memo = {}
+
+        captured = {}
+
+        class Capture:
+            def __init__(self, name, reply):
+                captured[name] = []
+                self.name, self.reply = name, reply
+
+            def query(self, user_message, *a, **k):
+                captured[self.name].append(str(user_message))
+                return self.reply
+
+        stub.reasoning_agent = Capture("reasoning", "1. done")
+        stub.organization_agent = Capture("organization", "understanding")
+        stub.generation_agent = Capture("generation", "")  # task selection dies -> loop exits
+        stub.processing_agent = Capture("processing", "")
+        stub.children_call_filtering_agent = Capture("filtering", "")
+
+        related_info = FA._retrieve_related_info(stub, HEDGEY, "0xefd86b62")
+        assert related_info.get("function_source_code"), "binding produced no source for related info"
+        # exactly the production shape (function_analyzer.py:707)
+        stub.function_call_info_summary = {
+            "function": "0xefd86b62", "address": HEDGEY, "appearance_count": 1,
+            "calls": [],
+            "function_call_related_info": {f"0xefd86b62::{HEDGEY}": related_info},
+        }
+        FA._function_analysis_init(stub)
+
+        # prompts carry json.dumps(summary): the source's newlines/quotes are
+        # JSON-escaped in the payload, so compare the escaped form
+        full_source = bound[0]["source_code"]
+        escaped = json.dumps(full_source)[1:-1]
+        # understanding init (organization) and task-tree init (reasoning) both
+        # serialize function_call_info_summary into the model-facing payload
+        assert captured["organization"], "no understanding prompt was constructed"
+        assert any(escaped in p for p in captured["organization"]), \
+            "bound root source absent from the understanding payload"
+        assert captured["reasoning"], "no analysis-init prompt was constructed"
+        assert any(escaped in p for p in captured["reasoning"]), \
+            "bound root source absent from the analysis-init payload"
+        print("PROMPTLENS", {k: [len(p) for p in v] for k, v in captured.items()}, "srclen", len(full_source))
+        # task-selection prompts also carry the summary (str(dict) form)
+        assert captured["generation"], "no task-selection prompt was constructed"
+        assert any("createLockedCampaign" in p for p in captured["generation"]), \
+            "bound source absent from task-selection payloads"
+    finally:
+        _restore(rt)
