@@ -794,3 +794,23 @@ def test_mixed_or_created_addresses_never_demoted(pinned_fork):
     assert keys[0] == "0xa9059cbb_0xaaaa"
     assert "0xa9059cbb_0xbbbb" in keys[:2]
     assert len(keys) == 3
+
+
+def test_annotation_tolerates_list_shaped_entries(pinned_fork):
+    # GPT round 8 HIGH: annotate assumed dict-shaped entries; a list-shaped
+    # entry must not crash the ranking path mid-run.
+    m = importlib.import_module("app.pipeline_guards")
+    from types import SimpleNamespace
+    res = SimpleNamespace(
+        address_calls_with_created_contract_in_params={
+            "0x5c38449e": [{"function": "0x5c38449e", "address": "0xba"}, "not-a-dict"]},
+        functions_to_be_inspected={
+            "0xa9059cbb_0xtoken": [{"function": "0xa9059cbb", "address": "0xtoken"}],
+            "0xdeadbeef_0xc1": {"count": 2, "calls": [{"function": "0xdeadbeef"}]},
+        })
+    m.annotate_standard_selector_names(res)
+    lst = res.functions_to_be_inspected["0xa9059cbb_0xtoken"]
+    assert lst[0]["possible_signature"].startswith("transfer(")
+    assert lst[0]["implementation_unverified"] is True
+    d = res.functions_to_be_inspected["0xdeadbeef_0xc1"]
+    assert "possible_signature" not in d and "possible_signature" not in d["calls"][0]

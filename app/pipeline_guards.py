@@ -143,18 +143,28 @@ def annotate_standard_selector_names(result):
         return f"{nm}(...) [possible signature; implementation unverified]" if nm else None
     def _annotate(calls):
         for c in calls or []:
+            if not isinstance(c, dict):
+                continue
             hint = _hint(c.get("function"))
             if hint:
                 c["possible_signature"] = hint
                 c["implementation_unverified"] = True
     for key, entry in result.functions_to_be_inspected.items():
-        hint = _hint(key.rsplit("_", 1)[0])
-        if hint:
-            entry["possible_signature"] = hint
-            entry["implementation_unverified"] = True
-        _annotate(entry.get("calls"))
+        # Upstream entries are dicts {"count", "calls"}, but tolerate
+        # list-shaped entries (a bare call list) instead of crashing the run.
+        if isinstance(entry, dict):
+            hint = _hint(key.rsplit("_", 1)[0])
+            if hint:
+                entry["possible_signature"] = hint
+                entry["implementation_unverified"] = True
+            _annotate(entry.get("calls"))
+        elif isinstance(entry, list):
+            _annotate(entry)
     for entry in result.address_calls_with_created_contract_in_params.values():
-        _annotate(entry.get("calls"))
+        if isinstance(entry, dict):
+            _annotate(entry.get("calls"))
+        elif isinstance(entry, list):
+            _annotate(entry)
     return result
 
 
