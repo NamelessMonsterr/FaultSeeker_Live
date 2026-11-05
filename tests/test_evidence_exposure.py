@@ -50,14 +50,14 @@ def test_bound_source_probe_reports_not_found_and_unknown_states(tmp_path):
 
 
 def test_export_route_is_off_by_default_and_404s(client, server, monkeypatch, tmp_path):
-    monkeypatch.delenv("FAULTSEEKER_EVIDENCE_EXPORT", raising=False)
+    monkeypatch.delenv("FAULTSEEKER_EVIDENCE_TOKEN", raising=False)
     Path(server.RUNS_DIR, "runx.evidence.json").write_text('{"calls": []}')
     assert client.get("/api/evidence/runx").status_code == 404
 
 
 def test_export_route_needs_gate_even_when_enabled(server, monkeypatch):
     import asyncio
-    monkeypatch.setenv("FAULTSEEKER_EVIDENCE_EXPORT", "1")
+    monkeypatch.setenv("FAULTSEEKER_EVIDENCE_TOKEN", "T"*32)
     Path(server.RUNS_DIR, "runx.evidence.json").write_text('{"calls": []}')
     async def go():
         t = httpx.ASGITransport(app=server.app, raise_app_exceptions=False, client=("testclient", 1))
@@ -67,12 +67,18 @@ def test_export_route_needs_gate_even_when_enabled(server, monkeypatch):
 
 
 def test_export_route_when_enabled_serves_no_store_and_rejects_bad_ids(client, server, monkeypatch):
-    monkeypatch.setenv("FAULTSEEKER_EVIDENCE_EXPORT", "1")
+    monkeypatch.setenv("FAULTSEEKER_EVIDENCE_TOKEN", "T"*32)
     Path(server.RUNS_DIR, "runx.evidence.json").write_text('{"calls": [1]}')
-    r = client.get("/api/evidence/runx")
+    assert client.get("/api/evidence/runx").status_code == 404  # gate ok, no token
+    assert client.get("/api/evidence/runx", headers={"X-Evidence-Token": "wrong"*8}).status_code == 404
+    monkeypatch.setenv("FAULTSEEKER_EVIDENCE_TOKEN", "short")
+    assert client.get("/api/evidence/runx", headers={"X-Evidence-Token": "short"}).status_code == 404
+    monkeypatch.setenv("FAULTSEEKER_EVIDENCE_TOKEN", "T"*32)
+    H = {"X-Evidence-Token": "T"*32}
+    r = client.get("/api/evidence/runx", headers=H)
     assert r.status_code == 200 and r.json() == {"calls": [1]} and r.headers["cache-control"] == "no-store"
-    assert client.get("/api/evidence/..%2Findex").status_code == 404
-    assert client.get("/api/evidence/missing").status_code == 404
+    assert client.get("/api/evidence/..%2Findex", headers=H).status_code == 404
+    assert client.get("/api/evidence/missing", headers=H).status_code == 404
 
 
 def test_result_route_and_history_mirror_never_include_evidence_file(client, server, monkeypatch):

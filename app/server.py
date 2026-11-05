@@ -1346,16 +1346,21 @@ def _write_private_evidence(runtime, run_id):
         pass
 
 
-def _evidence_export_enabled():
-    return os.environ.get("FAULTSEEKER_EVIDENCE_EXPORT", "").strip().lower() in ("1", "true", "yes", "on")
+def _evidence_token():
+    return os.environ.get("FAULTSEEKER_EVIDENCE_TOKEN", "").strip()
 
 
 @app.get("/api/evidence/{run_id}")
-async def evidence(run_id: str):
-    """Operator-only export of the private per-call evidence. OFF unless
-    FAULTSEEKER_EVIDENCE_EXPORT is set on the service; behind the access gate
-    in every case; never linked from the UI; not mirrored to history."""
-    if not _evidence_export_enabled() or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", run_id):
+async def evidence(run_id: str, request: Request):
+    """Operator-only retrieval of the private per-call evidence. Disabled (404)
+    unless FAULTSEEKER_EVIDENCE_TOKEN (>= 24 chars) is set on the service, and
+    then requires BOTH the access gate and that separate token in the
+    X-Evidence-Token header, so ordinary gate holders cannot read it. Never
+    linked from the UI; not mirrored to history."""
+    tok = _evidence_token()
+    sent = request.headers.get("x-evidence-token", "")
+    if (len(tok) < 24 or not hmac.compare_digest(tok.encode(), sent.encode())
+            or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", run_id)):
         return JSONResponse({"error": "not found"}, status_code=404)
     path = os.path.join(RUNS_DIR, run_id + ".evidence.json")
     try:
