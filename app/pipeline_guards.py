@@ -325,8 +325,11 @@ def reconcile_calibrated_confidence(result):
         if expl:
             m = re.search(r"Overall confidence: ([0-9.]+)% \((\w+)\)", str(expl[0]))
             if m:
-                conf.setdefault("proxy_overall", round(float(m.group(1)) / 100.0, 4))
-                conf.setdefault("proxy_level", m.group(2))
+                try:
+                    conf.setdefault("proxy_overall", round(float(m.group(1)) / 100.0, 4))
+                    conf.setdefault("proxy_level", m.group(2))
+                except (TypeError, ValueError):
+                    pass  # proxy extraction is diagnostic; reconciliation must not fail
             expl[0] = f"Overall confidence: {overall:.1%} ({level}) - {desc}"
             conf["explanation"] = expl
         conf["level"] = level
