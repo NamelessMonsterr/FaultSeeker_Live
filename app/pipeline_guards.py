@@ -398,10 +398,7 @@ class PipelineRuntime:
         merged = dict(_xp._CHAIN_EXPLORERS)
         merged['eth'] = [('https://eth.blockscout.com/api', '', 95)] + list(specs)
         self.replace(_xp, '_CHAIN_EXPLORERS', merged)
-        try:
-            self.replace(_xp, '_registry', _xp._ExplorerRegistry())
-        except AttributeError:
-            pass
+        # Rebuild exactly once; the pinned engine always provides _ExplorerRegistry.
         self.replace(_xp, '_registry', _xp._ExplorerRegistry())
 
     def install_model_hooks(self, agent_module):

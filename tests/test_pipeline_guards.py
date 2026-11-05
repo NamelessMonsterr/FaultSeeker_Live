@@ -1107,6 +1107,10 @@ def test_eth_explorer_fallback_registers_blockscout_once_and_restores():
     runtime._ensure_eth_explorer_fallback()  # idempotent
     assert len(xp._CHAIN_EXPLORERS['eth']) == len(original) + 1
     assert 'eth' not in xp._registry._chains or any('blockscout' in e.base_url for e in xp._registry._chains['eth'])
+    # Registry actually selects Blockscout first, Etherscan entries retained after.
+    ordered = [e.base_url for e in xp._registry.sorted_endpoints('eth')]
+    assert ordered[0] == 'https://eth.blockscout.com/api'
+    assert ordered[1:] == [t[0] for t in original]
     for owner, name, value in reversed(runtime.restorers):
         setattr(owner, name, value)
     assert [list(t) for t in xp._CHAIN_EXPLORERS['eth']] == original
