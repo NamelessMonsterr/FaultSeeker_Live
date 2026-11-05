@@ -220,14 +220,19 @@ def order_ranked_targets(result, observed_functions_by_address, created_addresse
 
 
 def restore_custom_selector_recall(forensics_result, trace_root):
-    """Selector-era recall repair. The upstream forensics expansion
-    (name_in_hash one-level child admission + token filter) was designed for
-    cast-text traces where only UNRESOLVED names appear as hashes; on selector
-    traces every call is a hash, and the admission rule can fill
-    functions_to_be_inspected with token-surface children while the actual
-    exploit path deeper in a callback subtree never reaches the ranker
-    (observed live: ETH run 3 ranked 6 USDC-only entries; createLockedCampaign
-    and cancelCampaign were absent from the ranker input entirely).
+    """Selector-era recall repair (robustness, classifier-independence).
+    The upstream forensics expansion (name_in_hash one-level child admission +
+    address-role token filter) was designed for cast-text traces where only
+    UNRESOLVED names appear as hashes; on selector traces every call is a
+    hash, and admission depends on the LLM address-role classification - when
+    the classifier marks the vulnerable contract as already-inspected/common,
+    its custom functions never reach the ranker. (Corrected record: ETH
+    Mercury run 3's artifact showed a 43-candidate pool; its 6-entry
+    functions_to_inspect was the POST-narrow-down selection, not the ranker
+    input, so the earlier claim that admission dropped the exploit path in
+    that run is withdrawn. This repair exists so custom-selector candidacy
+    does not depend on LLM classification variance, not because a specific
+    run proved an admission drop.)
     Repair: admit every state-capable (call/delegatecall, non-staticcall) call
     whose selector is OUTSIDE the standard token surface and that is not
     already present, so custom functions are always rankable. Token-surface

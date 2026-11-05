@@ -296,11 +296,13 @@ def test_offline_narrowdown_payload_visibility(pinned, monkeypatch):
 
 
 def test_selector_recall_repair_real_run3_input(pinned, monkeypatch):
-    """Replay of the ACTUAL ETH Mercury run-3 ranker input: forensics admitted
-    only 6 USDC-proxy/implementation selector entries via the name_in_hash
-    path; the vulnerable contract's functions never reached the ranker.
-    restore_custom_selector_recall must admit the custom-selector exploit path
-    from the canonical trace; ordering must then rank it first."""
+    """Replay of the ACTUAL ETH Mercury run-3 final selection: the artifact's
+    6 USDC-proxy/implementation entries are the POST-narrow-down selection
+    (the run's candidate pool was 43). If admission had been reduced to such
+    a token-only set (possible when the LLM address classifier marks the
+    vulnerable contract as inspected/common), restore_custom_selector_recall
+    must re-admit the custom-selector exploit path from the canonical trace,
+    and ordering must then rank it first."""
     m = importlib.import_module("app.pipeline_guards")
     run3 = json.loads(Path("/home/sandbox/faultseeker/runs/eth_mercury3_68c8cda4dc47.json").read_text())
     fti = run3["function_analysis"]["functions_to_inspect"]
