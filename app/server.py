@@ -339,6 +339,7 @@ MODELS = [
     {"id": "laguna-s-2.1", "label": "Laguna S 2.1 (NaraRouter free)", "keyEnv": "NARAROUTER_API_KEY"},
     {"id": "qwen/qwen3.8-27b", "label": "Qwen 3.8 27B (Groq)", "keyEnv": "GROQ_API_KEY"},
     {"id": "itera/qwen3.8-27b", "label": "Qwen 3.8 27B (Itera free)", "keyEnv": "ITERA_API_KEY"},
+    {"id": "mercury-3", "label": "Mercury 3 (Inception)", "keyEnv": "INCEPTION_API_KEY"},
     {"id": "no-llm", "label": "No LLM - deterministic Stage 1 (free RPC)", "keyEnv": None},
 ]
 
@@ -656,8 +657,8 @@ async def healthz():
 # --- central output redaction: no secret reaches browser/logs/mirror ----------
 _SECRET_VALUES = []
 for _v in ("OPENAI_API_KEY", "GOOGLE_API_KEY", "XAI_API_KEY", "GROQ_API_KEY",
-           "NARAROUTER_API_KEY", "GITHUB_HISTORY_TOKEN", "ETH_RPC_URL", "ETH_RPC_URL_2",
-           "BSC_RPC_URL", "BSC_RPC_URL_2", "DEMO_GATE_PASSWORD"):
+           "NARAROUTER_API_KEY", "ITERA_API_KEY", "INCEPTION_API_KEY", "GITHUB_HISTORY_TOKEN",
+           "ETH_RPC_URL", "ETH_RPC_URL_2", "BSC_RPC_URL", "BSC_RPC_URL_2", "DEMO_GATE_PASSWORD"):
     _val = os.environ.get(_v, "").strip()
     if len(_val) >= 8:
         _SECRET_VALUES.append(_val)

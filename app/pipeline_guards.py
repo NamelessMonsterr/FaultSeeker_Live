@@ -9,11 +9,11 @@ import os
 
 try:
     from .model_endpoint import ModelEndpointSession
-    from .model_routes import ITERA_DEFAULT_BASE_URL, resolve_route
+    from .model_routes import ITERA_DEFAULT_BASE_URL, MERCURY_DEFAULT_BASE_URL, resolve_route
     from .trace_identity import TraceIdentityError, canonical_to_legacy, check_structured, validate_trace_root
 except ImportError:  # app/server.py invoked directly
     from model_endpoint import ModelEndpointSession
-    from model_routes import ITERA_DEFAULT_BASE_URL, resolve_route
+    from model_routes import ITERA_DEFAULT_BASE_URL, MERCURY_DEFAULT_BASE_URL, resolve_route
     from trace_identity import TraceIdentityError, canonical_to_legacy, check_structured, validate_trace_root
 
 
@@ -67,12 +67,18 @@ class PipelineRuntime:
         if hasattr(agent_module, "_llm_call_with_retry"):
             self.replace(agent_module, "_llm_call_with_retry", self.session.call)
         config = getattr(agent_module, "PROVIDER_CONFIG", None)
-        if isinstance(config, dict) and "itera/" not in config:
+        if isinstance(config, dict):
             # The pinned pipeline sends any unknown model prefix to a local Ollama
-            # agent. Register the operator-selected Itera alias so it uses the
-            # OpenAI-compatible agent whose calls the shared transport owns.
-            self.replace(agent_module, "PROVIDER_CONFIG",
-                         {**config, "itera/": (ITERA_DEFAULT_BASE_URL, "ITERA_API_KEY")})
+            # agent. Register the operator-selected Itera and Mercury routes so
+            # they use the OpenAI-compatible agent whose calls the shared
+            # transport owns.
+            additions = {}
+            if "itera/" not in config:
+                additions["itera/"] = (ITERA_DEFAULT_BASE_URL, "ITERA_API_KEY")
+            if "mercury-" not in config:
+                additions["mercury-"] = (MERCURY_DEFAULT_BASE_URL, "INCEPTION_API_KEY")
+            if additions:
+                self.replace(agent_module, "PROVIDER_CONFIG", {**config, **additions})
         for agent_class in {agent_module.GPTAgent, agent_module.UniversalAgent}:
             original = agent_class._send_message
             def checked_send(agent, *args, _original=original, **kwargs):
