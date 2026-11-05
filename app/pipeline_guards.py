@@ -5,6 +5,7 @@ The upstream checkout is not edited. This keeps local and Docker execution on
 the same transport/identity policy while retaining the pinned source revision.
 """
 import threading
+import re
 from copy import deepcopy
 import os
 import sys
@@ -358,6 +359,9 @@ class PipelineRuntime:
         self.source = None
         self.model_keys = {}
         self.function_analysis = {"started": 0, "completed": 0}  # observed FunctionAnalyzer.run, not inferred
+        self.selector_bindings = {}        # address -> ABI selector->source-name binding + code-hash evidence
+        self.selector_resolution_log = []  # per-lookup resolution records from the analysis path
+        self._frame_index = None           # lazy (address, selector) -> code-context map from the canonical trace
         try:
             from .function_wall_guard import WallCapLedger
         except ImportError:
@@ -405,6 +409,365 @@ class PipelineRuntime:
         self.replace(_xp, '_CHAIN_EXPLORERS', merged)
         # Rebuild exactly once; the pinned engine always provides _ExplorerRegistry.
         self.replace(_xp, '_registry', _xp._ExplorerRegistry())
+
+    @staticmethod
+    def _canonical_abi_type(inp):
+        # Canonical ABI type text with recursive tuple expansion: keccak selectors
+        # are computed over the expanded component list, never the word "tuple".
+        t = str(inp.get("type", ""))
+        if t.startswith("tuple"):
+            comps = "(" + ",".join(PipelineRuntime._canonical_abi_type(c) for c in inp.get("components", []) or []) + ")"
+            return comps + t[len("tuple"):]
+        return t
+
+    @staticmethod
+    def _build_selector_map(abi):
+        """selector -> {'name','signature'}; a same-ABI 4-byte collision between
+        distinct signatures is recorded as 'ambiguous' and must fail unresolved."""
+        from eth_utils import function_signature_to_4byte_selector
+        out = {}
+        for entry in abi or []:
+            if not isinstance(entry, dict) or entry.get("type") != "function":
+                continue
+            name = entry.get("name")
+            if not name:
+                continue
+            try:
+                sig = name + "(" + ",".join(PipelineRuntime._canonical_abi_type(i) for i in entry.get("inputs", []) or []) + ")"
+                selector = "0x" + function_signature_to_4byte_selector(sig).hex()
+            except Exception:
+                continue
+            prior = out.get(selector)
+            if prior is None:
+                out[selector] = {"name": name, "signature": sig,
+                                 "input_count": len(entry.get("inputs", []) or []),
+                                 "input_types": [PipelineRuntime._canonical_abi_type(i)
+                                                 for i in entry.get("inputs", []) or []]}
+            elif prior == "ambiguous" or prior.get("signature") != sig:
+                out[selector] = "ambiguous"
+        return out
+
+    def _code_hash_evidence(self, address):
+        """Bytecode evidence for the CODE address a binding refers to. Every step
+        records an explicit state; failures keep a bounded reason instead of
+        being swallowed. ABI/source resolution (explorer) and bytecode identity
+        are separate evidence: this records code hashes only and never claims
+        the downloaded source corresponds to the deployed code."""
+        ev = {"code_address": address,
+              "latest_code": "not_attempted",
+              "tx_lookup": "not_attempted",
+              "code_at_tx_block": "not_checked"}
+        try:
+            from faultseeker.utils.rpc_provider import rpc_call
+            from eth_utils import keccak
+        except Exception as exc:
+            ev["latest_code"] = "unavailable:import:%s" % type(exc).__name__
+            return ev
+        code = None
+        try:
+            code = rpc_call(self.chain, "eth_getCode", [address, "latest"], timeout=15)
+            if isinstance(code, str) and code.startswith("0x") and len(code) > 2:
+                ev["code_hash_latest"] = "0x" + keccak(hexstr=code).hex()
+                ev["latest_code"] = "fetched"
+            else:
+                ev["latest_code"] = "unavailable:empty_or_invalid"
+                code = None
+        except Exception as exc:
+            ev["latest_code"] = "unavailable:%s:%s" % (type(exc).__name__, str(exc)[:100])
+            code = None
+        try:
+            tx = rpc_call(self.chain, "eth_getTransactionByHash", [self.tx_hash], timeout=15)
+            block = tx.get("blockNumber") if isinstance(tx, dict) else None
+            if block:
+                ev["tx_lookup"] = "found"
+                ev["tx_block"] = block
+            else:
+                ev["tx_lookup"] = "unavailable:no_block_number"
+        except Exception as exc:
+            ev["tx_lookup"] = "unavailable:%s:%s" % (type(exc).__name__, str(exc)[:100])
+        if ev.get("tx_block"):
+            try:
+                historical = rpc_call(self.chain, "eth_getCode", [address, ev["tx_block"]], timeout=15)
+                if isinstance(historical, str) and historical.startswith("0x"):
+                    if isinstance(code, str):
+                        ev["code_at_tx_block"] = ("matches_latest" if historical.lower() == code.lower()
+                                                  else "differs_from_latest")
+                    else:
+                        ev["code_at_tx_block"] = "unverified:no_latest_code"
+                else:
+                    ev["code_at_tx_block"] = "not_checked:empty_or_invalid_historical"
+            except Exception as exc:
+                ev["code_at_tx_block"] = "not_checked:%s:%s" % (type(exc).__name__, str(exc)[:100])
+        return ev
+
+    def _frame_code_index(self):
+        """(address, selector) -> execution context from the observed trace.
+
+        Prefers the canonical trace, whose producer (rpc_provider
+        .normalize_trace_node) carries explicit call-frame metadata: callee/to
+        is the address whose CODE the frame executes (for DELEGLEGATECALL: the
+        target whose code runs) and caller/from is the execution context.
+        Falls back to the legacy conversion (same fields after
+        canonical_to_legacy). The cache is keyed by the identity of the trace
+        object: replacing the sequence/trace rebuilds the index, so bindings
+        from a previous trace can never be reused. Frames not observed have no
+        entry - lookups for them must fail unresolved, never fall back to a
+        guessed code address."""
+        trace = (self.sequence or {}).get("canonical_trace") or (self.sequence or {}).get("trace")
+        if self._frame_index is not None and self._frame_index[0] is trace:
+            return self._frame_index[1]
+        index = {}
+
+        def walk(node, parent_addr):
+            if not isinstance(node, dict):
+                return
+            addr = str(node.get("callee") or node.get("to") or node.get("address") or "").lower()
+            fn = node.get("function_selector") or node.get("function")
+            call_type = str(node.get("call_type") or node.get("type") or "").lower()
+            if addr and isinstance(fn, str) and re.fullmatch(r"0x[0-9a-fA-F]{8}", fn):
+                index.setdefault((addr, fn.lower()), {
+                    "code_address": addr,
+                    "call_type": call_type,
+                    "execution_context": (parent_addr if call_type in ("delegatecall", "callcode")
+                                          and parent_addr else addr),
+                })
+            for child in node.get("children", []) or []:
+                walk(child, addr or parent_addr)
+
+        walk(trace, None)
+        self._frame_index = (trace, index)
+        return index
+
+    _ELEMENTARY_RE = re.compile(
+        r"^(u?int(8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?"
+        r"|bytes([1-9]|[12][0-9]|3[012])?"
+        r"|address|bool|string|byte|ufixed|fixed)(\[\d*\])?$")
+
+    @staticmethod
+    def _normalize_source_type(token):
+        """Canonical ABI type for an elementary Solidity source type token,
+        else None for user-defined types (struct/enum/contract/function) which
+        the source parser cannot expand to canonical tuple/uint8 form."""
+        token = token.strip()
+        suffix = ""
+        while token.endswith("]"):
+            i = token.rindex("[")
+            suffix = token[i:] + suffix
+            token = token[:i]
+        base = {"uint": "uint256", "int": "int256", "byte": "bytes1"}.get(token, token)
+        if not PipelineRuntime._ELEMENTARY_RE.match(base):
+            return None
+        if base in ("ufixed", "fixed"):
+            base += "128x18"
+        return base + suffix
+
+    @staticmethod
+    def _source_param_types(source_code):
+        """Canonical input types from a parsed function body's header, or None
+        when the header cannot be isolated or any parameter is non-elementary
+        (struct/enum/contract/function - not parser-comparable to ABI tuples)."""
+        m = re.search(r"function\s+\w+\s*\(", source_code or "")
+        if not m:
+            return None
+        depth, params, buf = 0, [], []
+        for ch in source_code[m.end() - 1:]:
+            if ch == "(":
+                depth += 1
+                if depth > 1:
+                    buf.append(ch)
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    if buf and "".join(buf).strip():
+                        params.append("".join(buf))
+                    break
+                buf.append(ch)
+            elif ch == "," and depth == 1:
+                params.append("".join(buf))
+                buf = []
+            else:
+                buf.append(ch)
+        else:
+            return None
+        out = []
+        for raw in params:
+            tokens = [t for t in raw.strip().split() if t not in ("memory", "calldata", "storage", "payable")]
+            if len(tokens) == 1:
+                type_tok = tokens[0]
+            elif len(tokens) == 2:
+                type_tok = tokens[0]
+            else:
+                return None
+            canon = PipelineRuntime._normalize_source_type(type_tok)
+            if canon is None:
+                return None
+            out.append(canon)
+        return out
+
+    def _install_selector_source_binding(self):
+        # Analysis-input root cause #2 (2026-11-05, verified): canonical traces
+        # carry calldata-selector function identity, but parse_contract keys
+        # downloaded source by function NAME and the pinned engine's
+        # FunctionAnalyzer._retrieve_source_code looks up by that key - so even
+        # successfully downloaded source never reached analysis for
+        # selector-identified units (upstream get_abi existed but was never
+        # called on any path). Bind selector -> verified source name via the
+        # explorer ABI at the acquisition boundary, keep the canonical
+        # selector/address identity intact, and record the binding plus
+        # code-hash evidence instead of renaming identity or trusting
+        # model-chosen names. Resolution failures stay unresolved (empty
+        # source), never guessed; same-ABI selector collisions fail ambiguous.
+        from faultseeker.data_collection.contract_downloader import ContractDownloader
+        from faultseeker.function_analysis.function_analyzer import FunctionAnalyzer
+        from faultseeker.utils import rpc_provider as _rp
+        runtime = self
+
+        # Producer gap verified on the captured Erigon fixture (hedgey_tx1_parity):
+        # normalize_trace_node takes call_type from the item's 'type' ('call') and
+        # drops action.callType, so real DELEGATECALL frames are mislabelled CALL
+        # in the canonical trace. Preserve the explicit action.callType metadata
+        # at the runtime boundary so the frame index sees true delegatecall
+        # semantics (code address = target, execution context = caller frame).
+        original_tree = _rp.build_parity_tree
+        def parity_tree_preserving_delegatecall(trace_list):
+            declared = {}
+            for item in trace_list or []:
+                if isinstance(item, dict):
+                    t = str((item.get('action') or {}).get('callType') or '').lower()
+                    if t in ('delegatecall', 'callcode'):
+                        declared[tuple(item.get('traceAddress', []) or ())] = t
+            tree = original_tree(trace_list)
+
+            def restore_flags(node):
+                if not isinstance(node, dict):
+                    return
+                t = declared.get(tuple(node.get('_addr') or ()))
+                if t:
+                    node['call_type'] = t.upper()
+                for child in node.get('children', []) or []:
+                    restore_flags(child)
+
+            restore_flags(tree)
+            return tree
+        self.replace(_rp, 'build_parity_tree', parity_tree_preserving_delegatecall)
+
+        original_normalize = _rp.normalize_trace_node
+        def normalize_preserving_delegatecall(node, depth=0, call_id='0'):
+            result = original_normalize(node, depth=depth, call_id=call_id)
+            declared = ''
+            if isinstance(node, dict):
+                declared = (str((node.get('action') or {}).get('callType') or '').lower()
+                            or str(node.get('call_type') or '').lower())
+            if declared in ('delegatecall', 'callcode') and str(result.get('call_type', '')).upper() == 'CALL':
+                result['call_type'] = declared.upper()
+            return result
+        self.replace(_rp, 'normalize_trace_node', normalize_preserving_delegatecall)
+
+        original_run = ContractDownloader.run
+
+        def run_with_binding(downloader):
+            info = original_run(downloader)
+            for address, functions in (info or {}).items():
+                if not functions:
+                    continue  # no parsed source -> no binding claim
+                try:
+                    abi = ContractDownloader.get_abi(downloader.chain, address)
+                except Exception:
+                    abi = None
+                if not abi:
+                    continue
+                record = {
+                    "selectors": runtime._build_selector_map(abi),
+                    "abi_provenance": "explorer_registry_after_fallback",
+                    "binding_rule": "4-byte selector over canonical ABI signature; collisions unresolved",
+                    "code_address": str(address).lower(),
+                    "source_bytecode_link": ("explorer reports the source verified against the deployed "
+                                             "bytecode at this address; the code-hash evidence below is an "
+                                             "independent observation, not a verification of that link"),
+                    "source_bytecode_independently_verified": False,
+                }
+                record.update(runtime._code_hash_evidence(str(address).lower()))
+                runtime.selector_bindings[str(address).lower()] = record
+            return info
+        self.replace(ContractDownloader, "run", run_with_binding)
+
+        original_retrieve = FunctionAnalyzer._retrieve_source_code
+        selector_re = re.compile(r"^0x[0-9a-fA-F]{8}$")
+
+        def retrieve_with_resolution(analyzer, address, function_name):
+            if not (isinstance(function_name, str) and selector_re.match(function_name)):
+                return original_retrieve(analyzer, address, function_name)  # name identity: unchanged path
+            addr = str(address).lower()
+            base = {"selector": function_name.lower(), "address": addr}
+            frame = runtime._frame_code_index().get((addr, function_name.lower()))
+            if frame is None:
+                # The frame's code address cannot be established from the observed
+                # trace: fail unresolved, never fall back to a guessed address.
+                runtime.selector_resolution_log.append(
+                    {**base, "status": "unresolved", "reason": "no_observed_frame",
+                     "resolved_name": None, "source_entries": 0})
+                return []
+            code_address = frame["code_address"]
+            context = {"code_address": code_address,
+                       "execution_context": frame["execution_context"],
+                       "call_type": frame["call_type"]}
+            mapping = (runtime.selector_bindings.get(code_address) or {}).get("selectors", {})
+            entry = mapping.get(function_name.lower())
+            if isinstance(entry, dict):
+                candidates = original_retrieve(analyzer, code_address, entry["name"])
+                # Exact unit binding: the ABI selector proves the signature; the
+                # source parser keys by name only, so multiple candidate bodies
+                # (overloads, same-name functions across inherited contracts)
+                # must be disambiguated to exactly one unit or fail ambiguous.
+                out = candidates
+                unit = None
+                if len(candidates) > 1:
+                    # Exact unit binding: arity alone cannot establish an overload
+                    # (foo(uint256) vs foo(address)); require the full canonical
+                    # input-type list to match. Any non-elementary (struct/enum)
+                    # parameter is not parser-comparable, so such candidates
+                    # cannot be distinguished and must fail unresolved.
+                    matched = [c for c in candidates
+                               if runtime._source_param_types(c.get("source_code")) == entry.get("input_types")]
+                    if len(matched) == 1:
+                        out = matched
+                        unit = {"candidates": len(candidates), "selected_path": matched[0].get("path"),
+                                "disambiguated_by": "canonical_input_types_vs_source_header"}
+                    else:
+                        runtime.selector_resolution_log.append(
+                            {**base, **context, "status": "ambiguous_overload",
+                             "resolved_name": entry["name"], "signature": entry["signature"],
+                             "candidates": len(candidates),
+                             "matching_signature": len(matched), "source_entries": 0})
+                        return []
+                elif candidates:
+                    parsed_types = runtime._source_param_types(candidates[0].get("source_code"))
+                    if parsed_types is not None and parsed_types != entry.get("input_types"):
+                        # Source header disagrees with the ABI signature: the
+                        # source and ABI do not describe the same function.
+                        runtime.selector_resolution_log.append(
+                            {**base, **context, "status": "unresolved",
+                             "reason": "signature_mismatch", "resolved_name": entry["name"],
+                             "signature": entry["signature"], "source_entries": 0})
+                        return []
+                    unit = {"candidates": 1, "selected_path": candidates[0].get("path"),
+                            "disambiguated_by": ("single_candidate" if parsed_types is None
+                                                 else "single_candidate_signature_match")}
+                runtime.selector_resolution_log.append(
+                    {**base, **context, "status": "resolved", "resolved_name": entry["name"],
+                     "signature": entry["signature"], "source_entries": len(out),
+                     **({"unit_binding": unit} if unit else {})})
+                return out
+            if entry == "ambiguous":
+                runtime.selector_resolution_log.append(
+                    {**base, **context, "status": "ambiguous_collision",
+                     "resolved_name": None, "source_entries": 0})
+                return []  # collision: refuse to bind, never guess
+            runtime.selector_resolution_log.append(
+                {**base, **context, "status": "unresolved", "reason": "no_abi_binding",
+                 "resolved_name": None, "source_entries": 0})
+            return []
+        self.replace(FunctionAnalyzer, "_retrieve_source_code", retrieve_with_resolution)
 
     def install_model_hooks(self, agent_module):
         if not self.session:
@@ -495,6 +858,7 @@ class PipelineRuntime:
         from faultseeker.forensics import signal_extractor as _sig
         extend_signal_sets(_sig)
         self._ensure_eth_explorer_fallback()
+        self._install_selector_source_binding()
         if os.getenv("FAULTSEEKER_VISITOR_RPC_RELAY"):
             # Forked workers may inherit a registry populated by a prior diagnostic.
             # Rebuild it after the visitor URL was replaced with the checked relay.
@@ -907,6 +1271,10 @@ class PipelineRuntime:
         result["analysis_integrity"] = {"function_identity": "calldata_selector", "abi_verified": False,
                                         "ranked_targets": self.ranked_targets, "unverified_targets": unsupported}
         result["trace_provenance"] = deepcopy((self.sequence or {}).get("trace_provenance", {}))
+        if self.selector_bindings:
+            result["selector_bindings"] = deepcopy(self.selector_bindings)
+        if self.selector_resolution_log:
+            result["selector_resolutions"] = deepcopy(self.selector_resolution_log)
         # Carry the deterministic forensics observation into completed results
         # the same way failure_report does for partial ones: it is a
         # pre-analysis rule observation, not a verified vulnerability verdict.
