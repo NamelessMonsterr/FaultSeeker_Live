@@ -72,16 +72,32 @@ def sha16(value):
         json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
 
+_EDGE_MARGIN = 256
+_EDGE_RUN = re.compile(r"\S+")
+
+
 def bounded_text(text, head, tail):
-    """Redacted text cut to head+tail with an explicit omission marker."""
+    """Redacted text cut to head+tail with an explicit omission marker.
+
+    Work is O(head+tail): only the retained edges (plus a margin so a pattern
+    straddling the cut can still match) are ever redacted. A token cut in half
+    by the boundary is dropped, so no partial credential survives at an edge.
+    original_chars is the length of the INPUT, before redaction."""
     if not isinstance(text, str):
         return {"text": None, "original_chars": 0, "omitted_chars": 0}
-    text = redact(text)
     n = len(text)
     if n <= head + tail:
-        return {"text": text, "original_chars": n, "omitted_chars": 0}
-    omitted = n - head - tail
-    return {"text": text[:head] + "\n[...OMITTED %d CHARS...]\n" % omitted + text[-tail:],
+        return {"text": redact(text), "original_chars": n, "omitted_chars": 0}
+    h = redact(text[:head + _EDGE_MARGIN])[:head]
+    if text[head - 1:head + 1].strip() and len(text[head - 1:head + 1].strip()) == 2:
+        h = h[:len(h) - len(_EDGE_RUN.findall(h[-_EDGE_MARGIN:])[-1])] if _EDGE_RUN.findall(h[-_EDGE_MARGIN:]) else h
+    t = redact(text[-(tail + _EDGE_MARGIN):])[-tail:]
+    if n > tail and text[-tail - 1:-tail + 1].strip() and len(text[-tail - 1:-tail + 1].strip()) == 2:
+        m = _EDGE_RUN.match(t)
+        if m:
+            t = t[m.end():]
+    omitted = n - len(h) - len(t)
+    return {"text": h + "\n[...OMITTED %d CHARS...]\n" % omitted + t,
             "original_chars": n, "omitted_chars": omitted}
 
 
@@ -111,7 +127,7 @@ def request_features(adapted_messages):
     ids, ids_more = _ids(full)
     return {
         "message_count": len(msgs),
-        "roles": [label(m.get("role"), 20) if isinstance(m, dict) else None for m in msgs][:60],
+        "roles": [label(m.get("role"), 20) if isinstance(m, dict) else None for m in msgs[:60]],
         "total_chars": total,
         "scanned_chars": scanned,
         "scan_truncated": total > scanned,

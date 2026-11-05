@@ -32,9 +32,11 @@ def test_redaction_removes_credential_shapes_but_keeps_call_ids():
 
 
 def test_bounded_text_marks_omission_with_exact_counts():
-    b = ce.bounded_text("a" * 100, 10, 5)
-    assert b["original_chars"] == 100 and b["omitted_chars"] == 85
-    assert "OMITTED 85 CHARS" in b["text"]
+    b = ce.bounded_text("ab " * 34, 10, 5)      # cuts fall on whitespace
+    assert b["original_chars"] == 102 and b["omitted_chars"] == 102 - len(b["text"]) + len("\n[...OMITTED %d CHARS...]\n" % b["omitted_chars"])
+    assert "OMITTED %d CHARS" % b["omitted_chars"] in b["text"] and b["omitted_chars"] > 0
+    whole = ce.bounded_text("a" * 100, 10, 5)  # a token cut mid-way is dropped, never half shown
+    assert whole["omitted_chars"] == 100 and whole["original_chars"] == 100
     assert ce.bounded_text("short", 10, 5)["omitted_chars"] == 0
 
 
@@ -231,3 +233,29 @@ def test_concurrent_snapshot_while_recording():
     ts = [threading.Thread(target=writer)] + [threading.Thread(target=reader) for _ in range(3)]
     [t.start() for t in ts]; [t.join() for t in ts]
     assert not errors and len(rec.snapshot()["calls"]) == ce.MAX_CALLS
+
+
+def test_bounded_text_original_length_is_input_length_and_work_is_edge_only():
+    secret = "api_key=" + "Z" * 40
+    text = secret + " " + "w " * 100 + "tail"
+    b = ce.bounded_text(text, 20, 10)
+    assert b["original_chars"] == len(text)           # not the redacted length
+    assert "Z" * 10 not in b["text"]
+    assert b["omitted_chars"] == len(text) - (len(b["text"]) - len("\n[...OMITTED %d CHARS...]\n" % b["omitted_chars"]))
+    # a huge input is cut without redacting the middle (middle content absent)
+    big = "A" * 10_000_000
+    out = ce.bounded_text(big, 100, 100)
+    assert out["original_chars"] == 10_000_000 and len(out["text"]) < 400
+
+
+def test_secret_straddling_the_cut_leaves_no_partial_token():
+    secret = "sk-" + "Q" * 30
+    text = "x " * 4 + secret + " " + "y " * 40
+    for head in range(5, 40):
+        b = ce.bounded_text(text, head, 4)
+        assert "QQQQ" not in b["text"], (head, b["text"])
+
+
+def test_roles_are_capped_before_processing():
+    msgs = [{"role": "user", "content": "x"}] * 500
+    assert len(ce.request_features(msgs)["roles"]) == 60 and ce.request_features(msgs)["message_count"] == 500
