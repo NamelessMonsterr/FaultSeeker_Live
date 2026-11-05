@@ -37,11 +37,25 @@ ABSTENTION_CONTRACT = (
     "flagged; a flagged function whose mechanism cannot be established uses "
     "\"mechanism undetermined\"."
 )
-# Targeting: the engine's vulnerability-analysis prompt is identified by a
-# distinctive CO-OCCURRING signature (topic phrase + its JSON schema field),
-# case-insensitive - a quoted phrase alone cannot trigger augmentation.
-# Wording drift (exactly 2 of 3 elements) raises an observable targeting
-# mismatch at dispatch instead of silently disabling the repair.
+# Trusted prompt identity (structural, not lexical): the current invocation's
+# prompt must BEGIN with the pinned engine's exact vulnerability-analysis
+# template. Engine construction (function_analyzer
+# ._update_potentially_vulnerable_function) places the template first and only
+# untrusted data after it; the agent layer's 10k truncation keeps the head;
+# conversation memory makes the current prompt the LAST user message. A
+# prefix match on the full template therefore cannot be forged by transaction
+# data, quoted text, or a historical message. The embedded template is
+# verified against the pinned engine checkout by a test tripwire; the pin is
+# fixed by Dockerfile ARG FAULTSEEKER_SHA. The 3-element signature below is
+# retained ONLY as a drift-detection signal, never as targeting authority.
+ENGINE_VULN_ANALYSIS_TEMPLATE = 'Based on the current understanding of the transaction, decide if any function implementation is potentially vulnerable. The vulnerable function must have the fault localized within it.\n\nReturn ONLY a valid JSON object in this exact schema — no markdown, no explanation:\n{\n  "<functionname>_<address>": {\n    "evidence": "<one-sentence explanation>",\n    "confidence_score": <float 0.0-1.0>\n  }\n}\n\nRules:\n- <functionname> and <address> must exactly match values in the provided information.\n- The <functionname>_<address> key must be one of the exact call ids shown in the provided information (for example a selector_address id such as 0xfa461e33_0x0000...). Any other key is discarded as unverifiable.\n- If no vulnerable function is found, return exactly: {}\n- Do NOT include any text outside the JSON object.\n'
+
+
+def _normalized(text):
+    return " ".join(text.split())
+
+
+_TEMPLATE_PREFIX = _normalized(ENGINE_VULN_ANALYSIS_TEMPLATE)
 _VULN_PROMPT_TOPICS = ("potentially vulnerable", "identify any vulnerable functions")
 _VULN_PROMPT_SCHEMA = "confidence_score"
 # Third signature element: the prompt's literal JSON key shape. All three are
@@ -69,12 +83,14 @@ def augment_vulnerability_prompt(kwargs, phase):
     a sentinel substring in transaction data or quoted text must neither
     suppress nor prove augmentation, so it is never consulted.
 
-    Targeting uses the co-occurring three-element signature. A user message
-    matching exactly two elements is a probable vulnerability-analysis prompt
-    with drifted wording: reported as a targeting_mismatch (observable, never
-    silent) instead of being quietly skipped. Ordinary prompts match at most
-    one element and raise no signal. Never touches other phases or prompt
-    types. Input kwargs are not mutated. Malformed structures never crash."""
+    Targeting authority is structural: the last user message must start with
+    the pinned engine's exact template (ENGINE_VULN_ANALYSIS_TEMPLATE).
+    Untrusted content - transaction data, quoted text, historical messages -
+    can neither activate nor suppress augmentation. The 3-element signature
+    remains only as drift detection: a near-matching current prompt (2+ of 3
+    elements) is reported as a targeting_mismatch, never silently skipped.
+    Never touches other phases or prompt types. Input kwargs are not mutated.
+    Malformed structures never crash."""
     import os
     if phase != "analysis":
         return kwargs, False, False
@@ -83,28 +99,29 @@ def augment_vulnerability_prompt(kwargs, phase):
     messages = kwargs.get("messages")
     if not isinstance(messages, list):
         return kwargs, False, False
+    # Temporal correctness: only the LAST user message can be the current
+    # invocation's prompt. Historical messages (engine conversation memory)
+    # are never augmented and never satisfy or suppress targeting.
     idx = None
-    partial = False
     for i in range(len(messages) - 1, -1, -1):
         m = messages[i]
-        if not isinstance(m, dict) or m.get("role") != "user":
-            continue
-        content = m.get("content")
-        if not isinstance(content, str):
-            continue
-        hits = _signature_hits(content)
-        if all(hits):
+        if isinstance(m, dict) and m.get("role") == "user" and isinstance(m.get("content"), str):
             idx = i
             break
-        if sum(hits) >= 2:
-            partial = True
     if idx is None:
-        return kwargs, False, partial
-    kwargs = dict(kwargs)
-    messages = [dict(m) if isinstance(m, dict) else m for m in messages]
-    messages[idx]["content"] += ABSTENTION_CONTRACT
-    kwargs["messages"] = messages
-    return kwargs, True, False
+        return kwargs, False, False
+    content = messages[idx]["content"]
+    if _normalized(content).startswith(_TEMPLATE_PREFIX):
+        kwargs = dict(kwargs)
+        messages = [dict(m) if isinstance(m, dict) else m for m in messages]
+        messages[idx]["content"] += ABSTENTION_CONTRACT
+        kwargs["messages"] = messages
+        return kwargs, True, False
+    # Drift detection only: a near-matching current prompt (2+ of 3 signature
+    # elements) is probably the engine prompt with drifted wording - loud
+    # mismatch, never silent skip. Untrusted content that merely embeds the
+    # same strings never activates augmentation (prefix authority above).
+    return kwargs, False, sum(_signature_hits(content)) >= 2
 
 try:
     from .model_routes import adapt_request

@@ -5,11 +5,11 @@ import pytest
 
 me = importlib.import_module("app.model_endpoint")
 
-VULN_PROMPT = ("Based on the current understanding of the transaction, decide if any "
-               "function implementation is potentially vulnerable. Return JSON keyed by "
-               '"<functionname>_<address>" with "confidence_score": <float>.')
-LOCAL_VULN_PROMPT = ('Identify any vulnerable functions from the analysis below. '
-                     'Keys are "<functionname>_<address>" with "confidence_score": <float>.')
+# The real pinned engine template plus representative appended data, exactly
+# as engine construction assembles it (template first, untrusted data after).
+VULN_PROMPT = (me.ENGINE_VULN_ANALYSIS_TEMPLATE
+               + "The following function calls have been confirmed to be vulnerable: []"
+               "Current understanding:{\"calls\": []}")
 
 
 def kwargs_with(content, role="user"):
@@ -26,11 +26,14 @@ def test_vuln_prompt_is_augmented():
     assert me.ABSTENTION_SENTINEL not in kw["messages"][0]["content"]  # original untouched
 
 
-def test_local_variant_marker_is_augmented_case_insensitive():
-    kw = kwargs_with("IDENTIFY ANY VULNERABLE FUNCTIONS from the analysis below. "
-                     "CONFIDENCE_SCORE and <FUNCTIONNAME>_<ADDRESS>")
-    out, augmented, _ = me.augment_vulnerability_prompt(kw, "analysis")
-    assert augmented
+def test_local_model_template_not_augmented_but_signalled():
+    # The local-model prompt variant is out of the repair's scope (cloud
+    # template only): no augmentation, but its 3-of-3 signature near-miss is
+    # an observable mismatch, never a silent skip.
+    kw = kwargs_with("Identify any vulnerable functions from the analysis below. "
+                     'Keys are "<functionname>_<address>" with "confidence_score": <float>.')
+    out, augmented, mismatch = me.augment_vulnerability_prompt(kw, "analysis")
+    assert not augmented and mismatch
 
 
 def test_topic_without_schema_signature_is_not_augmented():
@@ -65,7 +68,9 @@ def test_malformed_entries_never_crash():
     assert not augmented  # only the assistant message matched; no user match
 
 
-def test_last_matching_user_message_augmented_only_once():
+def test_only_current_prompt_augmented_in_conversation_memory():
+    # Engine conversation memory is multi-turn: the LAST user message is the
+    # current invocation's prompt; history is never augmented.
     kw = {"messages": [{"role": "user", "content": VULN_PROMPT},
                        {"role": "assistant", "content": "interim"},
                        {"role": "user", "content": VULN_PROMPT}]}
@@ -73,6 +78,47 @@ def test_last_matching_user_message_augmented_only_once():
     assert augmented
     assert me.ABSTENTION_SENTINEL not in out["messages"][0]["content"]
     assert me.ABSTENTION_SENTINEL in out["messages"][2]["content"]
+
+
+def test_historical_match_never_augmented_for_ordinary_current():
+    kw = {"messages": [{"role": "user", "content": VULN_PROMPT},
+                       {"role": "assistant", "content": "Previous analysis..."},
+                       {"role": "user", "content": "Summarize the transaction."}]}
+    out, augmented, mismatch = me.augment_vulnerability_prompt(kw, "analysis")
+    assert not augmented and not mismatch
+    assert all(me.ABSTENTION_SENTINEL not in (m.get("content") or "")
+               for m in out["messages"] if isinstance(m, dict))
+
+
+def test_historical_match_does_not_mask_current_drift():
+    kw = {"messages": [{"role": "user", "content": VULN_PROMPT},
+                       {"role": "assistant", "content": "Previous analysis..."},
+                       {"role": "user", "content": DRIFTED_NO_TOPIC}]}
+    out, augmented, mismatch = me.augment_vulnerability_prompt(kw, "analysis")
+    assert not augmented and mismatch
+
+
+def test_ordinary_followup_after_augmented_request_no_signal():
+    kw = {"messages": [{"role": "user", "content": VULN_PROMPT + me.ABSTENTION_CONTRACT},
+                       {"role": "assistant", "content": "{}"},
+                       {"role": "user", "content": "What about the second transaction?"}]}
+    out, augmented, mismatch = me.augment_vulnerability_prompt(kw, "analysis")
+    assert not augmented and not mismatch
+
+
+def test_adversarial_signature_embedding_never_activates():
+    # All three signature elements inside untrusted transaction metadata or a
+    # source comment must not activate augmentation (prefix authority).
+    for poisoned in ('Transaction metadata: potentially vulnerable; '
+                     'confidence_score; <functionname>_<address>',
+                     'Analyze this code comment: // potentially vulnerable, '
+                     'see confidence_score and <functionname>_<address> schema',
+                     'Quoted report: "potentially vulnerable" with '
+                     '"confidence_score" keyed by "<functionname>_<address>"'):
+        kw = kwargs_with(poisoned)
+        out, augmented, _ = me.augment_vulnerability_prompt(kw, "analysis")
+        assert not augmented, poisoned[:50]
+        assert me.ABSTENTION_SENTINEL not in out["messages"][-1]["content"]
 
 
 def test_sentinel_in_untrusted_content_never_suppresses_augmentation():
@@ -138,19 +184,27 @@ def test_env_disable_reports_no_mismatch(monkeypatch):
     assert not augmented and not mismatch
 
 
-def test_pinned_engine_prompt_matches_the_signature():
-    # Drift tripwire: the repair's signature is tested against the REAL pinned
-    # engine prompt, so upstream prompt rewording fails this suite loudly.
+def test_pinned_engine_template_matches_embedded_identity():
+    # Drift tripwire: the embedded trusted template is verified against the
+    # REAL pinned engine prompt source, so upstream prompt rewording fails
+    # this suite loudly instead of silently disabling the repair.
     import os
     location = os.getenv("FAULTSEEKER_TEST_PIPELINE_REPO")
     if not location:
         pytest.skip("pinned engine unavailable: set FAULTSEEKER_TEST_PIPELINE_REPO")
-    import pathlib
-    text = (pathlib.Path(location) / "faultseeker/prompts/function_analysis/"
-            "vulnerability_analysis_prompts.py").read_text().lower()
-    assert any(topic in text for topic in me._VULN_PROMPT_TOPICS)
-    assert me._VULN_PROMPT_SCHEMA in text
-    assert me._VULN_PROMPT_KEYSHAPE in text
+    import sys
+    sys.path.insert(0, location)
+    try:
+        from faultseeker.prompts.function_analysis.vulnerability_analysis_prompts \
+            import VulnerabilityAnalysisPrompts
+        actual = VulnerabilityAnalysisPrompts().update_potentially_vulnerable_function
+    finally:
+        sys.path.remove(location)
+    assert me.ENGINE_VULN_ANALYSIS_TEMPLATE == actual
+    lowered = actual.lower()
+    assert any(topic in lowered for topic in me._VULN_PROMPT_TOPICS)
+    assert me._VULN_PROMPT_SCHEMA in lowered
+    assert me._VULN_PROMPT_KEYSHAPE in lowered
 
 
 # --- Dispatch-level integration through ModelEndpointSession.call ----------
