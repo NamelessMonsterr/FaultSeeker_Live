@@ -594,3 +594,63 @@ def test_completed_result_carries_deterministic_observation_not_verdict():
     report2 = runtime2.annotate_result({"transaction_hash": TX, "chain": "eth", "analysis_status": "completed",
                                         "scored_functions": [{"address": root["address"], "function": root["function"]}]})
     assert "deterministic_rule_observation" not in report2
+
+
+def test_selector_identities_activate_flash_loan_detection(pinned_fork):
+    # Generic defect: the name-based detector never fired on selector-identified
+    # traces (run 3 missed a Balancer flashLoan sitting in the trace).
+    m = importlib.import_module("app.pipeline_guards")
+    from faultseeker.forensics import signal_extractor as sig
+    m.extend_signal_sets(sig)
+    flat = [
+        {"function": "0x5c38449e", "address": "0xba12222222228d8ba445958a75a0704d566bf2c8", "call_type": "call"},
+        {"function": "0xa9059cbb", "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "call_type": "call"},
+    ]
+    ex = sig.SignalExtractor({}, {"flatten_trace": flat}, TX, "eth")
+    ex._check_flash_loan()
+    assert ex.signals.flash_loan_detected is True
+    # names still work (cast-text path unchanged)
+    ex2 = sig.SignalExtractor({}, {"flatten_trace": [{"function": "flashLoan", "address": "0x1", "call_type": "call"}]}, TX, "eth")
+    ex2._check_flash_loan()
+    assert ex2.signals.flash_loan_detected is True
+
+
+def test_selector_identities_activate_price_read_write_detection(pinned_fork):
+    # getReserves -> swap -> getReserves as SELECTORS must count as a
+    # read-write-read price sequence exactly as the name forms do.
+    m = importlib.import_module("app.pipeline_guards")
+    from faultseeker.forensics import signal_extractor as sig
+    m.extend_signal_sets(sig)
+    pair = "0xa08c4571b3000000000000000000000000000000"
+    flat = [
+        {"function": "0x0902f1ac", "address": pair, "call_type": "staticcall"},  # getReserves
+        {"function": "0x022c0d9f", "address": pair, "call_type": "call"},        # swap
+        {"function": "0x0902f1ac", "address": pair, "call_type": "staticcall"},
+        {"function": "0x022c0d9f", "address": pair, "call_type": "call"},
+        {"function": "0x0902f1ac", "address": pair, "call_type": "staticcall"},
+    ]
+    ex = sig.SignalExtractor({}, {"flatten_trace": flat}, TX, "bsc")
+    ex._check_price_manipulation()
+    assert ex.signals.price_read_write_sequences >= 1
+    assert ex.signals.price_read_before_write is True
+
+
+def test_ranker_filter_covers_standard_selectors(pinned_fork):
+    # Standard ERC-20/DEX reads as selectors must be filtered like their names,
+    # so custom functions are not crowded out of the ranked targets.
+    m = importlib.import_module("app.pipeline_guards")
+    from types import SimpleNamespace
+    from faultseeker.function_analysis.function_ranker import FunctionRanker
+    ranker = FunctionRanker()
+    m.extend_ranker_filters(ranker)
+    assert "0x70a08231" in ranker.filtered_functions  # balanceOf
+    assert "0x0902f1ac" in ranker.filtered_functions  # getReserves
+    forensics = SimpleNamespace(address_calls_with_created_contract=[], functions_to_be_inspected={})
+    tx_analysis = {"function_call_loc_memo": {}, "repeated_patterns": {"0xa": [
+        {"pattern": [{"function": "0x70a08231", "address": "0xa"}, {"function": "0x70a08231", "address": "0xa"}], "repeats": 2},
+        {"pattern": [{"function": "0x70a08231", "address": "0xa"}, {"function": "0x52f18fc3", "address": "0xb"}], "repeats": 2},
+    ]}}
+    out = ranker.rank(forensics, tx_analysis)
+    kept = [c["function"] for p in out.repeated_patterns for c in p["pattern"]]
+    assert "0x70a08231" not in kept      # standard read filtered out
+    assert "0x52f18fc3" in kept          # custom function survives

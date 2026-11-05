@@ -23,6 +23,64 @@ CHAIN_IDS = {"eth": 1, "bsc": 56, "polygon": 137, "arbitrum": 42161,
              "celo": 42220, "cronos": 25, "moonbeam": 1284, "aurora": 1313161554}
 
 
+# Well-known function selectors (verified against openchain signature
+# database 2026-11-05). The upstream name-based match sets were written for
+# decoded cast-text traces; on canonical traces the function identity is the
+# calldata SELECTOR, so name-only sets silently never match. Extending the
+# sets with selectors revives the upstream logic for both identity forms.
+SEL_ERC20_STANDARD = {
+    "0xa9059cbb",  # transfer(address,uint256)
+    "0x23b872dd",  # transferFrom(address,address,uint256)
+    "0x095ea7b3",  # approve(address,uint256)
+    "0x70a08231",  # balanceOf(address)
+    "0xdd62ed3e",  # allowance(address,address)
+    "0x18160ddd",  # totalSupply()
+    "0x313ce567",  # decimals()
+    "0x06fdde03",  # name()
+    "0x95d89b41",  # symbol()
+}
+SEL_DEX_READS = {
+    "0x0dfe1681",  # token0()
+    "0xd21220a7",  # token1()
+    "0x0902f1ac",  # getReserves()
+}
+SEL_PRICE_READS = {"0x0902f1ac", "0x3850c7bd"}  # getReserves(), slot0()
+SEL_STATE_WRITES = {
+    "0xa9059cbb", "0x23b872dd",  # transfer, transferFrom
+    "0x6a627842", "0x89afcb44",  # mint(address), burn(address)
+    "0x022c0d9f",  # swap(uint256,uint256,address,bytes)
+    "0xfff6cae9",  # sync()
+}
+SEL_FLASH_BORROW = {
+    "0x5c38449e",  # Balancer Vault flashLoan(address,address[],uint256[],bytes)
+    "0xab9c4b5d",  # Aave flashLoan(...,uint16)
+    "0x490e6cbc",  # UniswapV3 Pool flash(address,uint256,uint256,bytes)
+}
+SEL_FLASH_CALLBACK = {"0x10d1e85c"}  # uniswapV2Call(address,uint256,uint256,bytes)
+# Other flash callbacks (Balancer receiveFlashLoan, Aave executeOperation) are
+# receiver-defined interface implementations whose selectors vary by contract;
+# only canonical fixed selectors belong here.
+
+
+def extend_signal_sets(sig_module):
+    """Selector identities must satisfy the same name-based detectors; the sets
+    are module-level upstream, extended here without editing the pinned checkout."""
+    sig_module._FLASH_BORROW |= SEL_FLASH_BORROW
+    sig_module._FLASH_CALLBACK |= SEL_FLASH_CALLBACK
+    sig_module._PRICE_READ |= SEL_PRICE_READS
+    sig_module._STATE_WRITE |= SEL_STATE_WRITES
+
+
+def extend_ranker_filters(ranker):
+    """The upstream "standard safe function" filter lists names only; under
+    selector identity it never matched, so ERC-20 noise crowded custom
+    functions out of the ranked targets."""
+    for attr in ("filtered_functions", "extended_filtered_functions"):
+        current = getattr(ranker, attr, None)
+        if isinstance(current, list):
+            setattr(ranker, attr, sorted(set(current) | SEL_ERC20_STANDARD | SEL_DEX_READS))
+
+
 def walk(node):
     pending = [node]
     while pending:
@@ -104,6 +162,8 @@ class PipelineRuntime:
         from faultseeker.function_analysis.function_analyzer import FunctionAnalyzer
         from faultseeker.function_analysis.function_ranker import FunctionRanker
         self.source = agents
+        from faultseeker.forensics import signal_extractor as _sig
+        extend_signal_sets(_sig)
         if os.getenv("FAULTSEEKER_VISITOR_RPC_RELAY"):
             # Forked workers may inherit a registry populated by a prior diagnostic.
             # Rebuild it after the visitor URL was replaced with the checked relay.
@@ -199,6 +259,7 @@ class PipelineRuntime:
         def checked_rank(ranker, *args, **kwargs):
             if not self.sequence:
                 raise TraceIdentityError("Cannot rank targets without a checked canonical trace.")
+            extend_ranker_filters(ranker)
             result = original_rank(ranker, *args, **kwargs)
             allowed = {f"{n['function']}_{n['address']}".lower() for n in walk(self.sequence["trace"])}
             if any(key.lower() not in allowed for key in result.functions_to_be_inspected):
