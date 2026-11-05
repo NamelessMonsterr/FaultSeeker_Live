@@ -27,6 +27,7 @@ class ModelEndpointFailure(RuntimeError):
             "invalid_request": "Model endpoint rejected the request.",
             "invalid_response": "Model endpoint returned an invalid completion response.",
             "blank_completion": "Model endpoint returned an empty completion.",
+            "refusal": "Model endpoint returned a refusal instead of an answer.",
             "truncated_output": "Model endpoint returned a truncated completion (output cap reached).",
             "budget_exhausted": "The shared model-endpoint time budget was exhausted.",
             "endpoint_error": "Model endpoint request failed.",
@@ -114,6 +115,8 @@ class ModelEndpointSession:
         self.failure = None
         self.lock = threading.RLock()
         self.blank_answer_retries = 0  # ledgered: user-granted blank-answer re-asks
+        # counted at dispatch time - a dispatched attempt, not proof the
+        # provider received and executed the request.
         self.key_pools = {}
         self.model_routes = {}
         self.route_policy = None
@@ -250,11 +253,20 @@ class ModelEndpointSession:
                         self.blank_answer_retries += 1
                         pending_blank_reask = False
                     completion = bounded.chat.completions.create(**adapt_request(model, kwargs))
+                    # Token accounting happens at receipt, before any validation can
+                    # raise: blank completions and refusals still consumed tokens, and
+                    # their usage belongs in the ledger and the rolling output window.
+                    self._count_tokens(completion)
                     choices = getattr(completion, "choices", None)
                     content = getattr(choices[0].message, "content", None) if choices else None
                     finish = getattr(choices[0], "finish_reason", None) if choices else None
+                    refusal = getattr(choices[0].message, "refusal", None) if choices else None
                     if (choices and finish == "stop"
                             and (content is None or (isinstance(content, str) and not content.strip()))):
+                        if isinstance(refusal, str) and refusal.strip():
+                            # A refusal is a meaningful answer, not an empty one:
+                            # terminal, and never eligible for the blank-answer grant.
+                            raise ModelEndpointFailure("refusal", phase=phase)
                         # The exact granted case: a real response whose answer is empty.
                         raise ModelEndpointFailure("blank_completion", phase=phase)
                     if not choices or not isinstance(content, str) or not content.strip():
@@ -297,7 +309,6 @@ class ModelEndpointSession:
                 if deadline is not None and self.clock() > deadline:
                     self._fail(self._out_of_time(phase, deadline, error))
                 if error is None:
-                    self._count_tokens(completion)
                     self.emit({"state": "model_endpoint_ready", "phase": phase,
                                "model": model, "attempts": self.attempts})
                     return completion

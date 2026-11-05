@@ -291,18 +291,35 @@ class PipelineRuntime:
         name_claim = _re.compile(r"\b(approve|transferFrom|transfer|balanceOf|allowance)\b", _re.I)
         selector_shape = _re.compile(r"^0x[0-9a-f]{8}$")
         contradictions = []
-        entries = [(e, (e.get("function") or "").lower())
-                   for e in (result.get("scored_functions") or []) if isinstance(e, dict)]
-        entries += [(e, ((e.get("function_signature") or {}).get("function") or "").lower())
-                    for e in (result.get("evidence_cards") or []) if isinstance(e, dict)]
-        for entry, selector in entries:
+        # Observed identity comes from the canonical trace, never from a
+        # model-generated field: address -> set of selectors actually observed
+        # in calldata at that address during this transaction.
+        observed_by_addr = {}
+        for addr, fn in allowed:
+            observed_by_addr.setdefault(addr, set()).add(fn)
+        entries = []
+        for e in (result.get("scored_functions") or []) + (result.get("evidence_cards") or []):
+            if not isinstance(e, dict):
+                continue
+            sig = e.get("function_signature") if isinstance(e.get("function_signature"), dict) else e
+            entries.append((e, str(sig.get("address") or "").lower(),
+                            str(sig.get("function") or "").lower()))
+        for entry, address, selector in entries:
             texts = [str(t) for t in (entry.get("evidence") or [])]
             claimed = {m.group(1).lower() for t in texts for m in name_claim.finditer(t)}
-            # Contradiction requires an OBSERVED selector identity: if the field
-            # holds a bare model-prose name instead of a 0x selector, comparing it
-            # against canonical selectors would flag every honest claim. No
-            # selector, no contradiction - the entry stays an unverified label.
-            observed = selector if selector_shape.match(selector or "") else None
+            # Contradiction requires an OBSERVED selector identity, resolved
+            # trace-first: the entry's selector counts only if that exact
+            # (address, selector) pair was observed; a bare prose name binds to
+            # the trace only when the address has exactly one observed selector.
+            # Otherwise there is no observed identity - no contradiction, the
+            # entry stays an unverified label.
+            at_address = observed_by_addr.get(address) or set()
+            if selector_shape.match(selector or "") and (address, selector) in allowed:
+                observed = selector
+            elif len(at_address) == 1:
+                observed = next(iter(at_address))
+            else:
+                observed = None
             bad = (sorted(n for n in claimed if n in CANONICAL and CANONICAL[n] != observed)
                    if observed else [])
             entry["name_verification"] = ("contradiction: prose claims " + ", ".join(bad)

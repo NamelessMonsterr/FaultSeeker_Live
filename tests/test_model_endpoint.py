@@ -459,3 +459,49 @@ def test_blank_grant_that_never_dispatches_is_not_ledgered():
         session.call(factory, {"model": MERCURY, "messages": []}, MERCURY)
     assert len(calls) == 1
     assert session.blank_answer_retries == 0
+
+
+REFUSAL = {"id": "mock", "object": "chat.completion", "created": 0, "model": MERCURY,
+           "choices": [{"index": 0, "message": {"role": "assistant", "content": None,
+                                                 "refusal": "I cannot help with that request."},
+                         "finish_reason": "stop"}],
+           "usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18}}
+BLANK_U = {**BLANK, "usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18}}
+OK_U = {**OK_MERCURY, "usage": {"prompt_tokens": 11, "completion_tokens": 5, "total_tokens": 16}}
+
+
+def test_mercury_refusal_is_terminal_and_never_granted():
+    # A refusal carries a meaningful answer payload; it is not a blank
+    # completion and must never receive the granted re-ask.
+    m, session, factory, calls, _, _ = setup([httpx.Response(200, json=REFUSAL)] * 2, retry_limit=0)
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.call(factory, {"model": MERCURY, "messages": []}, MERCURY)
+    assert failure.value.kind == "refusal"
+    assert len(calls) == 1
+    assert session.blank_answer_retries == 0
+    # the refusal still consumed tokens, and they are ledgered
+    assert session.tokens["prompt"] == 11
+    assert session.tokens["completion"] == 7
+
+
+def test_blank_completion_and_reask_usage_are_both_ledgered():
+    m, session, factory, calls, _, _ = setup([httpx.Response(200, json=BLANK_U),
+                                              httpx.Response(200, json=OK_U)], retry_limit=0)
+    out = session.call(factory, {"model": MERCURY, "messages": []}, MERCURY)
+    assert out.choices[0].message.content == "analysis"
+    assert session.blank_answer_retries == 1
+    # blank answer + re-ask each contribute their real usage
+    assert session.tokens["prompt"] == 22
+    assert session.tokens["completion"] == 12
+    assert [tokens for _, tokens in session.output_window] == [7, 5]
+
+
+def test_second_blank_completion_usage_is_ledgered_too():
+    m, session, factory, calls, _, _ = setup([httpx.Response(200, json=BLANK_U)] * 2, retry_limit=0)
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.call(factory, {"model": MERCURY, "messages": []}, MERCURY)
+    assert failure.value.kind == "blank_completion"
+    assert len(calls) == 2
+    assert session.blank_answer_retries == 1
+    assert session.tokens["prompt"] == 22
+    assert session.tokens["completion"] == 14
