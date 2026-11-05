@@ -85,7 +85,8 @@ def test_canonical_signature_vectors_from_verified_hedgey_abi():
         "createLockedCampaign(bytes16,(address,address,uint256,uint256,uint8,bytes32),"
         "(address,uint256,uint256,uint256,uint256),(address,uint256,uint256,uint256,uint256,uint256))")
     assert mapping["0xf412e4c7"] == {"name": "cancelCampaign", "signature": "cancelCampaign(bytes16)",
-                                     "input_count": 1, "input_types": ["bytes16"]}
+                                     "input_count": 1, "input_types": ["bytes16"],
+                                     "input_internal_types": ["bytes16"]}
     assert mapping["0xefd86b62"]["input_types"][0] == "bytes16"
     assert mapping["0xefd86b62"]["input_types"][1].startswith("(address,address,uint256,uint256,uint8,bytes32)")
     assert mapping["0x47d1e2c1"]["name"] == "claimTokens"
@@ -101,9 +102,10 @@ def test_overloads_resolve_by_selector_not_name():
     ]
     mapping = m.PipelineRuntime._build_selector_map(abi)
     assert mapping["0x1a695230"] == {"name": "transfer", "signature": "transfer(address)", "input_count": 1,
-                                     "input_types": ["address"]}
+                                     "input_types": ["address"], "input_internal_types": [""]}
     assert mapping["0xa9059cbb"] == {"name": "transfer", "signature": "transfer(address,uint256)",
-                                     "input_count": 2, "input_types": ["address", "uint256"]}
+                                     "input_count": 2, "input_types": ["address", "uint256"],
+                                     "input_internal_types": ["", ""]}
     assert "ambiguous" not in mapping.values()
 
 
@@ -411,14 +413,27 @@ def test_overloaded_source_units_disambiguated_or_fail(pinned_fork):
         # be distinguished -> fail unresolved, never guess.
         rt.selector_bindings[addr] = {"selectors": {
             "0xefd86b62": {"name": "foo", "signature": "foo((address,uint256))",
-                           "input_count": 1, "input_types": ["(address,uint256)"]}}}
+                           "input_count": 1, "input_types": ["(address,uint256)"],
+                           "input_internal_types": ["struct X.B"]}}}
         stub2, FA2 = _analyzer_stub({addr: {"foo": [
             {"path": "./S1.sol", "start_line": 1, "end_line": 1, "content": "function foo(A memory a) external { _use(a); }"},
             {"path": "./S2.sol", "start_line": 1, "end_line": 1, "content": "function foo(B memory b) external { _use(b); }"}]}})
         out2 = FA2._retrieve_source_code(stub2, addr, "0xefd86b62")
-        assert out2 == []
+        # structA vs structB: internalType identity selects B, arity cannot
+        assert len(out2) == 1 and "B memory b" in out2[0]["source_code"]
         rec2 = rt.selector_resolution_log[-1]
-        assert rec2["status"] == "ambiguous_overload" and rec2["matching_signature"] == 0
+        assert rec2["status"] == "resolved"
+        # Without internalType the same pair is indistinguishable -> ambiguous
+        rt.selector_bindings[addr] = {"selectors": {
+            "0xefd86b62": {"name": "foo", "signature": "foo((address,uint256))",
+                           "input_count": 1, "input_types": ["(address,uint256)"]}}}
+        stub2b, FA2b = _analyzer_stub({addr: {"foo": [
+            {"path": "./S1.sol", "start_line": 1, "end_line": 1, "content": "function foo(A memory a) external { _use(a); }"},
+            {"path": "./S2.sol", "start_line": 1, "end_line": 1, "content": "function foo(B memory b) external { _use(b); }"}]}})
+        out2b = FA2b._retrieve_source_code(stub2b, addr, "0xefd86b62")
+        assert out2b == []
+        rec2b = rt.selector_resolution_log[-1]
+        assert rec2b["status"] == "ambiguous_overload" and rec2b["matching_signature"] == 0
         # Single candidate whose header disagrees with the ABI signature: the
         # source does not describe the ABI's function -> unresolved, not bound.
         rt.selector_bindings[addr] = {"selectors": {
@@ -440,14 +455,17 @@ def test_overloaded_source_units_disambiguated_or_fail(pinned_fork):
                            "input_count": 4,
                            "input_types": ["bytes16", "(address,address,uint256,uint256,uint8,bytes32)",
                                            "(address,uint256,uint256,uint256,uint256)",
-                                           "(address,uint256,uint256,uint256,uint256,uint256)"]}}}
+                                           "(address,uint256,uint256,uint256,uint256,uint256)"],
+                           "input_internal_types": ["bytes16", "struct ClaimCampaigns.Campaign",
+                                                    "struct ClaimCampaigns.ClaimLockup",
+                                                    "struct ClaimCampaigns.Donation"]}}}
         stub4, FA4 = _analyzer_stub({addr: {"createLockedCampaign": [
             {"path": "./ClaimCampaigns.sol", "start_line": 1, "end_line": 2, "content": hedgey_body}]}})
         out4 = FA4._retrieve_source_code(stub4, addr, "0xefd86b62")
         assert len(out4) == 1
-        assert rt.selector_resolution_log[-1]["unit_binding"]["disambiguated_by"] == "single_candidate"
+        assert rt.selector_resolution_log[-1]["unit_binding"]["disambiguated_by"] == "single_candidate_exact_types"
         assert (rt.selector_resolution_log[-1]["unit_binding"]["evidence_basis"]
-                == "parsed_header_non_elementary_types")
+                == "abi_internal_type_and_canonical_match")
         # Single candidate whose header CANNOT be parsed (not merely
         # non-elementary): uniqueness of a name-based lookup is not evidence
         # that this unit is the ABI-matched function -> unresolved, not bound.
@@ -460,7 +478,7 @@ def test_overloaded_source_units_disambiguated_or_fail(pinned_fork):
         out5 = FA5._retrieve_source_code(stub5, addr, "0xefd86b62")
         assert out5 == []
         assert rt.selector_resolution_log[-1]["status"] == "unresolved"
-        assert rt.selector_resolution_log[-1]["reason"] == "unparseable_header"
+        assert rt.selector_resolution_log[-1]["reason"] == "type_identity_unsupported"
         # Single candidate with a PARSED non-elementary header whose arity
         # disagrees with the ABI (1 source param vs 2 ABI inputs): a concrete
         # source/ABI disagreement, not an incomparable type -> unresolved.
@@ -473,7 +491,7 @@ def test_overloaded_source_units_disambiguated_or_fail(pinned_fork):
         out6 = FA6._retrieve_source_code(stub6, addr, "0xefd86b62")
         assert out6 == []
         assert rt.selector_resolution_log[-1]["status"] == "unresolved"
-        assert rt.selector_resolution_log[-1]["reason"] == "arity_mismatch"
+        assert rt.selector_resolution_log[-1]["reason"] == "signature_mismatch"
     finally:
         _restore(rt)
 
@@ -500,6 +518,28 @@ def test_source_header_params_vectors(pinned_fork):
     assert f("function u(uint257 x) {}") == ("unparseable", None)              # misspelled elementary
     assert f("function b(bytes33 x) {}") == ("unparseable", None)              # misspelled elementary
     assert f("function x(a b c) {}") == ("unparseable", None)                  # malformed parameter
+
+
+def test_header_matches_abi_exact_type_identity(pinned_fork):
+    m = importlib.import_module("app.pipeline_guards")
+    f = m.PipelineRuntime._header_matches_abi
+    # elementary exact
+    assert f("function f(address to, uint x) {}", ["address", "uint256"], ["address", "uint256"]) is True
+    # enum vs uint: ABI enum (canonical uint8) must NOT match a plain uint8 source token
+    assert f("function f(uint8 x) {}", ["uint8"], ["enum X.Status"]) is False
+    # enum source token matches ABI enum internalType
+    assert f("function f(Status s) {}", ["uint8"], ["enum X.Status"]) is True
+    # wrong enum name
+    assert f("function f(Other s) {}", ["uint8"], ["enum X.Status"]) is False
+    # struct array shape must match canonical ABI array shape
+    assert f("function f(Campaign[] memory c) {}", ["(address)[]"], ["struct X.Campaign[]"]) is True
+    assert f("function f(Campaign[] memory c) {}", ["(address)"], ["struct X.Campaign"]) is False
+    # user-defined source token with no ABI internalType: cannot prove -> None
+    assert f("function f(Campaign memory c) {}", ["(address)"], [""]) is None
+    # unparseable -> None
+    assert f("garbage", ["uint256"], ["uint256"]) is None
+    # arity mismatch -> False
+    assert f("function f(uint a) {}", ["uint256", "uint256"], ["uint256", "uint256"]) is False
 
 
 @pytest.mark.skipif(os.getenv("FAULTSEEKER_LIVE_NETWORK") != "1",

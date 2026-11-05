@@ -442,7 +442,9 @@ class PipelineRuntime:
                 out[selector] = {"name": name, "signature": sig,
                                  "input_count": len(entry.get("inputs", []) or []),
                                  "input_types": [PipelineRuntime._canonical_abi_type(i)
-                                                 for i in entry.get("inputs", []) or []]}
+                                                 for i in entry.get("inputs", []) or []],
+                                 "input_internal_types": [(i.get("internalType") or "")
+                                                          for i in entry.get("inputs", []) or []]}
             elif prior == "ambiguous" or prior.get("signature") != sig:
                 out[selector] = "ambiguous"
         return out
@@ -621,6 +623,85 @@ class PipelineRuntime:
             return "non_elementary", len(params)
         return "ok", out
 
+    @staticmethod
+    def _source_header_type_tokens(source_code):
+        """Raw per-parameter type tokens of a parsed header, or None when the
+        header is unparseable (same isolation rules as _source_header_params)."""
+        status, _ = PipelineRuntime._source_header_params(source_code)
+        if status == "unparseable":
+            return None
+        m = re.search(r"function\s+\w+\s*\(", source_code or "")
+        depth, params, buf = 0, [], []
+        for ch in source_code[m.end() - 1:]:
+            if ch == "(":
+                depth += 1
+                if depth > 1:
+                    buf.append(ch)
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    if buf and "".join(buf).strip():
+                        params.append("".join(buf))
+                    break
+                buf.append(ch)
+            elif ch == "," and depth == 1:
+                params.append("".join(buf))
+                buf = []
+            else:
+                buf.append(ch)
+        tokens = []
+        for raw in params:
+            parts = [t for t in raw.strip().split() if t not in ("memory", "calldata", "storage", "payable")]
+            tokens.append(parts[0])
+        return tokens
+
+    @staticmethod
+    def _header_matches_abi(source_code, input_types, internal_types):
+        """Exact type-identity check: every header parameter must match the ABI
+        input at its position. Elementary source tokens canonicalize and must
+        equal the canonical ABI type; user-defined tokens (struct/enum/
+        contract) must match the ABI internalType's declared type NAME and the
+        ABI canonical array shape. A user-defined ABI input vs an elementary
+        source token (enum vs uint) or vice versa is a mismatch. Same-arity
+        alone never satisfies this. Returns True/False, or None when the
+        header is unparseable or the ABI lacks the internalType needed to
+        identify a user-defined parameter (unsupported -> cannot prove)."""
+        tokens = PipelineRuntime._source_header_type_tokens(source_code)
+        if tokens is None or len(tokens) != len(input_types):
+            return None if tokens is None else False
+        internal_types = internal_types or [""] * len(input_types)
+        for tok, canon_abi, internal in zip(tokens, input_types, internal_types):
+            canon_src = PipelineRuntime._normalize_source_type(tok)
+            kind, _, it_name = (internal or "").partition(" ")
+            while it_name.endswith("]"):
+                it_name = it_name[:it_name.rindex("[")]
+            it_short = it_name.rsplit(".", 1)[-1] if it_name else ""
+            if canon_src is not None:
+                if kind in ("struct", "enum", "contract"):
+                    return False  # ABI user-defined, source elementary
+                if canon_src != canon_abi:
+                    return False
+                continue
+            # user-defined source token: needs ABI internalType to identify it
+            if kind not in ("struct", "enum", "contract") or not it_short:
+                return None
+            base = tok
+            suffix = ""
+            while base.endswith("]"):
+                i = base.rindex("[")
+                suffix = base[i:] + suffix
+                base = base[:i]
+            if base.rsplit(".", 1)[-1] != it_short:
+                return False
+            abi_suffix = canon_abi
+            while abi_suffix.endswith("]"):
+                i = abi_suffix.rindex("[")
+                abi_suffix = abi_suffix[:i]
+            abi_arr = canon_abi[len(abi_suffix):]
+            if suffix != abi_arr:
+                return False
+        return True
+
     def _install_selector_source_binding(self):
         # Analysis-input root cause #2 (2026-11-05, verified): canonical traces
         # carry calldata-selector function identity, but parse_contract keys
@@ -745,7 +826,9 @@ class PipelineRuntime:
                     # parameter is not parser-comparable, so such candidates
                     # cannot be distinguished and must fail unresolved.
                     matched = [c for c in candidates
-                               if runtime._source_header_params(c.get("source_code")) == ("ok", entry.get("input_types"))]
+                               if runtime._header_matches_abi(c.get("source_code"),
+                                                              entry.get("input_types"),
+                                                              entry.get("input_internal_types")) is True]
                     if len(matched) == 1:
                         out = matched
                         unit = {"candidates": len(candidates), "selected_path": matched[0].get("path"),
@@ -758,40 +841,27 @@ class PipelineRuntime:
                              "matching_signature": len(matched), "source_entries": 0})
                         return []
                 elif candidates:
-                    header_status, parsed_types = runtime._source_header_params(
-                        candidates[0].get("source_code"))
-                    if header_status == "ok" and parsed_types != entry.get("input_types"):
-                        # Source header disagrees with the ABI signature: the
-                        # source and ABI do not describe the same function.
+                    verdict = runtime._header_matches_abi(
+                        candidates[0].get("source_code"), entry.get("input_types"),
+                        entry.get("input_internal_types"))
+                    if verdict is not True:
+                        # False: a parameter's type identity provably disagrees
+                        #   (wrong canonical type, wrong user-defined name, wrong
+                        #   array shape, or arity) - source and ABI do not
+                        #   describe the same function.
+                        # None: cannot prove identity (unparseable header, or a
+                        #   user-defined parameter without ABI internalType) -
+                        #   unsupported, conservative unresolved.
                         runtime.selector_resolution_log.append(
                             {**base, **context, "status": "unresolved",
-                             "reason": "signature_mismatch", "resolved_name": entry["name"],
-                             "signature": entry["signature"], "source_entries": 0})
-                        return []
-                    if header_status == "unparseable":
-                        # Header could not be isolated or parsed: no evidence
-                        # this source unit is the ABI-matched function.
-                        runtime.selector_resolution_log.append(
-                            {**base, **context, "status": "unresolved",
-                             "reason": "unparseable_header", "resolved_name": entry["name"],
-                             "signature": entry["signature"], "source_entries": 0})
-                        return []
-                    if header_status == "non_elementary" and parsed_types != len(entry.get("input_types") or []):
-                        # Parsed header arity disagrees with the ABI signature:
-                        # a struct-typed header with the wrong parameter count
-                        # is a concrete source/ABI disagreement, not merely an
-                        # incomparable type.
-                        runtime.selector_resolution_log.append(
-                            {**base, **context, "status": "unresolved",
-                             "reason": "arity_mismatch", "resolved_name": entry["name"],
+                             "reason": ("signature_mismatch" if verdict is False
+                                        else "type_identity_unsupported"),
+                             "resolved_name": entry["name"],
                              "signature": entry["signature"], "source_entries": 0})
                         return []
                     unit = {"candidates": 1, "selected_path": candidates[0].get("path"),
-                            "disambiguated_by": ("single_candidate" if header_status == "non_elementary"
-                                                 else "single_candidate_signature_match"),
-                            "evidence_basis": ("parsed_header_non_elementary_types"
-                                               if header_status == "non_elementary"
-                                               else "canonical_input_types_vs_source_header")}
+                            "disambiguated_by": "single_candidate_exact_types",
+                            "evidence_basis": "abi_internal_type_and_canonical_match"}
                 runtime.selector_resolution_log.append(
                     {**base, **context, "status": "resolved", "resolved_name": entry["name"],
                      "signature": entry["signature"], "source_entries": len(out),
