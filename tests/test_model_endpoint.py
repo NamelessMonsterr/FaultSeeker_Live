@@ -61,6 +61,46 @@ def test_classifies_errors_without_leaking_bodies(status, body, kind):
     assert "SECRET" not in json.dumps(events)
 
 
+def test_preflight_rate_limited_fails_fast_with_retry_after():
+    # A 429 is the provider saying stop, not a cold start: preflight must fail
+    # on the FIRST 429 (observed harm: 30 preflight attempts against a 429ing
+    # Codex proxy route, run e5845d595bc9, 2026-11-05) and surface the
+    # provider's Retry-After hint instead of hammering until the deadline.
+    rl = [httpx.Response(429, json={"error": {"message": "slow down"}},
+                         headers={"retry-after": "17"})] * 8
+    m, session, factory, calls, events, clock = setup(rl)
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.preflight(factory, MODEL, timeout=20)
+    assert failure.value.kind == "rate_limited"
+    assert len(calls) == 1
+    assert clock.now < 1  # no backoff sleeps: immediate stop
+    assert any(e.get("retry_after_header") == "17" for e in events
+               if e.get("state") == "model_endpoint_failed")
+
+
+def test_preflight_cold_start_transients_still_retry_to_deadline():
+    # The fix above must not remove cold-start tolerance: connection errors and
+    # 5xx still retry within the preflight window (existing behavior).
+    m, session, factory, calls, _, clock = setup([httpx.Response(502, text="bad")] * 8)
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.preflight(factory, MODEL, timeout=20)
+    assert failure.value.kind == "upstream_http"
+    assert len(calls) > 1  # deadline-bounded retries preserved
+
+
+def test_analysis_rate_limited_respects_zero_retry_limit():
+    # With the operator retry limit at zero, an analysis-phase 429 fails
+    # immediately - no retry barrage mid-run.
+    rl = [httpx.Response(200, json=OK),
+          httpx.Response(429, json={"error": {"message": "slow down"}})]
+    m, session, factory, calls, _, _ = setup(rl, retry_limit=0)
+    session.preflight(factory, MODEL, timeout=20)
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.call(factory, {"model": MODEL, "messages": []}, MODEL)
+    assert failure.value.kind == "rate_limited"
+    assert len(calls) == 2  # preflight + exactly one analysis attempt
+
+
 def test_timeout_is_bounded_and_classified():
     m, session, factory, calls, _, clock = setup([httpx.ReadTimeout("SECRET")] * 8)
     with pytest.raises(m.ModelEndpointFailure) as failure:

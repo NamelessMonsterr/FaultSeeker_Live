@@ -572,12 +572,28 @@ class ModelEndpointSession:
                     if next_key is None:
                         self._fail(error)  # All configured credentials rejected.
                     retryable = True
+                if (phase == "preflight" and error.kind == "rate_limited"
+                        and next_key is None):
+                    # A 429 is the provider/account saying stop - not a cold
+                    # start, so the cold-start rationale for deadline-bounded
+                    # preflight retries does not apply. Hammering a 429ing
+                    # credential for the whole preflight window is never right
+                    # (observed: 30 preflight attempts against a 429ing Codex
+                    # proxy route, run e5845d595bc9, 2026-11-05). A pool with
+                    # an untried key still rotates once above (independent
+                    # limits); with no rotation left, fail on the first 429
+                    # and keep the provider's Retry-After hint.
+                    if retry_hint:
+                        error.detail = {**(error.detail or {}),
+                                        "retry_after_header": retry_hint}
+                    self._fail(error)
                 if not retryable:
                     self._fail(error)
                 if phase != "preflight" and not blank_retry:
                     # Only analysis retries consume the shared allowance. Preflight
                     # retries are bounded by the preflight deadline instead, so a
-                    # cold-starting endpoint gets the whole window to wake up.
+                    # cold-starting endpoint gets the whole window to wake up -
+                    # except rate limiting, which fails fast above.
                     # The granted blank-answer re-ask has its own per-call budget
                     # and never touches the shared allowance.
                     if self.retries_left <= 0:
