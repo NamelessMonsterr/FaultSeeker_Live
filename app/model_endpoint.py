@@ -26,6 +26,7 @@ class ModelEndpointFailure(RuntimeError):
             "rate_limited": "Model endpoint rate limit was reached.",
             "invalid_request": "Model endpoint rejected the request.",
             "invalid_response": "Model endpoint returned an invalid completion response.",
+            "blank_completion": "Model endpoint returned an empty completion.",
             "truncated_output": "Model endpoint returned a truncated completion (output cap reached).",
             "budget_exhausted": "The shared model-endpoint time budget was exhausted.",
             "endpoint_error": "Model endpoint request failed.",
@@ -203,6 +204,7 @@ class ModelEndpointSession:
             self.assert_healthy()
             retry_number = 0
             blank_retried = False  # one blank-answer re-ask per call, never per run
+            pending_blank_reask = False  # granted but not yet dispatched
             last_error = None
             while True:
                 remaining = self.time_budget - self.spent
@@ -242,28 +244,43 @@ class ModelEndpointSession:
                     self.emit({"state": "waiting_on_model_endpoint", "phase": phase,
                                "attempt": self.attempts, "model": model,
                                "retry_in_seconds": 0})
+                    if pending_blank_reask:
+                        # Ledger the re-ask only when it is actually dispatched;
+                        # a grant that never reaches the wire is not a spent retry.
+                        self.blank_answer_retries += 1
+                        pending_blank_reask = False
                     completion = bounded.chat.completions.create(**adapt_request(model, kwargs))
                     choices = getattr(completion, "choices", None)
-                    if not choices or not isinstance(getattr(choices[0].message, "content", None), str) or not choices[0].message.content.strip():
+                    content = getattr(choices[0].message, "content", None) if choices else None
+                    finish = getattr(choices[0], "finish_reason", None) if choices else None
+                    if (choices and finish == "stop"
+                            and (content is None or (isinstance(content, str) and not content.strip()))):
+                        # The exact granted case: a real response whose answer is empty.
+                        raise ModelEndpointFailure("blank_completion", phase=phase)
+                    if not choices or not isinstance(content, str) or not content.strip():
+                        # Malformed structure, non-string content, or an empty answer
+                        # on a non-stop finish (e.g. a reasoning blowout at the cap):
+                        # NOT the granted blank-answer case, no re-ask.
                         raise ModelEndpointFailure("invalid_response", phase=phase)
-                    if getattr(choices[0], "finish_reason", None) == "length":
+                    if finish == "length":
                         # Truncated output is never silently used as an answer.
                         raise ModelEndpointFailure("truncated_output", phase=phase)
                 except Exception as exc:
                     error, retryable = classify(exc, phase)
                     # User-granted narrow exception (2026-11-05, comparison task):
-                    # any Mercury blank completion (invalid_response) may be
-                    # re-asked exactly once per call, preflight included (bounded
-                    # by the existing preflight deadline). The blank answer still
-                    # consumed tokens and the re-ask is another real, ledgered
+                    # a verified blank Mercury completion (HTTP 200, choices present,
+                    # empty content, finish_reason "stop" - kind blank_completion)
+                    # may be re-asked exactly once per call, preflight included
+                    # (bounded by the existing preflight deadline). The blank answer
+                    # still consumed tokens and the re-ask is another real, ledgered
                     # call; every other failure kind and model keeps zero retries.
                     blank_retry = (not retryable and not blank_retried
                                    and str(model).startswith("mercury-")
-                                   and getattr(error, "kind", None) == "invalid_response")
+                                   and getattr(error, "kind", None) == "blank_completion")
                     if blank_retry:
                         retryable = True
                         blank_retried = True
-                        self.blank_answer_retries += 1
+                        pending_blank_reask = True
                     error.detail = _error_detail(exc)
                     response = getattr(exc, "response", None)
                     retry_hint = getattr(response, "headers", {}).get("retry-after", "")

@@ -41,7 +41,7 @@ def setup(responses, **options):
         return client
     session = module.ModelEndpointSession(emit=events.append, clock=clock.monotonic,
                                          sleep=clock.sleep, retry_limit=options.pop("retry_limit", 2),
-                                         time_budget=60, call_timeout=10, **options)
+                                         time_budget=options.pop("time_budget", 60), call_timeout=10, **options)
     return module, session, factory, calls, events, clock
 
 
@@ -375,7 +375,7 @@ def test_mercury_second_blank_answer_fails_without_another_retry():
     m, session, factory, calls, _, _ = setup([httpx.Response(200, json=BLANK)] * 3, retry_limit=0)
     with pytest.raises(m.ModelEndpointFailure) as failure:
         session.call(factory, {"model": MERCURY, "messages": []}, MERCURY)
-    assert failure.value.kind == "invalid_response"
+    assert failure.value.kind == "blank_completion"
     assert len(calls) == 2  # the granted re-ask, then stop
     assert session.blank_answer_retries == 1
 
@@ -393,7 +393,7 @@ def test_non_mercury_blank_answer_gets_no_retry():
     m, session, factory, calls, _, _ = setup([httpx.Response(200, json=BLANK)] * 3, retry_limit=0)
     with pytest.raises(m.ModelEndpointFailure) as failure:
         session.call(factory, {"model": "itera/qwen3.8-27b", "messages": []}, "itera/qwen3.8-27b")
-    assert failure.value.kind == "invalid_response"
+    assert failure.value.kind == "blank_completion"
     assert len(calls) == 1
     assert session.blank_answer_retries == 0
 
@@ -422,6 +422,40 @@ def test_mercury_blank_preflight_second_blank_fails():
     m, session, factory, calls, _, _ = setup([httpx.Response(200, json=BLANK)] * 3, retry_limit=0)
     with pytest.raises(m.ModelEndpointFailure) as failure:
         session.preflight(factory, MERCURY, timeout=20)
-    assert failure.value.kind == "invalid_response"
+    assert failure.value.kind == "blank_completion"
     assert len(calls) == 2
     assert session.blank_answer_retries == 1
+
+
+
+def test_mercury_malformed_response_gets_no_blank_retry():
+    # A 200 HTML page or a structureless completion is invalid_response, never
+    # the granted blank-completion case: no re-ask, immediate terminal failure.
+    m, session, factory, calls, _, _ = setup([httpx.Response(200, text="<html>oops</html>")] * 3, retry_limit=0)
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.call(factory, {"model": MERCURY, "messages": []}, MERCURY)
+    assert failure.value.kind == "invalid_response"
+    assert len(calls) == 1
+    assert session.blank_answer_retries == 0
+
+
+def test_mercury_truncated_empty_gets_no_blank_retry():
+    # Reasoning blowout at the cap: empty content but finish_reason "length" -
+    # re-asking would just blow out again. invalid_response, no grant.
+    blowout = {"id": "m", "object": "chat.completion", "created": 0, "model": MERCURY,
+               "choices": [{"index": 0, "message": {"role": "assistant", "content": ""}, "finish_reason": "length"}]}
+    m, session, factory, calls, _, _ = setup([httpx.Response(200, json=blowout)] * 3, retry_limit=0)
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.call(factory, {"model": MERCURY, "messages": []}, MERCURY)
+    assert failure.value.kind == "invalid_response"
+    assert len(calls) == 1
+    assert session.blank_answer_retries == 0
+
+
+def test_blank_grant_that_never_dispatches_is_not_ledgered():
+    # Budget dies between grant and dispatch: no re-ask happened, counter stays 0.
+    m, session, factory, calls, _, clock = setup([httpx.Response(200, json=BLANK)], retry_limit=0, time_budget=0.5)
+    with pytest.raises(m.ModelEndpointFailure):
+        session.call(factory, {"model": MERCURY, "messages": []}, MERCURY)
+    assert len(calls) == 1
+    assert session.blank_answer_retries == 0

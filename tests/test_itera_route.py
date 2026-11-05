@@ -95,11 +95,12 @@ def test_request_payload_credential_and_token_accounting():
 
 
 def test_empty_answer_is_a_failure_not_a_result():
+    # An empty answer on a stop finish is the distinct blank_completion kind.
     seen = []
     mod, s, factory = session([ok(""), ok("  ")], seen)
     with pytest.raises(mod.ModelEndpointFailure) as failure:
         s.call(factory, {"model": ITERA, "messages": [], "max_tokens": 50}, ITERA)
-    assert failure.value.kind == "invalid_response"
+    assert failure.value.kind == "blank_completion"
     assert "itera-key-1" not in str(failure.value)
 
 

@@ -289,6 +289,7 @@ class PipelineRuntime:
                      "allowance": "0xdd62ed3e"}
         import re as _re
         name_claim = _re.compile(r"\b(approve|transferFrom|transfer|balanceOf|allowance)\b", _re.I)
+        selector_shape = _re.compile(r"^0x[0-9a-f]{8}$")
         contradictions = []
         entries = [(e, (e.get("function") or "").lower())
                    for e in (result.get("scored_functions") or []) if isinstance(e, dict)]
@@ -297,7 +298,13 @@ class PipelineRuntime:
         for entry, selector in entries:
             texts = [str(t) for t in (entry.get("evidence") or [])]
             claimed = {m.group(1).lower() for t in texts for m in name_claim.finditer(t)}
-            bad = sorted(n for n in claimed if n in CANONICAL and CANONICAL[n] != selector)
+            # Contradiction requires an OBSERVED selector identity: if the field
+            # holds a bare model-prose name instead of a 0x selector, comparing it
+            # against canonical selectors would flag every honest claim. No
+            # selector, no contradiction - the entry stays an unverified label.
+            observed = selector if selector_shape.match(selector or "") else None
+            bad = (sorted(n for n in claimed if n in CANONICAL and CANONICAL[n] != observed)
+                   if observed else [])
             entry["name_verification"] = ("contradiction: prose claims " + ", ".join(bad)
                                           if bad else "unverified_model_label")
             if bad:
