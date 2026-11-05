@@ -125,3 +125,12 @@ def test_open_credential_value_with_key_outside_tail_window_is_redacted():
     assert "tail words" in ok["text"]
     big = ce.bounded_text("zz " * 400_000, 100, 100)
     assert "NOT_CHECKED" in big["text"]
+
+
+def test_open_credential_opposite_and_escaped_quotes_still_redacted():
+    for inner in ("alpha don't expose beta gamma ", 'alpha \\"escaped\\" beta gamma '):
+        secret = "x" * 2000 + ' token: "' + inner + "Q " * 150
+        b = ce.bounded_text(secret, 2000, 100)
+        assert "beta" not in b["text"] and "gamma" not in b["text"], inner
+    single = "x" * 2000 + " password: 'one \"two\" three four " + "Q " * 150
+    assert "three" not in ce.bounded_text(single, 2000, 100)["text"]

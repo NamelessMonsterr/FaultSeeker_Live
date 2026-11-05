@@ -41,14 +41,14 @@ _SOURCE_MARKERS = {
 }
 _UNTERM = re.compile(r"(?is)([\"']?(?:authorization|api[_-]?key|x-api-key|access[_-]?token|refresh[_-]?token|"
                      r"id[_-]?token|client[_-]?secret|password|passwd|secret|token)[\"']?\s*[:=]\s*)"
-                     r"([\"'][^\"']*)\Z")
+                     r"(([\"'])(?:\\.|(?!\3)[^\\])*)\Z")
 _TAIL_SCAN_LIMIT = 1_000_000
 _REDACTIONS = [
     # unterminated quoted credential (closing quote beyond the inspected edge):
     # redact everything to the end of the available text
     (re.compile(r"(?is)([\"']?(?:authorization|api[_-]?key|x-api-key|access[_-]?token|refresh[_-]?token|"
                 r"id[_-]?token|client[_-]?secret|password|passwd|secret|token)[\"']?\s*[:=]\s*)"
-                r"([\"'][^\"']*)\Z"), r"\1[REDACTED]"),
+                r"(([\"'])(?:\\.|(?!\3)[^\\])*)\Z"), r"\1[REDACTED]"),
     (re.compile(r"(?i)([\"']?(?:authorization|api[_-]?key|x-api-key|access[_-]?token|refresh[_-]?token|"
                 r"id[_-]?token|client[_-]?secret|password|passwd|secret|token)[\"']?\s*[:=]\s*)"
                 r"(\"[^\"]*\"|'[^']*')"), r"\1[REDACTED]"),
