@@ -293,3 +293,42 @@ def test_offline_narrowdown_payload_visibility(pinned, monkeypatch):
     assert "possible signature; implementation unverified" in payload
     # all candidates still present in the payload (nothing pre-excluded)
     assert len(summary) == len(ranked.functions_to_be_inspected)
+
+
+def test_selector_recall_repair_real_run3_input(pinned, monkeypatch):
+    """Replay of the ACTUAL ETH Mercury run-3 ranker input: forensics admitted
+    only 6 USDC-proxy/implementation selector entries via the name_in_hash
+    path; the vulnerable contract's functions never reached the ranker.
+    restore_custom_selector_recall must admit the custom-selector exploit path
+    from the canonical trace; ordering must then rank it first."""
+    m = importlib.import_module("app.pipeline_guards")
+    run3 = json.loads(Path("/home/sandbox/faultseeker/runs/eth_mercury3_68c8cda4dc47.json").read_text())
+    fti = run3["function_analysis"]["functions_to_inspect"]
+    assert set(fti) == {"function_name_with_hash"} and len(fti["function_name_with_hash"]) == 6
+    for c in fti["function_name_with_hash"]:
+        c.setdefault("params", "0x"); c.setdefault("gas", "0x1")
+    fix = json.loads((ROOT / "tests/fixtures/hedgey_tx1_parity_trace.json").read_text())
+    identity = sequence_from_parity(fix["responses"]["trace_transaction"], fix["provenance"]["transaction_hash"], "eth")
+    from types import SimpleNamespace
+    forensics = SimpleNamespace(address_calls_with_created_contract=[], functions_to_be_inspected=fti)
+    added = m.restore_custom_selector_recall(forensics, identity["trace"])
+    assert added > 0
+    ranker = importlib.import_module("faultseeker.function_analysis.function_ranker").FunctionRanker()
+    ranked = ranker.rank(forensics, {"repeated_patterns": {}, "function_call_loc_memo": {}})
+    ranked = m.prune_static_readonly_selectors(ranked)
+    observed_by_addr = {}
+    for n in m.walk(identity["trace"]):
+        fn, addr = n.get("function"), (n.get("address") or "").lower()
+        if fn and addr:
+            observed_by_addr.setdefault(addr, set()).add(fn)
+    ranked = m.order_ranked_targets(ranked, observed_by_addr, set())
+    ranked = m.annotate_standard_selector_names(ranked)
+    keys = [k.lower() for k in ranked.functions_to_be_inspected]
+    vuln = "0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511"
+    assert f"0xf412e4c7_{vuln}" in keys   # cancelCampaign now rankable
+    assert f"0xefd86b62_{vuln}" in keys   # createLockedCampaign now rankable
+    assert keys[0].rsplit("_", 1)[1] in (vuln, "0xc793113f1548b97e37c409f39244ee44241bf2b3")
+    usdc_pos = [i for i, k in enumerate(keys) if k.rsplit("_", 1)[1] in
+                ("0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "0x43506849d7c04f9138d1a2050bbf3a0c054402dd")]
+    vuln_pos = [i for i, k in enumerate(keys) if k.rsplit("_", 1)[1] == vuln]
+    assert min(vuln_pos) < max(usdc_pos)

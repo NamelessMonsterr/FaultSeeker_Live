@@ -208,6 +208,54 @@ def order_ranked_targets(result, observed_functions_by_address, created_addresse
     return result
 
 
+def restore_custom_selector_recall(forensics_result, trace_root):
+    """Selector-era recall repair. The upstream forensics expansion
+    (name_in_hash one-level child admission + token filter) was designed for
+    cast-text traces where only UNRESOLVED names appear as hashes; on selector
+    traces every call is a hash, and the admission rule can fill
+    functions_to_be_inspected with token-surface children while the actual
+    exploit path deeper in a callback subtree never reaches the ranker
+    (observed live: ETH run 3 ranked 6 USDC-only entries; createLockedCampaign
+    and cancelCampaign were absent from the ranker input entirely).
+    Repair: admit every state-capable (call/delegatecall, non-staticcall) call
+    whose selector is OUTSIDE the standard token surface and that is not
+    already present, so custom functions are always rankable. Token-surface
+    calls follow the normal path (ordering handles their priority); nothing
+    here changes mechanism classification."""
+    existing = set()
+    for calls in (forensics_result.functions_to_be_inspected or {}).values():
+        for c in calls or []:
+            if isinstance(c, dict) and c.get("function") and c.get("address"):
+                existing.add(f"{c['function']}_{c['address']}".lower())
+    added = []
+    def _visit(node, depth):
+        fn = node.get("function")
+        addr = node.get("address")
+        ct = str(node.get("call_type") or "").lower()
+        if (fn and addr and ct != "staticcall"
+                and fn.lower() not in SEL_TOKEN_SURFACE):
+            key = f"{fn}_{addr}".lower()
+            if key not in existing:
+                existing.add(key)
+                added.append({
+                    "function": fn, "address": addr,
+                    "gas": node.get("gas"),
+                    "params": node.get("input") or node.get("params") or "0x",
+                    "depth": str(node.get("depth") or depth),
+                    "call_type": ct or "call",
+                })
+        for child in node.get("children") or []:
+            _visit(child, depth + 1)
+    _visit(trace_root, 0)
+    if added:
+        bucket = forensics_result.functions_to_be_inspected
+        if not isinstance(bucket, dict):
+            bucket = {}
+            forensics_result.functions_to_be_inspected = bucket
+        bucket.setdefault("selector_recall", []).extend(added)
+    return len(added)
+
+
 def walk(node):
     pending = [node]
     while pending:
@@ -386,6 +434,8 @@ class PipelineRuntime:
         def checked_rank(ranker, *args, **kwargs):
             if not self.sequence:
                 raise TraceIdentityError("Cannot rank targets without a checked canonical trace.")
+            if args and hasattr(args[0], "functions_to_be_inspected"):
+                restore_custom_selector_recall(args[0], self.sequence["trace"])
             result = original_rank(ranker, *args, **kwargs)
             result = prune_static_readonly_selectors(result)
             observed_by_addr = {}
