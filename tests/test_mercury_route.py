@@ -1,0 +1,147 @@
+"""Mercury 3 (Inception) route isolation, request adaptation and credential ownership. No network."""
+import importlib
+import json
+
+import httpx
+from openai import OpenAI
+
+MERCURY = "mercury-3"
+
+
+def routes():
+    return importlib.import_module("app.model_routes")
+
+
+def test_mercury_route_is_isolated_from_groq_itera_sol_and_direct(monkeypatch):
+    m = routes()
+    for var in ("INCEPTION_BASE_URL", "ITERA_BASE_URL", "GROQ_BASE_URL",
+                "CODEX_PROXY_BASE_URL", "OPENAI_DIRECT_BASE_URL"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
+    monkeypatch.setenv("CODEX_PROXY_BASE_URL", "https://codex.example/v1")
+    # Even a detected Groq/OpenAI provider URL cannot redirect the Mercury model.
+    endpoint, key_env = m.resolve_route(MERCURY, "https://api.groq.com/openai/v1", "GROQ_API_KEY")
+    assert endpoint == "https://api.inceptionlabs.ai/v1" and key_env == "INCEPTION_API_KEY"
+    endpoint, key_env = m.resolve_route(MERCURY, "https://evil.example/v1", "OPENAI_API_KEY")
+    assert endpoint == "https://api.inceptionlabs.ai/v1" and key_env == "INCEPTION_API_KEY"
+    # Other routes keep their own endpoint and credential.
+    assert m.resolve_route("itera/qwen3.8-27b", None, "ITERA_API_KEY") == \
+        ("https://api.iteracompute.com/v1", "ITERA_API_KEY")
+    assert m.resolve_route("gpt-6.1-sol-low", "https://api.openai.com/v1", "OPENAI_API_KEY") == \
+        ("https://codex.example/v1", "OPENAI_API_KEY")
+
+
+def test_mercury_endpoint_override_is_operator_env_only_and_validated(monkeypatch):
+    m = routes()
+    monkeypatch.setenv("INCEPTION_BASE_URL", "https://api.example.test/v1")
+    assert m.resolve_route(MERCURY)[0] == "https://api.example.test/v1"
+    monkeypatch.setenv("INCEPTION_BASE_URL", "https://user:pw@api.example.test/v1")
+    import pytest
+    with pytest.raises(ValueError):
+        m.resolve_route(MERCURY)
+
+
+def test_adapt_request_adds_reasoning_effort_only_for_mercury(monkeypatch):
+    m = routes()
+    monkeypatch.delenv("FAULTSEEKER_MERCURY_REASONING_EFFORT", raising=False)
+    base = {"model": MERCURY, "messages": [{"role": "user", "content": "x"}], "max_tokens": 500}
+    out = m.adapt_request(MERCURY, base)
+    assert out["model"] == MERCURY  # exact model id is preserved
+    assert out["extra_body"] == {"reasoning_effort": "medium"}
+    assert "extra_body" not in base  # input is not mutated
+    monkeypatch.setenv("FAULTSEEKER_MERCURY_REASONING_EFFORT", "low")
+    out = m.adapt_request(MERCURY, base)
+    assert out["extra_body"] == {"reasoning_effort": "low"}
+    keep = m.adapt_request(MERCURY, {**base, "extra_body": {"x": 1}})
+    assert keep["extra_body"] == {"x": 1, "reasoning_effort": "low"}
+    # Tiny probes (the transport's preflight cap) skip reasoning and get a floor:
+    # reasoning would spend the whole cap before any visible answer.
+    tiny = m.adapt_request(MERCURY, {**base, "max_tokens": 8})
+    assert tiny["max_tokens"] == 64
+    assert tiny["extra_body"] == {"reasoning_effort": "instant"}
+    # Mercury accepts temperature only in [0.5, 1.0]. Out-of-range or missing
+    # values pin explicitly to 1.0 (clamping 0 to 0.5 triggers runaway reasoning
+    # and empty completions at medium effort); valid in-range values pass.
+    assert m.adapt_request(MERCURY, {**base, "temperature": 0})["temperature"] == 1.0
+    assert m.adapt_request(MERCURY, {**base, "temperature": 0.7})["temperature"] == 0.7
+    assert m.adapt_request(MERCURY, {**base, "temperature": 2})["temperature"] == 1.0
+    assert m.adapt_request(MERCURY, base)["temperature"] == 1.0
+    # Non-tiny completions are capped so one runaway call cannot eat the
+    # per-minute output budget; smaller explicit caps are respected.
+    assert m.adapt_request(MERCURY, base)["max_tokens"] == 500
+    uncapped = dict(base); del uncapped["max_tokens"]
+    assert m.adapt_request(MERCURY, uncapped)["max_tokens"] == 16384
+    assert m.adapt_request(MERCURY, {**base, "max_tokens": 100000})["max_tokens"] == 16384
+    other = {"model": "qwen/qwen3.8-27b", "messages": []}
+    assert m.adapt_request("qwen/qwen3.8-27b", other) is other
+
+
+def session(responses, seen):
+    mod = importlib.import_module("app.model_endpoint")
+    queue = iter(responses)
+
+    def handle(request):
+        seen.append({"host": request.url.host, "auth": request.headers.get("authorization"),
+                     "body": json.loads(request.content)})
+        return next(queue)
+
+    def factory():
+        return OpenAI(api_key="client-default", base_url="https://api.inceptionlabs.ai/v1",
+                      http_client=httpx.Client(transport=httpx.MockTransport(handle)))
+    s = mod.ModelEndpointSession(retry_limit=1, time_budget=30, call_timeout=5,
+                                 sleep=lambda _x: None)
+    s.model_routes[MERCURY] = "https://api.inceptionlabs.ai/v1"
+    s.register_keys("https://api.inceptionlabs.ai/v1", ["inception-key-1"], model=MERCURY)
+    return mod, s, factory
+
+
+def ok(content):
+    return httpx.Response(200, json={"id": "m", "object": "chat.completion", "created": 0, "model": "mercury-3",
+        "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": content}}],
+        "usage": {"prompt_tokens": 12, "completion_tokens": 9, "total_tokens": 21,
+                  "completion_tokens_details": {"reasoning_tokens": 4}}})
+
+
+def test_request_payload_credential_and_token_accounting(monkeypatch):
+    monkeypatch.delenv("FAULTSEEKER_MERCURY_REASONING_EFFORT", raising=False)
+    seen = []
+    _m, s, factory = session([ok('["token"]')], seen)
+    s.call(factory, {"model": MERCURY, "messages": [{"role": "user", "content": "x"}], "max_tokens": 500}, MERCURY)
+    assert len(seen) == 1
+    assert seen[0]["host"] == "api.inceptionlabs.ai"
+    assert seen[0]["auth"] == "Bearer inception-key-1"  # only the Inception key, never the SDK default
+    assert seen[0]["body"]["model"] == "mercury-3"
+    assert seen[0]["body"]["reasoning_effort"] == "medium"
+    assert s.summary()["tokens"] == {"prompt": 12, "completion": 9, "reasoning": 4}
+    assert "inception-key-1" not in json.dumps(s.summary())
+
+
+def test_mercury_model_is_listed_with_its_own_credential_env():
+    server_src = open("app/server.py", encoding="utf-8").read()
+    assert '"id": "mercury-3"' in server_src and '"keyEnv": "INCEPTION_API_KEY"' in server_src
+
+
+def test_dispatched_config_recorded_at_send_boundary(monkeypatch):
+    """R13: the recorder sits at the actual provider send boundary, so the
+    artifact carries the EFFECTIVE adapted request (post temperature clamp,
+    reasoning-effort resolution, max_tokens cap), not environment guesses."""
+    monkeypatch.delenv("FAULTSEEKER_MERCURY_REASONING_EFFORT", raising=False)
+    seen = []
+    _m, s, factory = session([ok('["token"]')], seen)
+    s.call(factory, {"model": MERCURY, "messages": [{"role": "user", "content": "x"}],
+                     "max_tokens": 500, "temperature": 0}, MERCURY)
+    assert s.dispatched_configs == [
+        {"model": "mercury-3", "temperature": 1.0, "reasoning_effort": "medium",
+         "max_tokens": 500, "phase": "analysis"}]
+    # The recorded config matches what actually hit the wire.
+    assert seen[0]["body"]["temperature"] == 1.0
+    assert seen[0]["body"]["reasoning_effort"] == "medium"
+
+    monkeypatch.setenv("FAULTSEEKER_MERCURY_REASONING_EFFORT", "low")
+    seen2 = []
+    _m2, s2, factory2 = session([ok('["token"]')], seen2)
+    s2.call(factory2, {"model": MERCURY, "messages": [{"role": "user", "content": "x"}],
+                       "max_tokens": 99999}, MERCURY)
+    assert s2.dispatched_configs[0]["reasoning_effort"] == "low"
+    assert s2.dispatched_configs[0]["max_tokens"] == 16384  # cap applied
+    assert seen2[0]["body"]["reasoning_effort"] == "low"

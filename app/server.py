@@ -339,6 +339,7 @@ MODELS = [
     {"id": "laguna-s-2.1", "label": "Laguna S 2.1 (NaraRouter free)", "keyEnv": "NARAROUTER_API_KEY"},
     {"id": "qwen/qwen3.8-27b", "label": "Qwen 3.8 27B (Groq)", "keyEnv": "GROQ_API_KEY"},
     {"id": "itera/qwen3.8-27b", "label": "Qwen 3.8 27B (Itera free)", "keyEnv": "ITERA_API_KEY"},
+    {"id": "mercury-3", "label": "Mercury 3 (Inception)", "keyEnv": "INCEPTION_API_KEY"},
     {"id": "no-llm", "label": "No LLM - deterministic Stage 1 (free RPC)", "keyEnv": None},
 ]
 
@@ -656,8 +657,8 @@ async def healthz():
 # --- central output redaction: no secret reaches browser/logs/mirror ----------
 _SECRET_VALUES = []
 for _v in ("OPENAI_API_KEY", "GOOGLE_API_KEY", "XAI_API_KEY", "GROQ_API_KEY",
-           "NARAROUTER_API_KEY", "GITHUB_HISTORY_TOKEN", "ETH_RPC_URL", "ETH_RPC_URL_2",
-           "BSC_RPC_URL", "BSC_RPC_URL_2", "DEMO_GATE_PASSWORD"):
+           "NARAROUTER_API_KEY", "ITERA_API_KEY", "INCEPTION_API_KEY", "GITHUB_HISTORY_TOKEN",
+           "ETH_RPC_URL", "ETH_RPC_URL_2", "BSC_RPC_URL", "BSC_RPC_URL_2", "DEMO_GATE_PASSWORD"):
     _val = os.environ.get(_v, "").strip()
     if len(_val) >= 8:
         _SECRET_VALUES.append(_val)
@@ -1275,6 +1276,7 @@ def _adapt_result_for_view(res):
             funcs.append({"address": key[0], "function": key[1],
                           "depth": [sig["call_depth"]] if isinstance(sig.get("call_depth"), (int, float)) else [], "call_type": "", "gas": None})
     hint = res.get("vuln_type_hint") or "unknown"
+    obs = obj(res.get("deterministic_rule_observation"))
     view = dict(res)
     view.update({
         "transaction": {"hash": res.get("transaction_hash", ""), "chain": res.get("chain", ""),
@@ -1289,7 +1291,9 @@ def _adapt_result_for_view(res):
         "classification": {
             "rule_verdict": "INCONCLUSIVE" if res.get("analysis_status") in ("cancelled", "cancelling", "error", "died", "timeout", "stopped", "inconclusive", "interrupted", "partial", "failed") else (res.get("rule_verdict") if res.get("rule_verdict") in ("CONFIRMED", "EXPLOIT", "CLEAN", "SUSPECT", "INCONCLUSIVE") else "INCONCLUSIVE"),
             "rule_confidence": number(res["rule_confidence"]) if isinstance(res.get("rule_confidence"), (int, float)) and not isinstance(res.get("rule_confidence"), bool) else None,
-            "matched_rule": ("evidence card: " + str(obj(cards[0].get("function_signature")).get("function", "?"))) if cards else "none",
+            # A matched rule means a deterministic rule matched. Naming the first
+            # evidence card here invented a match that never happened.
+            "matched_rule": str(obs.get("matched_rule") or "none"),
             "vuln_type_hint": hint,
             "priority_score": res.get("priority_score"),
             "priority": prio,

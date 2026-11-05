@@ -231,10 +231,33 @@ def test_rejected_findings_force_partial_even_with_valid_scored():
     assert "excluded from scoring" in joined
     assert "uniswapV3SwapCallback_0x0000" in joined
     # the valid finding stays scored; rejected keys never appear in scored output
-    assert report["scored_functions"] == [valid]
+    assert report["scored_functions"] == [{**valid, "name_verification": "unverified_model_label"}]
     scored_text = json.dumps(report["scored_functions"])
     assert "uniswapV3SwapCallback" not in scored_text
     assert "0xdead" not in scored_text
+
+
+def test_prose_name_contradicting_selector_is_flagged_not_rewritten():
+    m = importlib.import_module("app.pipeline_guards")
+    identity = importlib.import_module("app.trace_identity")
+    seq = identity.sequence_from_parity(FIXTURE["responses"]["trace_transaction"], TX, "eth")
+    runtime = m.PipelineRuntime(TX, "eth")
+    runtime.sequence = seq
+    root = seq["trace"]
+    entry = {"address": root["address"], "function": root["function"],
+             "evidence": ["The approve function triggers anomalous transferFrom calls."]}
+    report = runtime.annotate_result({
+        "transaction_hash": TX, "chain": "eth", "analysis_status": "completed",
+        "scored_functions": [entry]})
+    flagged = report["scored_functions"][0]["name_verification"]
+    if root["function"].lower() not in ("0x095ea7b3", "0x23b872dd"):
+        assert flagged.startswith("contradiction")
+        assert any("Name/selector contradiction" in l for l in report["limitations"])
+    else:
+        assert flagged == "unverified_model_label"
+    # structured identity is never rewritten to match prose
+    assert report["scored_functions"][0]["function"] == root["function"]
+    assert "unverified" in report["analysis_integrity"]["function_name_verification"]
 
 
 def test_rejected_findings_only_still_partial():
@@ -479,3 +502,348 @@ def test_offline_fixture_real_factory_hook_phase_and_status_path(pinned_fork, mo
                 assert result["stage_completed"] == "forensics-only"
             else:
                 assert result["analysis_status"] == expect_status
+
+
+def test_prose_name_never_binds_without_trace_verified_pair():
+    # GPT round-3: a bare prose name carries no proof it describes a particular
+    # observed invocation, even at a single-selector address - it stays an
+    # unverified label and never produces a contradiction.
+    m = importlib.import_module("app.pipeline_guards")
+    identity = importlib.import_module("app.trace_identity")
+    seq = identity.sequence_from_parity(FIXTURE["responses"]["trace_transaction"], TX, "eth")
+    runtime = m.PipelineRuntime(TX, "eth")
+    runtime.sequence = seq
+    entry = {"address": "0xc793113f1548b97e37c409f39244ee44241bf2b3", "function": "transfer",
+             "evidence": ["The transfer function moves tokens unexpectedly."]}
+    report = runtime.annotate_result({"transaction_hash": TX, "chain": "eth",
+                                      "analysis_status": "completed", "scored_functions": [entry]})
+    assert report["scored_functions"][0]["name_verification"] == "unverified_model_label"
+    assert not any("Name/selector contradiction" in l for l in report["limitations"])
+
+
+def test_unobserved_selector_at_single_selector_address_is_not_trusted():
+    # GPT round-3 regression: a selector-shaped model claim the trace never
+    # observed must not inherit the address's sole observed selector.
+    m = importlib.import_module("app.pipeline_guards")
+    identity = importlib.import_module("app.trace_identity")
+    seq = identity.sequence_from_parity(FIXTURE["responses"]["trace_transaction"], TX, "eth")
+    runtime = m.PipelineRuntime(TX, "eth")
+    runtime.sequence = seq
+    entry = {"address": "0xc793113f1548b97e37c409f39244ee44241bf2b3", "function": "0xdeadbeef",
+             "evidence": ["The approve function grants unlimited allowance."]}
+    report = runtime.annotate_result({"transaction_hash": TX, "chain": "eth",
+                                      "analysis_status": "completed", "scored_functions": [entry]})
+    assert report["analysis_integrity"]["unverified_targets"]
+    assert report["scored_functions"][0]["name_verification"] == "unverified_model_label"
+    assert not any("Name/selector contradiction" in l for l in report["limitations"])
+
+
+def test_prose_name_at_multi_selector_address_stays_unverified():
+    # Two selectors observed at the address: a prose name cannot be bound to
+    # either, so no contradiction - the entry stays an unverified label.
+    m = importlib.import_module("app.pipeline_guards")
+    identity = importlib.import_module("app.trace_identity")
+    seq = identity.sequence_from_parity(FIXTURE["responses"]["trace_transaction"], TX, "eth")
+    runtime = m.PipelineRuntime(TX, "eth")
+    runtime.sequence = seq
+    entry = {"address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "function": "transfer",
+             "evidence": ["The transfer function moves tokens unexpectedly."]}
+    report = runtime.annotate_result({"transaction_hash": TX, "chain": "eth",
+                                      "analysis_status": "completed", "scored_functions": [entry]})
+    assert report["scored_functions"][0]["name_verification"] == "unverified_model_label"
+    assert not any("Name/selector contradiction" in l for l in report["limitations"])
+
+
+def test_model_supplied_selector_outside_trace_is_not_trusted():
+    # A model-generated selector string is never believed on its own: the pair
+    # is unverified, and no contradiction is derived from an unobserved field.
+    m = importlib.import_module("app.pipeline_guards")
+    identity = importlib.import_module("app.trace_identity")
+    seq = identity.sequence_from_parity(FIXTURE["responses"]["trace_transaction"], TX, "eth")
+    runtime = m.PipelineRuntime(TX, "eth")
+    runtime.sequence = seq
+    entry = {"address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "function": "0xdeadbeef",
+             "evidence": ["The approve function grants unlimited allowance."]}
+    report = runtime.annotate_result({"transaction_hash": TX, "chain": "eth",
+                                      "analysis_status": "completed", "scored_functions": [entry]})
+    assert report["analysis_integrity"]["unverified_targets"]
+    assert report["scored_functions"][0]["name_verification"] == "unverified_model_label"
+    assert not any("Name/selector contradiction" in l for l in report["limitations"])
+
+
+def test_completed_result_carries_deterministic_observation_not_verdict():
+    # The deterministic forensics observation must survive into completed
+    # results (previously only failure reports kept it), clearly labeled as an
+    # observation - it never becomes the run's verdict.
+    m = importlib.import_module("app.pipeline_guards")
+    identity = importlib.import_module("app.trace_identity")
+    seq = identity.sequence_from_parity(FIXTURE["responses"]["trace_transaction"], TX, "eth")
+    runtime = m.PipelineRuntime(TX, "eth")
+    runtime.sequence = seq
+    runtime.partial = {"classification": {"rule_verdict": "EXPLOIT", "rule_confidence": 0.85,
+                                          "matched_rule": "approval_abuse"}}
+    root = seq["trace"]
+    report = runtime.annotate_result({"transaction_hash": TX, "chain": "eth", "analysis_status": "completed",
+                                      "scored_functions": [{"address": root["address"], "function": root["function"]}]})
+    assert report["deterministic_rule_observation"] == {"rule_verdict": "EXPLOIT", "rule_confidence": 0.85,
+                                                        "matched_rule": "approval_abuse"}
+    assert report["analysis_status"] == "completed"
+    # absent observation: key stays absent, nothing invented
+    runtime2 = m.PipelineRuntime(TX, "eth")
+    runtime2.sequence = seq
+    report2 = runtime2.annotate_result({"transaction_hash": TX, "chain": "eth", "analysis_status": "completed",
+                                        "scored_functions": [{"address": root["address"], "function": root["function"]}]})
+    assert "deterministic_rule_observation" not in report2
+
+
+def test_selector_identities_activate_flash_loan_detection(pinned_fork):
+    # Generic defect: the name-based detector never fired on selector-identified
+    # traces (run 3 missed a Balancer flashLoan sitting in the trace).
+    m = importlib.import_module("app.pipeline_guards")
+    from faultseeker.forensics import signal_extractor as sig
+    m.extend_signal_sets(sig)
+    flat = [
+        {"function": "0x5c38449e", "address": "0xba12222222228d8ba445958a75a0704d566bf2c8", "call_type": "call"},
+        {"function": "0xa9059cbb", "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "call_type": "call"},
+    ]
+    ex = sig.SignalExtractor({}, {"flatten_trace": flat}, TX, "eth")
+    ex._check_flash_loan()
+    assert ex.signals.flash_loan_detected is True
+    # names still work (cast-text path unchanged)
+    ex2 = sig.SignalExtractor({}, {"flatten_trace": [{"function": "flashLoan", "address": "0x1", "call_type": "call"}]}, TX, "eth")
+    ex2._check_flash_loan()
+    assert ex2.signals.flash_loan_detected is True
+
+
+def test_selector_identities_activate_price_read_write_detection(pinned_fork):
+    # getReserves -> swap -> getReserves as SELECTORS must count as a
+    # read-write-read price sequence exactly as the name forms do.
+    m = importlib.import_module("app.pipeline_guards")
+    from faultseeker.forensics import signal_extractor as sig
+    m.extend_signal_sets(sig)
+    pair = "0xa08c4571b3000000000000000000000000000000"
+    flat = [
+        {"function": "0x0902f1ac", "address": pair, "call_type": "staticcall"},  # getReserves
+        {"function": "0x022c0d9f", "address": pair, "call_type": "call"},        # swap
+        {"function": "0x0902f1ac", "address": pair, "call_type": "staticcall"},
+        {"function": "0x022c0d9f", "address": pair, "call_type": "call"},
+        {"function": "0x0902f1ac", "address": pair, "call_type": "staticcall"},
+    ]
+    ex = sig.SignalExtractor({}, {"flatten_trace": flat}, TX, "bsc")
+    ex._check_price_manipulation()
+    assert ex.signals.price_read_write_sequences >= 1
+    assert ex.signals.price_read_before_write is True
+
+
+def test_staticcall_standard_reads_pruned_from_patterns(pinned_fork):
+    # Standard read selectors observed as STATICCALL (EVM-enforced read-only,
+    # as getReserves x15 in the real BSC trace) are noise and pruned; custom
+    # functions survive. Nothing is excluded on 4 bytes alone.
+    m = importlib.import_module("app.pipeline_guards")
+    from types import SimpleNamespace
+    from faultseeker.function_analysis.function_ranker import FunctionRanker
+    ranker = FunctionRanker()
+    forensics = SimpleNamespace(address_calls_with_created_contract=[], functions_to_be_inspected={})
+    tx_analysis = {"function_call_loc_memo": {}, "repeated_patterns": {"0xa": [
+        {"pattern": [{"function": "0x0902f1ac", "address": "0xa", "call_type": "staticcall"},
+                     {"function": "0x52f18fc3", "address": "0xb", "call_type": "call"}], "repeats": 2},
+    ]}}
+    out = ranker.rank(forensics, tx_analysis)
+    out = m.prune_static_readonly_selectors(out)
+    kept = [c["function"] for p in out.repeated_patterns for c in p["pattern"]]
+    assert "0x0902f1ac" not in kept   # staticcall getReserves pruned
+    assert "0x52f18fc3" in kept       # custom function survives
+
+
+def test_statecapable_standard_selectors_stay_discoverable(pinned_fork):
+    # A selector is not behavioral proof: a custom/malicious contract can
+    # implement balanceOf/getReserves/transfer with exploit logic. The real
+    # ETH trace even shows balanceOf via DELEGATECALL. Any standard selector
+    # invoked through a state-capable call type must remain in ranked targets;
+    # functions_to_be_inspected is never pruned at all.
+    m = importlib.import_module("app.pipeline_guards")
+    from types import SimpleNamespace
+    from faultseeker.function_analysis.function_ranker import FunctionRanker
+    ranker = FunctionRanker()
+    forensics = SimpleNamespace(address_calls_with_created_contract=[], functions_to_be_inspected={
+        "k": [{"function": "0x70a08231", "address": "0xmal", "gas": "0x1", "params": "0x", "depth": "1"}],
+    })
+    tx_analysis = {"function_call_loc_memo": {}, "repeated_patterns": {"0xmal": [
+        {"pattern": [{"function": "0x0902f1ac", "address": "0xmal", "call_type": "call"},
+                     {"function": "0x70a08231", "address": "0xmal", "call_type": "delegatecall"},
+                     {"function": "0xa9059cbb", "address": "0xmal", "call_type": "call"}], "repeats": 2},
+    ]}}
+    out = ranker.rank(forensics, tx_analysis)
+    out = m.prune_static_readonly_selectors(out)
+    kept = [c["function"] for p in out.repeated_patterns for c in p["pattern"]]
+    assert "0x0902f1ac" in kept       # getReserves via CALL retained (unknown impl)
+    assert "0x70a08231" in kept       # balanceOf via DELEGATECALL retained
+    assert "0xa9059cbb" in kept       # transfer always retained
+    assert "0x70a08231_0xmal" in out.functions_to_be_inspected  # never pruned
+
+
+def test_benign_read_write_read_is_observation_not_mechanism(pinned_fork):
+    # A benign getReserves->swap->getReserves sequence must register as an
+    # OBSERVATION while the rule layer declines to classify a mechanism:
+    # price_manipulation requires >=2 sequences AND >=15% verified delta.
+    m = importlib.import_module("app.pipeline_guards")
+    from faultseeker.forensics import signal_extractor as sig
+    from faultseeker.forensics import rule_classifier
+    m.extend_signal_sets(sig)
+    pair = "0xa08c4571b3000000000000000000000000000000"
+    flat = [
+        {"function": "0x0902f1ac", "address": pair, "call_type": "staticcall"},
+        {"function": "0x022c0d9f", "address": pair, "call_type": "call"},
+        {"function": "0x0902f1ac", "address": pair, "call_type": "staticcall"},
+    ]
+    ex = sig.SignalExtractor({}, {"flatten_trace": flat}, TX, "bsc")
+    ex._check_price_manipulation()
+    assert ex.signals.price_read_write_sequences >= 1   # observation present
+    verdict, confidence, matched_rule, _ = rule_classifier.classify(ex.signals)
+    assert verdict != "EXPLOIT", (verdict, matched_rule)
+    assert "price" not in matched_rule, matched_rule
+
+
+def test_canonical_flash_callbacks_detected_as_selectors(pinned_fork):
+    # Balancer receiveFlashLoan and Aave executeOperation are canonical fixed
+    # selectors (4byte-verified); the Hedgey trace's 0xf04f2707 callback must
+    # light up the callback signal, not sit as an unknown selector.
+    m = importlib.import_module("app.pipeline_guards")
+    from faultseeker.forensics import signal_extractor as sig
+    m.extend_signal_sets(sig)
+    vault = "0xba12222222228d8ba445958a75a0704d566bf2c8"
+    attacker = "0xc793113f15"
+    flat = [
+        {"function": "0x5c38449e", "address": vault, "call_type": "call"},        # Balancer flashLoan
+        {"function": "0xf04f2707", "address": attacker, "call_type": "call"},     # receiveFlashLoan
+    ]
+    ex = sig.SignalExtractor({}, {"flatten_trace": flat}, TX, "eth")
+    ex._check_flash_loan()
+    assert ex.signals.flash_loan_detected is True
+    assert ex.signals.flash_callback_detected is True
+
+
+def test_token_like_address_gets_one_diversity_slot(pinned_fork):
+    # Real-run defect (ETH Mercury run 2): the ranked/analyzed top-5 were
+    # entirely USDC proxy + USDC implementation standard functions, crowding
+    # the vulnerable contract out. New strategy: custom functions first, ONE
+    # representative slot per token-like address, duplicates demoted, nothing
+    # dropped, standard selectors labeled with verified names.
+    m = importlib.import_module("app.pipeline_guards")
+    from types import SimpleNamespace
+    res = SimpleNamespace(
+        address_calls_with_created_contract_in_params={},
+        functions_to_be_inspected={
+            "0xa9059cbb_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": {"count": 9, "calls": []},
+            "0x095ea7b3_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": {"count": 8, "calls": []},
+            "0xefd86b62_0xbc452fdc": {"count": 1, "calls": []},
+            "0x70a08231_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": {"count": 7, "calls": []},
+        })
+    observed = {"0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": {"0xa9059cbb", "0x095ea7b3", "0x70a08231"},
+                "0xbc452fdc": {"0xefd86b62", "0xf412e4c7"}}
+    m.order_ranked_targets(res, observed, set())
+    m.annotate_standard_selector_names(res)
+    keys = list(res.functions_to_be_inspected)
+    assert keys[0] == "0xefd86b62_0xbc452fdc"                    # custom first
+    assert keys[1] == "0xa9059cbb_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"  # one USDC slot
+    assert len(keys) == 4                                        # nothing dropped
+    assert res.functions_to_be_inspected[keys[1]]["possible_signature"].startswith("transfer(")
+    assert res.functions_to_be_inspected[keys[1]]["implementation_unverified"] is True
+    assert "possible_signature" not in res.functions_to_be_inspected[keys[0]]
+
+
+def test_token_only_malicious_address_keeps_visible_slot(pinned_fork):
+    # Adversarial case (parent review): a malicious contract implementing ONLY
+    # the ERC-20 surface must not be pushed entirely to the tail where a
+    # bounded selection can never reach it - its top entry keeps a group-B slot.
+    m = importlib.import_module("app.pipeline_guards")
+    from types import SimpleNamespace
+    res = SimpleNamespace(
+        address_calls_with_created_contract_in_params={},
+        functions_to_be_inspected={
+            "0xdeadbeef_0xc1": {"count": 3, "calls": []},
+            "0xa9059cbb_0xmal": {"count": 6, "calls": []},   # token-only address
+            "0x70a08231_0xmal": {"count": 4, "calls": []},
+            "0x095ea7b3_0xmal": {"count": 2, "calls": []},
+        })
+    observed = {"0xc1": {"0xdeadbeef"}, "0xmal": {"0xa9059cbb", "0x70a08231", "0x095ea7b3"}}
+    m.order_ranked_targets(res, observed, set())
+    keys = list(res.functions_to_be_inspected)
+    assert keys[:2] == ["0xdeadbeef_0xc1", "0xa9059cbb_0xmal"]  # representative visible
+    assert set(keys[2:]) == {"0x70a08231_0xmal", "0x095ea7b3_0xmal"}
+    assert len(keys) == 4
+
+
+def test_mixed_or_created_addresses_never_demoted(pinned_fork):
+    # An address with ANY custom selector observed is not token-like; a
+    # tx-created contract is exempt too (attacker-deployed tokens matter).
+    m = importlib.import_module("app.pipeline_guards")
+    from types import SimpleNamespace
+    res = SimpleNamespace(
+        address_calls_with_created_contract_in_params={},
+        functions_to_be_inspected={
+            "0xa9059cbb_0xaaaa": {"count": 5, "calls": []},   # mixed address
+            "0xa9059cbb_0xbbbb": {"count": 5, "calls": []},   # created, token-like
+            "0x022c0d9f_0xcccc": {"count": 1, "calls": []},
+        })
+    observed = {"0xaaaa": {"0xa9059cbb", "0xdeadbeef"},
+                "0xbbbb": {"0xa9059cbb", "0x70a08231"},
+                "0xcccc": {"0x022c0d9f"}}
+    m.order_ranked_targets(res, observed, {"0xbbbb"})
+    keys = list(res.functions_to_be_inspected)
+    assert keys[0] == "0xa9059cbb_0xaaaa"
+    assert "0xa9059cbb_0xbbbb" in keys[:2]
+    assert len(keys) == 3
+
+
+def test_annotation_tolerates_list_shaped_entries(pinned_fork):
+    # GPT round 8 HIGH: annotate assumed dict-shaped entries; a list-shaped
+    # entry must not crash the ranking path mid-run.
+    m = importlib.import_module("app.pipeline_guards")
+    from types import SimpleNamespace
+    res = SimpleNamespace(
+        address_calls_with_created_contract_in_params={
+            "0x5c38449e": [{"function": "0x5c38449e", "address": "0xba"}, "not-a-dict"]},
+        functions_to_be_inspected={
+            "0xa9059cbb_0xtoken": [{"function": "0xa9059cbb", "address": "0xtoken"}],
+            "0xdeadbeef_0xc1": {"count": 2, "calls": [{"function": "0xdeadbeef"}]},
+        })
+    m.annotate_standard_selector_names(res)
+    lst = res.functions_to_be_inspected["0xa9059cbb_0xtoken"]
+    assert lst[0]["possible_signature"].startswith("transfer(")
+    assert lst[0]["implementation_unverified"] is True
+    d = res.functions_to_be_inspected["0xdeadbeef_0xc1"]
+    assert "possible_signature" not in d and "possible_signature" not in d["calls"][0]
+
+
+def test_calibrated_confidence_presentation_is_reconciled():
+    """Upstream Stage 3 overwrites confidence.overall with the calibrated
+    probability but leaves level/explanation from the pre-calibration proxy
+    (observed live: overall 0.9975 rendered as "62.4% (moderate)"). The fork
+    reconciles: level classifies the final score, explanation matches, proxy
+    stays disclosed."""
+    m = importlib.import_module("app.pipeline_guards")
+    identity = importlib.import_module("app.trace_identity")
+    seq = identity.sequence_from_parity(FIXTURE["responses"]["trace_transaction"], TX, "eth")
+    runtime = m.PipelineRuntime(TX, "eth")
+    runtime.sequence = seq
+    root = seq["trace"]
+    value = runtime.annotate_result({
+        "transaction_hash": TX, "chain": "eth", "analysis_status": "completed",
+        "scored_functions": [{"address": root["address"], "function": root["function"],
+                              "confidence": {"overall": 0.9975, "level": "moderate", "calibrated": True,
+                                             "components": {"pattern_match": 0.8},
+                                             "explanation": ["Overall confidence: 62.4% (moderate) — Further analysis recommended"]}}]})
+    conf = value["scored_functions"][0]["confidence"]
+    assert conf["overall"] == 0.9975
+    assert conf["level"] == "very_high", conf["level"]
+    assert "99.8% (very_high)" in conf["explanation"][0]
+    assert conf["proxy_overall"] == 0.624 and conf["proxy_level"] == "moderate"
+    # Non-calibrated entries are left untouched.
+    value2 = runtime.annotate_result({
+        "transaction_hash": TX, "chain": "eth", "analysis_status": "completed",
+        "scored_functions": [{"address": root["address"], "function": root["function"],
+                              "confidence": {"overall": 0.62, "level": "moderate",
+                                             "explanation": ["Overall confidence: 62.0% (moderate) — Further analysis recommended"]}}]})
+    conf2 = value2["scored_functions"][0]["confidence"]
+    assert conf2["level"] == "moderate" and "proxy_overall" not in conf2

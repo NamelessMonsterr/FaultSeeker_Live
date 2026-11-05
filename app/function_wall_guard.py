@@ -19,7 +19,7 @@ import time
 FORK_FUNCTION_WALL_CAP_SECS = 480        # pinned by a test against the fork source
 FORK_CLOUD_PREFIXES = ('gpt-', 'gemini-', 'grok-', 'qwen-', 'qwen/', 'claude-', 'o1-', 'o3-', 'o4-',
                        'agnes', 'jev', 'laguna', 'nemotron', 'minimax', 'llama-', 'openai/', 'allam-',
-                       'z-ai/', 'deepseek-ai/', 'nvidia/', 'gla/')   # pinned by a test
+                       'z-ai/', 'deepseek-ai/', 'nvidia/', 'gla/', 'itera/', 'mercury-')   # pinned by a test
 _YES = re.compile(r"(?i)\s*yes[\s.!]*")
 
 

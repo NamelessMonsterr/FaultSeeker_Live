@@ -5,6 +5,11 @@ from urllib.parse import urlsplit
 
 ITERA_PREFIX = "itera/"
 ITERA_DEFAULT_BASE_URL = "https://api.iteracompute.com/v1"
+MERCURY_PREFIX = "mercury-"
+MERCURY_DEFAULT_BASE_URL = "https://api.inceptionlabs.ai/v1"
+# Mercury 3 reasoning effort: docs describe "medium" as general-purpose use;
+# "low" is for latency-sensitive chat. Env-overridable, default medium.
+MERCURY_DEFAULT_REASONING_EFFORT = "medium"
 # Console alias -> Itera's published model id (the free tier model; verified via GET /v1/models).
 ITERA_UPSTREAM_MODELS = {"itera/qwen3.8-27b": "qwen/qwen3.8-27b"}
 
@@ -17,6 +22,38 @@ def adapt_request(model, kwargs):
     model: without ``reasoning_effort=none`` it spends the whole completion budget
     on reasoning and returns an empty answer. Other models are returned unchanged.
     """
+    if str(model).startswith(MERCURY_PREFIX):
+        adapted = dict(kwargs)
+        extra = dict(adapted.get("extra_body") or {})
+        # Mercury spends reasoning tokens before any visible answer; the
+        # transport's tiny preflight cap (8) starves a reasoning reply into an
+        # empty answer, which the transport correctly treats as invalid. Tiny
+        # probes get a small floor and no reasoning instead.
+        cap = adapted.get("max_tokens")
+        tiny = isinstance(cap, int) and cap < 64
+        extra["reasoning_effort"] = ("instant" if tiny else os.getenv(
+            "FAULTSEEKER_MERCURY_REASONING_EFFORT", MERCURY_DEFAULT_REASONING_EFFORT))
+        adapted["extra_body"] = extra
+        if tiny:
+            adapted["max_tokens"] = 64
+        # Mercury accepts temperature only in [0.5, 1.0]. The engine requests 0;
+        # clamping to 0.5 is NOT safe: at 0.5 with medium reasoning the model
+        # spins into ~60K-token reasoning loops that hit the output ceiling and
+        # return empty content (observed live). Pin out-of-range or missing
+        # values explicitly to 1.0 - stochastic, disclosed, and the only
+        # medium-reasoning configuration observed to complete full analyses.
+        temp = adapted.get("temperature")
+        if not (isinstance(temp, (int, float)) and not isinstance(temp, bool)
+                and 0.5 <= float(temp) <= 1.0):
+            adapted["temperature"] = 1.0
+        # Bound non-tiny completions so one runaway reasoning loop cannot eat
+        # the per-minute output budget in a single call. Truncated answers are
+        # rejected by the transport (finish_reason=length), never used silently.
+        if not tiny:
+            cap = adapted.get("max_tokens")
+            if not isinstance(cap, int) or cap > 16384:
+                adapted["max_tokens"] = 16384
+        return adapted
     if not str(model).startswith(ITERA_PREFIX):
         return kwargs
     adapted = dict(kwargs)
@@ -33,6 +70,11 @@ def resolve_route(model, provider_url=None, provider_env="OPENAI_API_KEY"):
         endpoint = os.getenv("ITERA_BASE_URL") or ITERA_DEFAULT_BASE_URL
         key_env = "ITERA_API_KEY"
         setting = "ITERA_BASE_URL"
+    elif model.startswith(MERCURY_PREFIX):
+        # Operator-set endpoint only; visitor input never chooses the destination.
+        endpoint = os.getenv("INCEPTION_BASE_URL") or MERCURY_DEFAULT_BASE_URL
+        key_env = "INCEPTION_API_KEY"
+        setting = "INCEPTION_BASE_URL"
     elif model.startswith("gpt-6.1-sol-"):
         endpoint = os.getenv("CODEX_PROXY_BASE_URL") or os.getenv("OPENAI_BASE_URL")
         key_env = "OPENAI_API_KEY"

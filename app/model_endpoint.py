@@ -1,6 +1,8 @@
 """Run-scoped model transport policy. No provider bodies or credentials escape it."""
+import re
 import threading
 import time
+from collections import deque
 
 import httpx
 
@@ -24,6 +26,9 @@ class ModelEndpointFailure(RuntimeError):
             "rate_limited": "Model endpoint rate limit was reached.",
             "invalid_request": "Model endpoint rejected the request.",
             "invalid_response": "Model endpoint returned an invalid completion response.",
+            "blank_completion": "Model endpoint returned an empty completion.",
+            "refusal": "Model endpoint returned a refusal instead of an answer.",
+            "truncated_output": "Model endpoint returned a truncated completion (output cap reached).",
             "budget_exhausted": "The shared model-endpoint time budget was exhausted.",
             "endpoint_error": "Model endpoint request failed.",
         }
@@ -36,6 +41,33 @@ class ModelEndpointFailure(RuntimeError):
         return {"kind": self.kind, "http_status": self.status_code,
                 "phase": self.phase, "message": str(self),
                 "scope": "credential" if self.kind in ("authentication", "rate_limited") else "endpoint"}
+
+
+def _error_detail(exc):
+    """Whitelisted diagnostics: retry-after + provider error message with
+    credential-shaped strings redacted. Never auth headers or request bodies."""
+    detail = {}
+    response = getattr(exc, "response", None)
+    if response is None:
+        return detail
+    retry_after = response.headers.get("retry-after")
+    if retry_after:
+        detail["retry_after"] = retry_after
+    # Provider error text is captured only for 429s (rate-limit diagnosis);
+    # other statuses can embed private upstream content and stay body-free.
+    if response.status_code != 429:
+        return detail
+    try:
+        body = response.json()
+    except Exception:
+        return detail
+    message = None
+    if isinstance(body, dict) and isinstance(body.get("error"), dict):
+        message = body["error"].get("message")
+    if isinstance(message, str):
+        message = re.sub(r"(?i)(bearer\s+|sk-|key-)[A-Za-z0-9_\-]{6,}", "[redacted]", message)[:200]
+        detail["provider_message"] = message
+    return detail
 
 
 def classify(error, phase):
@@ -70,7 +102,8 @@ class ModelEndpointSession:
     allowance, so a cold-starting endpoint gets its whole window to wake up.
     """
     def __init__(self, emit=lambda event: None, retry_limit=3, time_budget=600,
-                 call_timeout=60, clock=time.monotonic, sleep=time.sleep):
+                 call_timeout=60, clock=time.monotonic, sleep=time.sleep,
+                 output_budget_per_min=90000):
         self.emit = emit
         self.retries_left = max(0, int(retry_limit))
         self.time_budget = max(0.1, float(time_budget))
@@ -81,10 +114,21 @@ class ModelEndpointSession:
         self.calls = {}  # phase -> {"ok": n, "failed": n}; real completions, not token counts
         self.failure = None
         self.lock = threading.RLock()
+        self.blank_answer_retries = 0  # ledgered: user-granted blank-answer re-asks
+        # counted at dispatch time - a dispatched attempt, not proof the
+        # provider received and executed the request.
         self.key_pools = {}
         self.model_routes = {}
         self.route_policy = None
         self.tokens = {"prompt": 0, "completion": 0, "reasoning": 0}
+        # Effective request configs recorded at the provider send boundary,
+        # deduped. Reaching the recorder proves the request was constructed and
+        # dispatched; outcomes are ledgered separately (tokens, failure kind).
+        self.dispatched_configs = []
+        # Rolling one-minute output budget (completion tokens incl. reasoning),
+        # paced conservatively below provider per-minute limits.
+        self.output_budget_per_min = int(output_budget_per_min)
+        self.output_window = deque()
 
     def register_keys(self, base_url, keys, model=None):
         """Keep credential state per endpoint/model, private to this run's memory.
@@ -110,8 +154,35 @@ class ModelEndpointSession:
     def _fail(self, error):
         self.failure = error
         self.emit({"state": "model_endpoint_failed", **error.as_dict(),
+                   **getattr(error, "detail", {}),
                    "attempts": self.attempts})
         raise error from None
+
+    def _pace_output(self, estimate, phase, model, deadline):
+        """Hold calls so the rolling 60s output-token spend (incl. reasoning)
+        stays under the budget. Pacing sleeps count against the shared
+        transport budget, never outside it."""
+        if self.output_budget_per_min <= 0:
+            return
+        while True:
+            now = self.clock()
+            while self.output_window and now - self.output_window[0][0] >= 60.0:
+                self.output_window.popleft()
+            used = sum(tokens for _, tokens in self.output_window)
+            if used + estimate <= self.output_budget_per_min:
+                return
+            wait = 60.0 - (now - self.output_window[0][0]) + 0.05
+            remaining = self.time_budget - self.spent
+            if deadline is not None:
+                remaining = min(remaining, deadline - now)
+            if wait >= remaining:
+                self._fail(ModelEndpointFailure("budget_exhausted", phase=phase))
+            self.emit({"state": "waiting_on_model_endpoint", "phase": phase,
+                       "model": model, "retry_in_seconds": round(wait, 2),
+                       "output_pacing": True, "output_window_tokens": used})
+            before = self.clock()
+            self.sleep(wait)
+            self.spent += max(0.0, self.clock() - before)
 
     def _out_of_time(self, phase, deadline, last_error):
         # A preflight that retried transient failures until its deadline reports
@@ -139,6 +210,8 @@ class ModelEndpointSession:
         with self.lock:
             self.assert_healthy()
             retry_number = 0
+            blank_retried = False  # one blank-answer re-ask per call, never per run
+            pending_blank_reask = False  # granted but not yet dispatched
             last_error = None
             while True:
                 remaining = self.time_budget - self.spent
@@ -146,10 +219,14 @@ class ModelEndpointSession:
                     remaining = min(remaining, deadline - self.clock())
                 if remaining <= 0:
                     self._fail(self._out_of_time(phase, deadline, last_error))
+                estimate = kwargs.get("max_tokens")
+                estimate = min(estimate, 16384) if isinstance(estimate, int) else 16384
+                self._pace_output(estimate, phase, model, deadline)
                 started = self.clock()
                 client = None
                 pool = None
                 error = None
+                blank_retry = False
                 try:
                     if model not in self.model_routes and self.route_policy is not None:
                         route, keys = self.route_policy(model)
@@ -174,12 +251,55 @@ class ModelEndpointSession:
                     self.emit({"state": "waiting_on_model_endpoint", "phase": phase,
                                "attempt": self.attempts, "model": model,
                                "retry_in_seconds": 0})
-                    completion = bounded.chat.completions.create(**adapt_request(model, kwargs))
+                    if pending_blank_reask:
+                        # Ledger the re-ask only when it is actually dispatched;
+                        # a grant that never reaches the wire is not a spent retry.
+                        self.blank_answer_retries += 1
+                        pending_blank_reask = False
+                    adapted = adapt_request(model, kwargs)
+                    self._record_dispatched(model, adapted, phase)
+                    completion = bounded.chat.completions.create(**adapted)
+                    # Token accounting happens at receipt, before any validation can
+                    # raise: blank completions and refusals still consumed tokens, and
+                    # their usage belongs in the ledger and the rolling output window.
+                    self._count_tokens(completion)
                     choices = getattr(completion, "choices", None)
-                    if not choices or not isinstance(getattr(choices[0].message, "content", None), str) or not choices[0].message.content.strip():
+                    content = getattr(choices[0].message, "content", None) if choices else None
+                    finish = getattr(choices[0], "finish_reason", None) if choices else None
+                    refusal = getattr(choices[0].message, "refusal", None) if choices else None
+                    if (choices and finish == "stop"
+                            and (content is None or (isinstance(content, str) and not content.strip()))):
+                        if isinstance(refusal, str) and refusal.strip():
+                            # A refusal is a meaningful answer, not an empty one:
+                            # terminal, and never eligible for the blank-answer grant.
+                            raise ModelEndpointFailure("refusal", phase=phase)
+                        # The exact granted case: a real response whose answer is empty.
+                        raise ModelEndpointFailure("blank_completion", phase=phase)
+                    if not choices or not isinstance(content, str) or not content.strip():
+                        # Malformed structure, non-string content, or an empty answer
+                        # on a non-stop finish (e.g. a reasoning blowout at the cap):
+                        # NOT the granted blank-answer case, no re-ask.
                         raise ModelEndpointFailure("invalid_response", phase=phase)
+                    if finish == "length":
+                        # Truncated output is never silently used as an answer.
+                        raise ModelEndpointFailure("truncated_output", phase=phase)
                 except Exception as exc:
                     error, retryable = classify(exc, phase)
+                    # User-granted narrow exception (2026-11-05, comparison task):
+                    # a verified blank Mercury completion (HTTP 200, choices present,
+                    # empty content, finish_reason "stop" - kind blank_completion)
+                    # may be re-asked exactly once per call, preflight included
+                    # (bounded by the existing preflight deadline). The blank answer
+                    # still consumed tokens and the re-ask is another real, ledgered
+                    # call; every other failure kind and model keeps zero retries.
+                    blank_retry = (not retryable and not blank_retried
+                                   and str(model).startswith("mercury-")
+                                   and getattr(error, "kind", None) == "blank_completion")
+                    if blank_retry:
+                        retryable = True
+                        blank_retried = True
+                        pending_blank_reask = True
+                    error.detail = _error_detail(exc)
                     response = getattr(exc, "response", None)
                     retry_hint = getattr(response, "headers", {}).get("retry-after", "")
                 finally:
@@ -195,7 +315,6 @@ class ModelEndpointSession:
                 if deadline is not None and self.clock() > deadline:
                     self._fail(self._out_of_time(phase, deadline, error))
                 if error is None:
-                    self._count_tokens(completion)
                     self.emit({"state": "model_endpoint_ready", "phase": phase,
                                "model": model, "attempts": self.attempts})
                     return completion
@@ -214,10 +333,12 @@ class ModelEndpointSession:
                     retryable = True
                 if not retryable:
                     self._fail(error)
-                if phase != "preflight":
+                if phase != "preflight" and not blank_retry:
                     # Only analysis retries consume the shared allowance. Preflight
                     # retries are bounded by the preflight deadline instead, so a
                     # cold-starting endpoint gets the whole window to wake up.
+                    # The granted blank-answer re-ask has its own per-call budget
+                    # and never touches the shared allowance.
                     if self.retries_left <= 0:
                         self._fail(error)
                     self.retries_left -= 1
@@ -239,11 +360,23 @@ class ModelEndpointSession:
                 if delay >= remaining:
                     self._fail(self._out_of_time(phase, deadline, last_error))
                 self.emit({"state": "waiting_on_model_endpoint", **error.as_dict(),
+                           **getattr(error, "detail", {}),
                            "attempt": self.attempts, "model": model,
+                           "blank_answer_retry": blank_retry,
                            "retry_in_seconds": delay, "retries_remaining": self.retries_left})
                 before = self.clock()
                 self.sleep(delay)
                 self.spent += max(0.0, self.clock() - before)
+
+    def _record_dispatched(self, model, adapted, phase):
+        extra = adapted.get("extra_body") or {}
+        rec = {"model": str(adapted.get("model", model)),
+               "temperature": adapted.get("temperature"),
+               "reasoning_effort": extra.get("reasoning_effort"),
+               "max_tokens": adapted.get("max_tokens"),
+               "phase": phase}
+        if rec not in self.dispatched_configs:
+            self.dispatched_configs.append(rec)
 
     def _count_tokens(self, completion):
         usage = getattr(completion, "usage", None)
@@ -251,11 +384,14 @@ class ModelEndpointSession:
             return
         details = getattr(usage, "completion_tokens_details", None)
         self.tokens["prompt"] += int(getattr(usage, "prompt_tokens", 0) or 0)
-        self.tokens["completion"] += int(getattr(usage, "completion_tokens", 0) or 0)
+        completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+        self.tokens["completion"] += completion_tokens
         self.tokens["reasoning"] += int(getattr(details, "reasoning_tokens", 0) or 0)
+        self.output_window.append((self.clock(), completion_tokens))
 
     def summary(self):
         return {"attempts": self.attempts, "tokens": dict(self.tokens), "retries_remaining": self.retries_left,
+                "blank_answer_retries": self.blank_answer_retries,
                 "calls": {phase: dict(counts) for phase, counts in self.calls.items()},
                 "transport_seconds": round(self.spent, 3),
                 "time_budget_seconds": self.time_budget,
