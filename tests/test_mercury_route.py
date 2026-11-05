@@ -59,11 +59,12 @@ def test_adapt_request_adds_reasoning_effort_only_for_mercury(monkeypatch):
     tiny = m.adapt_request(MERCURY, {**base, "max_tokens": 8})
     assert tiny["max_tokens"] == 64
     assert tiny["extra_body"] == {"reasoning_effort": "instant"}
-    # Mercury clamps temperature into its documented [0.5, 1.0] range instead of
-    # letting the provider silently reset out-of-range values to 1.0.
-    assert m.adapt_request(MERCURY, {**base, "temperature": 0})["temperature"] == 0.5
+    # Mercury accepts temperature only in [0.5, 1.0]. Out-of-range values are
+    # dropped (provider default applies): clamping 0 to 0.5 triggers runaway
+    # reasoning and empty completions at medium effort; in-range values pass.
+    assert "temperature" not in m.adapt_request(MERCURY, {**base, "temperature": 0})
     assert m.adapt_request(MERCURY, {**base, "temperature": 0.7})["temperature"] == 0.7
-    assert m.adapt_request(MERCURY, {**base, "temperature": 2})["temperature"] == 1.0
+    assert "temperature" not in m.adapt_request(MERCURY, {**base, "temperature": 2})
     assert "temperature" not in m.adapt_request(MERCURY, base)
     other = {"model": "qwen/qwen3.8-27b", "messages": []}
     assert m.adapt_request("qwen/qwen3.8-27b", other) is other
