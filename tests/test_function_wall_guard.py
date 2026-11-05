@@ -27,7 +27,11 @@ def test_constants_pinned_to_fork_source():
     prefixes = re.findall(r"is_cloud = any\(self\.txn_analyzer_model\.startswith\(p\)\s*for p in \((.*?)\)\)", src, re.S)
     assert len(prefixes) == 2
     for blob in prefixes:
-        assert tuple(re.findall(r"'([^']+)'", blob)) == wg.FORK_CLOUD_PREFIXES
+        fork_prefixes = tuple(re.findall(r"'([^']+)'", blob))
+        # The fork's own prefix set stays pinned; the console may only EXTEND it
+        # with its operator-selected route aliases (cloud models too).
+        assert set(fork_prefixes) <= set(wg.FORK_CLOUD_PREFIXES)
+        assert set(wg.FORK_CLOUD_PREFIXES) - set(fork_prefixes) == {"itera/", "mercury-"}
     assert "max_iterations = 3 if is_cloud else 8" in src and "txn_iters = 2 if is_cloud else 3" in src
 
 
