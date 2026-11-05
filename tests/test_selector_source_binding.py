@@ -422,8 +422,10 @@ def test_overloaded_source_units_disambiguated_or_fail(pinned_fork):
                            "input_count": 1, "input_types": ["(address,uint256)"],
                            "input_internal_types": ["struct X.B"]}}}
         stub2, FA2 = _analyzer_stub({addr: {"foo": [
-            {"path": "./S1.sol", "start_line": 1, "end_line": 1, "content": "function foo(X.A memory a) external { _use(a); }"},
-            {"path": "./S2.sol", "start_line": 1, "end_line": 1, "content": "function foo(X.B memory b) external { _use(b); }"}]}})
+            {"path": "./S1.sol", "start_line": 1, "end_line": 1, "content": "function foo(X.A memory a) external { _use(a); }",
+             "decl_index": {"decls": {"A": [("X.A", "X")]}, "kinds": {"X.A": "struct"}, "fields": {}, "scopes": []}},
+            {"path": "./S2.sol", "start_line": 1, "end_line": 1, "content": "function foo(X.B memory b) external { _use(b); }",
+             "decl_index": {"decls": {"B": [("X.B", "X")]}, "kinds": {"X.B": "struct"}, "fields": {}, "scopes": []}}]}})
         out2 = FA2._retrieve_source_code(stub2, addr, "0xefd86b62")
         # structA vs structB: qualified internalType identity selects B, arity cannot
         assert len(out2) == 1 and "X.B memory b" in out2[0]["source_code"]
@@ -445,7 +447,8 @@ def test_overloaded_source_units_disambiguated_or_fail(pinned_fork):
                            "input_internal_types": ["struct X.B"]}}}
         stub2c, FA2c = _analyzer_stub({addr: {"foo": [
             {"path": "./S1.sol", "start_line": 1, "end_line": 1, "content": "// no header here"},
-            {"path": "./S2.sol", "start_line": 1, "end_line": 1, "content": "function foo(X.B memory b) external { _use(b); }"}]}})
+            {"path": "./S2.sol", "start_line": 1, "end_line": 1, "content": "function foo(X.B memory b) external { _use(b); }",
+             "decl_index": {"decls": {"B": [("X.B", "X")]}, "kinds": {"X.B": "struct"}, "fields": {}, "scopes": []}}]}})
         out2c = FA2c._retrieve_source_code(stub2c, addr, "0xefd86b62")
         assert out2c == []
         assert rt.selector_resolution_log[-1]["status"] == "ambiguous_overload"
@@ -529,7 +532,8 @@ def test_overloaded_source_units_disambiguated_or_fail(pinned_fork):
                           "ClaimCampaigns.ClaimLockup memory claimLockup, "
                           "ClaimCampaigns.Donation memory donation) external {}")
         stub4q, FA4q = _analyzer_stub({addr: {"createLockedCampaign": [
-            {"path": "./ClaimCampaigns.sol", "start_line": 1, "end_line": 2, "content": qualified_body}]}})
+            {"path": "./ClaimCampaigns.sol", "start_line": 1, "end_line": 2, "content": qualified_body,
+             "decl_index": decl_index, "fn_scope": "ClaimCampaigns"}]}})
         out4q = FA4q._retrieve_source_code(stub4q, addr, "0xefd86b62")
         assert len(out4q) == 1
         assert rt.selector_resolution_log[-1]["unit_binding"]["disambiguated_by"] == "single_candidate_exact_types"
@@ -642,21 +646,30 @@ def test_header_matches_abi_exact_type_identity(pinned_fork):
     assert f("function f(address to, uint x) {}", ["address", "uint256"], ["address", "uint256"]) is True
     # enum vs uint: ABI enum (canonical uint8) must NOT match a plain uint8 source token
     assert f("function f(uint8 x) {}", ["uint8"], ["enum X.Status"]) is False
-    # enum source token matches ABI enum internalType (qualified full path)
-    assert f("function f(X.Status s) {}", ["uint8"], ["enum X.Status"]) is True
-    # wrong enum path
+    # enum source token matches ABI enum internalType (qualified full path),
+    # provable only WITH a declaration index establishing the kind
+    idx_x = {"decls": {"Status": [("X.Status", "X")], "Campaign": [("X.Campaign", "X")]},
+             "kinds": {"X.Status": "enum", "X.Campaign": "struct"},
+             "fields": {"X.Campaign": ["address"]}, "scopes": [("X", 0, 999)]}
+    assert f("function f(X.Status s) {}", ["uint8"], ["enum X.Status"], None, idx_x) is True
+    # no declaration index: name identity alone is NOT proof -> unresolved
+    assert f("function f(X.Status s) {}", ["uint8"], ["enum X.Status"]) is None
+    # wrong enum path: a proven NAME mismatch needs no index
     assert f("function f(Y.Status s) {}", ["uint8"], ["enum X.Status"]) is False
     # struct array shape must match canonical ABI array shape
-    assert f("function f(X.Campaign[] memory c) {}", ["(address)[]"], ["struct X.Campaign[]"]) is True
-    assert f("function f(X.Campaign[] memory c) {}", ["(address)"], ["struct X.Campaign"]) is False
+    assert f("function f(X.Campaign[] memory c) {}", ["(address)[]"], ["struct X.Campaign[]"], None, idx_x) is True
+    assert f("function f(X.Campaign[] memory c) {}", ["(address)[]"], ["struct X.Campaign[]"]) is None
+    assert f("function f(X.Campaign[] memory c) {}", ["(address)"], ["struct X.Campaign"], None, idx_x) is False
     # user-defined source token with no ABI internalType: cannot prove -> None
     assert f("function f(Campaign memory c) {}", ["(address)"], [""]) is None
     # unparseable -> None
     assert f("garbage", ["uint256"], ["uint256"]) is None
     # arity mismatch -> False
     assert f("function f(uint a) {}", ["uint256", "uint256"], ["uint256", "uint256"]) is False
-    # qualified source name: full dotted path must equal the ABI internalType's
-    assert f("function f(X.Campaign memory c) {}", ["(address)"], ["struct X.Campaign"]) is True
+    # qualified source name: full dotted path must equal the ABI internalType's,
+    # and (with an index) the declaration kind must agree
+    assert f("function f(X.Campaign memory c) {}", ["(address)"], ["struct X.Campaign"], None, idx_x) is True
+    assert f("function f(X.Campaign memory c) {}", ["(address)"], ["struct X.Campaign"]) is None
     assert f("function f(Y.Campaign memory c) {}", ["(address)"], ["struct X.Campaign"]) is False
     # unqualified user-defined names are ALWAYS unproven without source-context
     # resolution - even when unique among the signature's inputs (the header's
@@ -800,6 +813,39 @@ def test_string_literals_cannot_fabricate_declarations(pinned_fork):
     src2 = 'contract C {\n  string s = "oops;\n  struct Late { uint256 x; }\n}\n'
     idx2 = P._declaration_index(src2)
     assert "Late" not in idx2["decls"]
+
+
+def test_multiline_comment_offsets_and_scope(pinned_fork):
+    """Block comments are blanked length- and newline-preservingly: offsets map
+    1:1 to the original source, comment contents register no declarations, and
+    scope provenance across a multiline comment is correct (cross-contract
+    same-name still fails)."""
+    m = importlib.import_module("app.pipeline_guards")
+    P = m.PipelineRuntime
+    src = ("contract A {\n"
+           "    /*\n"
+           "       decoy: struct Campaign { address zzz; }\n"
+           "    */\n"
+           "    struct Campaign { uint256 id; }\n"
+           "    function execute(Campaign calldata c) external {}\n"
+           "}\n"
+           "contract B {\n"
+           "    struct Campaign { address owner; }\n"
+           "}\n")
+    blanked = P._strip_comments_and_strings(src)
+    assert len(blanked) == len(src)
+    assert [i for i, c in enumerate(src) if c == "\n"] == [i for i, c in enumerate(blanked) if c == "\n"]
+    idx = P._declaration_index(src)
+    # the decoy inside the block comment registered nothing
+    assert idx["decls"]["Campaign"] == [("A.Campaign", "A"), ("B.Campaign", "B")]
+    # scope spans are valid ORIGINAL byte offsets: the function's line lands in A
+    off = sum(len(l) + 1 for l in blanked.split("\n")[:5])
+    assert next((n for n, s, e in idx["scopes"] if s <= off <= e), None) == "A"
+    body = "function execute(Campaign calldata c) external {}"
+    assert P._header_matches_abi(body, ["(uint256)"], ["struct A.Campaign"],
+                                 [["uint256"]], idx, fn_scope="A") is True
+    assert P._header_matches_abi(body, ["(address)"], ["struct B.Campaign"],
+                                 [["address"]], idx, fn_scope="A") is False
 
 
 @pytest.mark.skipif(os.getenv("FAULTSEEKER_LIVE_NETWORK") != "1",

@@ -661,29 +661,47 @@ class PipelineRuntime:
 
     @staticmethod
     def _strip_comments_and_strings(source_text):
-        """Comment-strip and STRING-BLANK, preserving length and newlines so
-        byte/line offsets stay valid. String literal contents (including
-        escaped quotes) are replaced with spaces: declaration keywords or
-        braces inside a string are data, never declarations, and must not
-        fabricate namespace evidence or disturb scope tracking. An
-        unterminated string blanks to EOF (fail closed)."""
-        text = re.sub(r"/\*.*?\*/", " ", source_text or "", flags=re.S)
-        text = re.sub(r"//[^\n]*", "", text)
+        """Blank comments AND string literal contents, preserving EXACT length
+        and every newline position, so byte/line offsets computed against the
+        result map 1:1 to the original source. One lexical pass with correct
+        precedence: comment markers inside strings are string data, quotes
+        inside comments are comment data. Escapes inside strings are blanked
+        with their escaped char. Unterminated string/comment blanks to EOF
+        (fail closed). Declaration keywords or braces inside strings/comments
+        are data, never declarations, and cannot disturb scope tracking."""
+        text = source_text or ""
         out = []
         i, n = 0, len(text)
+        blank = lambda c: "\n" if c == "\n" else " "
         while i < n:
             ch = text[i]
-            if ch in ('"', "'"):
+            nxt = text[i + 1] if i + 1 < n else ""
+            if ch == "/" and nxt == "/":
+                out.append("  ")
+                i += 2
+                while i < n and text[i] != "\n":
+                    out.append(" ")
+                    i += 1
+            elif ch == "/" and nxt == "*":
+                out.append("  ")
+                i += 2
+                while i < n and not (text[i] == "*" and i + 1 < n and text[i + 1] == "/"):
+                    out.append(blank(text[i]))
+                    i += 1
+                if i < n:
+                    out.append("  ")
+                    i += 2
+            elif ch in ('"', "'"):
                 q = ch
                 out.append(" ")
                 i += 1
                 while i < n and text[i] != q:
                     if text[i] == "\\" and i + 1 < n:
-                        out.append("\n" if text[i] == "\n" else " ")
-                        out.append("\n" if text[i + 1] == "\n" else " ")
+                        out.append(blank(text[i]))
+                        out.append(blank(text[i + 1]))
                         i += 2
                     else:
-                        out.append("\n" if text[i] == "\n" else " ")
+                        out.append(blank(text[i]))
                         i += 1
                 if i < n:
                     out.append(" ")
@@ -845,15 +863,19 @@ class PipelineRuntime:
                     return None
                 if resolved != it_name:
                     return False
-            if decl_index is not None:
-                # Kind identity: a matched NAME is not a matched TYPE when the
-                # declaration kinds differ (struct vs enum vs contract).
-                kinds_map = decl_index.get("kinds") or {}
-                if resolved in kinds_map:
-                    if kinds_map[resolved] != kind:
-                        return False     # proven kind mismatch
-                else:
-                    return None          # declaration not established here: kind unproven
+            if decl_index is None:
+                # name identity stands, but without source declaration context
+                # kind/layout identity of a user-defined type is unprovable
+                # (imports stay unresolved): fail closed
+                return None
+            # Kind identity: a matched NAME is not a matched TYPE when the
+            # declaration kinds differ (struct vs enum vs contract).
+            kinds_map = decl_index.get("kinds") or {}
+            if resolved in kinds_map:
+                if kinds_map[resolved] != kind:
+                    return False         # proven kind mismatch
+            else:
+                return None              # declaration not established here: kind unproven
             abi_arr = canon_abi
             while abi_arr.endswith("]"):
                 abi_arr = abi_arr[:abi_arr.rindex("[")]
