@@ -6,6 +6,58 @@ from collections import deque
 
 import httpx
 
+# Fork-layer repair (input-side, preview-only experiment): the engine's
+# vulnerability-analysis prompt requires a one-sentence "evidence" mechanism
+# per flagged function and offers no sanctioned value for an undetermined
+# mechanism ("{}" only means "no vulnerable function"). On the Hedgey ETH case
+# this correlated with invented mechanism narratives (see runs/ablation_*).
+# Appending this contract to vulnerability-analysis prompts gives the model an
+# honest path: explicit 'mechanism undetermined' plus observed_anomalies
+# limited to facts visible in the provided information. Reversible: set
+# FAULTSEEKER_ABSTENTION_CONTRACT=0 to disable.
+ABSTENTION_CONTRACT = (
+    "\n\nAdditional output rules (override the evidence format above):\n"
+    "- If the provided information does not establish HOW a function is "
+    "vulnerable, set \"evidence\" to exactly \"mechanism undetermined\". "
+    "This is a valid, respected answer.\n"
+    "- NEVER invent a mechanism (e.g. swaps, reentrancy, price manipulation) "
+    "or name protocols that are not directly established by the provided "
+    "information.\n"
+    "- Add an \"observed_anomalies\" array containing only facts visible in "
+    "the provided information (calls made, parameters, approvals, transfers) - "
+    "no inferred behavior."
+)
+_VULN_PROMPT_MARKERS = ("potentially vulnerable", "Identify any vulnerable functions")
+
+
+def augment_vulnerability_prompt(kwargs, phase):
+    """Append the abstention contract to vulnerability-analysis prompts only.
+    Returns (kwargs, augmented?). Idempotent; never touches other phases or
+    prompt types. Input kwargs are not mutated."""
+    import os
+    if phase != "analysis":
+        return kwargs, False
+    if os.environ.get("FAULTSEEKER_ABSTENTION_CONTRACT", "1").lower() in ("0", "false", "no"):
+        return kwargs, False
+    messages = kwargs.get("messages")
+    if not isinstance(messages, list):
+        return kwargs, False
+    idx = None
+    for i in range(len(messages) - 1, -1, -1):
+        m = messages[i]
+        if (isinstance(m, dict) and m.get("role") == "user"
+                and isinstance(m.get("content"), str)
+                and any(marker in m["content"] for marker in _VULN_PROMPT_MARKERS)):
+            idx = i
+            break
+    if idx is None or "mechanism undetermined" in messages[idx]["content"]:
+        return kwargs, False
+    kwargs = dict(kwargs)
+    messages = [dict(m) for m in messages]
+    messages[idx]["content"] += ABSTENTION_CONTRACT
+    kwargs["messages"] = messages
+    return kwargs, True
+
 try:
     from .model_routes import adapt_request
 except ImportError:  # app/server.py invoked directly
@@ -112,6 +164,7 @@ class ModelEndpointSession:
         self.spent = 0.0
         self.attempts = 0
         self.calls = {}  # phase -> {"ok": n, "failed": n}; real completions, not token counts
+        self.abstention_augmented_calls = 0  # vuln prompts carrying the abstention contract
         self.failure = None
         self.lock = threading.RLock()
         self.blank_answer_retries = 0  # ledgered: user-granted blank-answer re-asks
@@ -256,7 +309,10 @@ class ModelEndpointSession:
                         # a grant that never reaches the wire is not a spent retry.
                         self.blank_answer_retries += 1
                         pending_blank_reask = False
+                    kwargs, augmented = augment_vulnerability_prompt(kwargs, phase)
                     adapted = adapt_request(model, kwargs)
+                    if augmented:
+                        self.abstention_augmented_calls += 1
                     self._record_dispatched(model, adapted, phase)
                     completion = bounded.chat.completions.create(**adapted)
                     # Token accounting happens at receipt, before any validation can
