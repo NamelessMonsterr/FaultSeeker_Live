@@ -115,3 +115,13 @@ def test_long_unterminated_quoted_credential_fully_redacted_at_edges():
     assert "secondsecret" not in b["text"] and "firstsecret" not in b["text"]
     tail = ce.bounded_text("x" * 5000 + ' token: "alpha beta gamma delta ' + "Q" * 300, 2000, 100)
     assert "beta" not in tail["text"] and "gamma" not in tail["text"]
+
+
+def test_open_credential_value_with_key_outside_tail_window_is_redacted():
+    secret = "x" * 2000 + ' token: "' + "alpha beta gamma " * 100
+    b = ce.bounded_text(secret, 2000, 100)
+    assert "beta" not in b["text"] and "gamma" not in b["text"]
+    ok = ce.bounded_text("y" * 3000 + ' note "quoted words stay"' + " tail words here " * 10, 200, 100)
+    assert "tail words" in ok["text"]
+    big = ce.bounded_text("zz " * 400_000, 100, 100)
+    assert "NOT_CHECKED" in big["text"]

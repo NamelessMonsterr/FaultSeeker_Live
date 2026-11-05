@@ -39,6 +39,10 @@ _SOURCE_MARKERS = {
     "contract_decl": re.compile(r"\bcontract\s+\w+"),
     "function_decl": re.compile(r"\bfunction\s+\w+\s*\("),
 }
+_UNTERM = re.compile(r"(?is)([\"']?(?:authorization|api[_-]?key|x-api-key|access[_-]?token|refresh[_-]?token|"
+                     r"id[_-]?token|client[_-]?secret|password|passwd|secret|token)[\"']?\s*[:=]\s*)"
+                     r"([\"'][^\"']*)\Z")
+_TAIL_SCAN_LIMIT = 1_000_000
 _REDACTIONS = [
     # unterminated quoted credential (closing quote beyond the inspected edge):
     # redact everything to the end of the available text
@@ -155,6 +159,14 @@ def bounded_text(text, head, tail):
     if text[head - 1:head + 1].strip() and len(text[head - 1:head + 1].strip()) == 2:
         h = h[:len(h) - len(_EDGE_RUN.findall(h[-_EDGE_MARGIN:])[-1])] if _EDGE_RUN.findall(h[-_EDGE_MARGIN:]) else h
     t = redact(text[-(tail + _EDGE_MARGIN):])[-tail:]
+    if n > _TAIL_SCAN_LIMIT:
+        t = "[TAIL_NOT_CHECKED_OVER_SCAN_LIMIT]"
+    else:
+        # a credential value left open to the end of the text, whose key lies
+        # before the retained window, would put secret words in the tail.
+        um = _UNTERM.search(text)
+        if um and um.start(2) <= n - tail:
+            t = "[REDACTED_OPEN_CREDENTIAL_VALUE]"
     if n > tail and text[-tail - 1:-tail + 1].strip() and len(text[-tail - 1:-tail + 1].strip()) == 2:
         m = _EDGE_RUN.match(t)
         if m:
