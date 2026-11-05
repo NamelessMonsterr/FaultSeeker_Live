@@ -39,9 +39,9 @@ ABSTENTION_CONTRACT = (
 )
 # Targeting: the engine's vulnerability-analysis prompt is identified by a
 # distinctive CO-OCCURRING signature (topic phrase + its JSON schema field),
-# case-insensitive - a quoted phrase alone cannot trigger augmentation, and
-# minor wording drift in either element disables the repair loudly (no
-# augmentation) rather than silently mistargeting it.
+# case-insensitive - a quoted phrase alone cannot trigger augmentation.
+# Wording drift (exactly 2 of 3 elements) raises an observable targeting
+# mismatch at dispatch instead of silently disabling the repair.
 _VULN_PROMPT_TOPICS = ("potentially vulnerable", "identify any vulnerable functions")
 _VULN_PROMPT_SCHEMA = "confidence_score"
 # Third signature element: the prompt's literal JSON key shape. All three are
@@ -52,20 +52,39 @@ _VULN_PROMPT_KEYSHAPE = "<functionname>_<address>"
 _DISABLE_VALUES = ("0", "false", "no", "off", "disabled")
 
 
+def _signature_hits(content):
+    lowered = content.lower()
+    return (any(topic in lowered for topic in _VULN_PROMPT_TOPICS),
+            _VULN_PROMPT_SCHEMA in lowered,
+            _VULN_PROMPT_KEYSHAPE in lowered)
+
+
 def augment_vulnerability_prompt(kwargs, phase):
     """Append the abstention contract to vulnerability-analysis prompts only.
-    Returns (kwargs, augmented?). Idempotent via a unique sentinel; never
-    touches other phases or prompt types. Input kwargs are not mutated.
-    Non-list / malformed messages structures are left untouched, never crash."""
+    Returns (kwargs, augmented?, targeting_mismatch?).
+
+    Idempotence is STRUCTURAL, never content-derived: the caller augments once
+    per request and keeps that state internally (the blank-answer re-ask
+    reuses the already-augmented kwargs). Message content is untrusted input -
+    a sentinel substring in transaction data or quoted text must neither
+    suppress nor prove augmentation, so it is never consulted.
+
+    Targeting uses the co-occurring three-element signature. A user message
+    matching exactly two elements is a probable vulnerability-analysis prompt
+    with drifted wording: reported as a targeting_mismatch (observable, never
+    silent) instead of being quietly skipped. Ordinary prompts match at most
+    one element and raise no signal. Never touches other phases or prompt
+    types. Input kwargs are not mutated. Malformed structures never crash."""
     import os
     if phase != "analysis":
-        return kwargs, False
+        return kwargs, False, False
     if os.environ.get("FAULTSEEKER_ABSTENTION_CONTRACT", "1").strip().lower() in _DISABLE_VALUES:
-        return kwargs, False
+        return kwargs, False, False
     messages = kwargs.get("messages")
     if not isinstance(messages, list):
-        return kwargs, False
+        return kwargs, False, False
     idx = None
+    partial = False
     for i in range(len(messages) - 1, -1, -1):
         m = messages[i]
         if not isinstance(m, dict) or m.get("role") != "user":
@@ -73,20 +92,19 @@ def augment_vulnerability_prompt(kwargs, phase):
         content = m.get("content")
         if not isinstance(content, str):
             continue
-        lowered = content.lower()
-        if (any(topic in lowered for topic in _VULN_PROMPT_TOPICS)
-                and _VULN_PROMPT_SCHEMA in lowered
-                and _VULN_PROMPT_KEYSHAPE in lowered):
+        hits = _signature_hits(content)
+        if all(hits):
             idx = i
             break
-    if (idx is None
-            or ABSTENTION_SENTINEL.casefold() in messages[idx]["content"].casefold()):
-        return kwargs, False
+        if sum(hits) >= 2:
+            partial = True
+    if idx is None:
+        return kwargs, False, partial
     kwargs = dict(kwargs)
     messages = [dict(m) if isinstance(m, dict) else m for m in messages]
     messages[idx]["content"] += ABSTENTION_CONTRACT
     kwargs["messages"] = messages
-    return kwargs, True
+    return kwargs, True, False
 
 try:
     from .model_routes import adapt_request
@@ -195,6 +213,9 @@ class ModelEndpointSession:
         self.attempts = 0
         self.calls = {}  # phase -> {"ok": n, "failed": n}; real completions, not token counts
         self.abstention_augmented_calls = 0  # vuln prompts carrying the abstention contract
+        # Probable vuln prompts whose signature drifted (2 of 3 elements):
+        # observable drift signal, never a silent feature disable.
+        self.abstention_targeting_mismatches = 0
         self.failure = None
         self.lock = threading.RLock()
         self.blank_answer_retries = 0  # ledgered: user-granted blank-answer re-asks
@@ -296,6 +317,18 @@ class ModelEndpointSession:
             blank_retried = False  # one blank-answer re-ask per call, never per run
             pending_blank_reask = False  # granted but not yet dispatched
             last_error = None
+            # Augment exactly once per call. Augmentation state is trusted
+            # per-request state held here, never inferred from message content;
+            # the blank-answer re-ask reuses this kwargs, so the contract
+            # survives the retry exactly once, un-duplicated.
+            kwargs, abstention_augmented, abstention_mismatch = \
+                augment_vulnerability_prompt(kwargs, phase)
+            if abstention_augmented:
+                self.abstention_augmented_calls += 1
+            if abstention_mismatch:
+                self.abstention_targeting_mismatches += 1
+                self.emit({"warning": "abstention_targeting_mismatch",
+                           "phase": phase, "model": model})
             while True:
                 remaining = self.time_budget - self.spent
                 if deadline is not None:
@@ -339,10 +372,7 @@ class ModelEndpointSession:
                         # a grant that never reaches the wire is not a spent retry.
                         self.blank_answer_retries += 1
                         pending_blank_reask = False
-                    kwargs, augmented = augment_vulnerability_prompt(kwargs, phase)
                     adapted = adapt_request(model, kwargs)
-                    if augmented:
-                        self.abstention_augmented_calls += 1
                     self._record_dispatched(model, adapted, phase)
                     completion = bounded.chat.completions.create(**adapted)
                     # Token accounting happens at receipt, before any validation can
