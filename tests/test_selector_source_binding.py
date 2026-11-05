@@ -994,3 +994,116 @@ def test_model_request_construction_includes_bound_source(pinned_fork, tmp_path)
             "bound source absent from task-selection payloads"
     finally:
         _restore(rt)
+
+
+# ---- outbound-boundary source retention (preview repair, 2026-11-05) ----
+
+def _P():
+    return importlib.import_module("app.pipeline_guards").PipelineRuntime
+
+
+def test_preserve_bound_sources_component(pinned_fork):
+    """COMPONENT test of the retention helper (synthetic strings)."""
+    P = _P()
+    src = "function f(address a) external {\n  _x(a);\n}\n" * 20   # ~800 chars
+    forms = {"raw": src, "json": json.dumps(src)[1:-1], "repr": repr(src)[1:-1]}
+    for name, form in forms.items():
+        msg = ("A" * 6000) + form + ("B" * 6000)
+        out, ev = P._preserve_bound_sources(msg, [src])
+        assert ev["status"] == "preserved_other_text_trimmed", name
+        assert len(out) <= 10000 and form in out, name
+        assert "removed to preserve bound source" in out, name
+    # under the cap or no source present: untouched, no event
+    assert P._preserve_bound_sources("x" * 9999, [src]) == ("x" * 9999, None)
+    big = "z" * 12000
+    assert P._preserve_bound_sources(big, [src]) == (big, None)
+    # oversized source cannot be preserved: message unchanged, explicit event
+    huge = "function g() {\n" + "  y();\n" * 1700 + "}\n"
+    m2 = ("P" * 3000) + huge + ("Q" * 3000)
+    out2, ev2 = P._preserve_bound_sources(m2, [huge])
+    assert out2 == m2 and ev2["status"] == "source_oversized_unpreserved"
+    # source plus minimum context cannot fit -> fail closed even below 10000 source chars
+    near = "s" * 9000
+    m3 = "a" * 2000 + near + "b" * 2000
+    out3, ev3 = P._preserve_bound_sources(m3, [near])
+    assert ev3["status"] == "source_oversized_unpreserved" and out3 == m3
+
+
+def test_outbound_boundary_retention_with_real_engine_truncation(pinned_fork, tmp_path):
+    """OUTBOUND-BOUNDARY regression (synthetic padding, no model/network): real
+    UniversalAgent._send_message wrapped by the production checked_send hook,
+    capture below it at _llm_call_with_retry. Large model-written padding used
+    to make the engine drop the bound source; now it is preserved, and an
+    oversized source is reported as unpreserved."""
+    import types
+    from faultseeker.utils import agent as A
+    m = importlib.import_module("app.pipeline_guards")
+    rt = _runtime()
+    sent = []
+
+    def fake_call(create_client, kwargs, model, *a, **k):
+        sent.append(kwargs["messages"][-1]["content"])
+        return types.SimpleNamespace(choices=[types.SimpleNamespace(message=types.SimpleNamespace(content="ok"))], usage=None)
+
+    rt.session = types.SimpleNamespace(assert_healthy=lambda: None, call=fake_call, route_policy=None)
+    rt._model_config = None
+    try:
+        parsed = _parse_hedgey_source(tmp_path)
+        rt.selector_bindings[HEDGEY] = {"selectors": m.PipelineRuntime._build_selector_map(_load_abi())}
+        rt.sequence = _hedgey_trace()
+        stub, FA = _analyzer_stub({HEDGEY: parsed})
+        src = FA._retrieve_source_code(stub, HEDGEY, "0xefd86b62")[0]["source_code"]
+        assert src in rt.bound_source_texts
+        rt.install_model_hooks(A)
+        agent = A.UniversalAgent("system", "qwen-plus", api_key="dummy")
+        esc = json.dumps(src)[1:-1]
+        # padded prompt: engine alone would drop the middle (source sits there)
+        prompt = ("U" * 6000) + esc + ("T" * 6000)
+        assert len(prompt) > 10000
+        agent._send_message(prompt)
+        assert esc in sent[-1] and len(sent[-1]) <= 10000
+        assert "removed to preserve bound source" in sent[-1]
+        assert rt.source_retention_events[-1]["status"] == "preserved_other_text_trimmed"
+        # oversized source: engine truncation applies, event is explicit
+        huge = "function g() {\n" + "  y();\n" * 1700 + "}\n"
+        rt.bound_source_texts.append(huge)
+        agent2 = A.UniversalAgent("system", "qwen-plus", api_key="dummy")
+        agent2._send_message(("P" * 3000) + json.dumps(huge)[1:-1] + ("Q" * 3000))
+        assert rt.source_retention_events[-1]["status"] == "source_oversized_unpreserved"
+        assert "middle truncated" in sent[-1]
+        # reporting: unpreserved source can never leave a run "fully analyzed"
+    finally:
+        _restore(rt)
+
+
+def test_unpreserved_bound_source_marks_run_partial(pinned_fork):
+    """Reporting (component test): an unpreserved source can never leave a run
+    'completed' / fully analyzed; trimmed-but-preserved is a visible limitation."""
+    from types import SimpleNamespace
+    from pathlib import Path
+    m = importlib.import_module("app.pipeline_guards")
+    identity = importlib.import_module("app.trace_identity")
+    fx = json.loads((Path(__file__).resolve().parent / "fixtures/hedgey_verified_trace.json").read_text())
+    tx = fx["provenance"]["transaction_hash"]
+
+    def run(events):
+        rt = m.PipelineRuntime(tx, "eth")
+        rt.sequence = identity.sequence_from_parity(fx["responses"]["trace_transaction"], tx, "eth")
+        rt.session = SimpleNamespace(summary=lambda: {"calls": {"preflight": {"ok": 1}, "analysis": {"ok": 3, "failed": 0}}, "tokens": {}},
+                                     assert_healthy=lambda: None)
+        rt.source_retention_events = events
+        return rt.annotate_result({"transaction_hash": tx, "chain": "eth", "analysis_status": "completed"})
+
+    bad = run([{"status": "source_oversized_unpreserved", "original_chars": 15000, "protected_chars": 12000, "cap": 10000}])
+    clean = run([])
+    assert "source_retention" not in clean
+    assert bad["analysis_status"] == "partial" and bad["stage_completed"] == "function-analysis-partial"
+    assert bad["sections"]["function_analysis"] == "partial_bound_source_unpreserved"
+    assert bad["source_retention"]["source_unpreserved"] == 1
+    assert any("not fully analyzed" in l for l in bad["limitations"])
+    trimmed = run([{"status": "preserved_other_text_trimmed", "original_chars": 11000, "protected_chars": 2000, "cap": 10000}])
+    # trimming alone adds a limitation but does not change status/stage vs the baseline
+    assert trimmed["analysis_status"] == clean["analysis_status"]
+    assert trimmed.get("stage_completed") == clean.get("stage_completed")
+    assert trimmed["source_retention"]["preserved_with_other_text_trimmed"] == 1
+    assert any("trimmed" in l for l in trimmed["limitations"])

@@ -4,6 +4,7 @@ Hooks are installed per worker before main() is entered, and removed on exit.
 The upstream checkout is not edited. This keeps local and Docker execution on
 the same transport/identity policy while retaining the pinned source revision.
 """
+import json
 import threading
 import re
 from copy import deepcopy
@@ -361,6 +362,8 @@ class PipelineRuntime:
         self.function_analysis = {"started": 0, "completed": 0}  # observed FunctionAnalyzer.run, not inferred
         self.selector_bindings = {}        # address -> ABI selector->source-name binding + code-hash evidence
         self.selector_resolution_log = []  # per-lookup resolution records from the analysis path
+        self.bound_source_texts = []       # verified bound source bodies handed to the analyzer (retention checks)
+        self.source_retention_events = []  # outbound-boundary retention outcomes (preserved / trimmed / oversized)
         self._frame_index = None           # lazy (address, selector) -> code-context map from the canonical trace
         try:
             from .function_wall_guard import WallCapLedger
@@ -899,6 +902,88 @@ class PipelineRuntime:
                         return None          # declared here but layout unparseable
         return True
 
+    PROMPT_CAP = 10000  # pinned engine GPTAgent/UniversalAgent._send_message cap (agent.py: >10000 -> first 8000 + last 2000)
+    MIN_CONTEXT = 1500  # minimum non-source prompt text worth sending alongside a bound source
+
+    @staticmethod
+    def _source_forms(source):
+        """Every serialization a bound source takes inside engine prompts: raw,
+        json.dumps (summary payloads) and repr (str(dict) task-selection)."""
+        forms = {source, json.dumps(source)[1:-1], repr(source)[1:-1]}
+        return [f for f in forms if f]
+
+    @staticmethod
+    def _preserve_bound_sources(message, sources, cap=10000, min_context=1500):
+        """Outbound-boundary retention for bound source. Returns (message, event).
+        The engine cuts any message over `cap` to head 8000 + tail 2000, which
+        can silently drop a bound source from the middle. When a bound source
+        is present in an over-cap message: keep every source occurrence
+        INTACT and remove text from the unprotected remainder (marked inline),
+        so the engine's own cap is not hit. If the protected source plus
+        minimum context cannot fit, the message is left unchanged and the
+        event says the source cannot be preserved (fail closed: such a run is
+        never fully analyzed). Messages without a bound source, or at/under
+        the cap, are untouched."""
+        if not isinstance(message, str) or len(message) <= cap or not sources:
+            return message, None
+        spans = []
+        for src in sources:
+            for form in PipelineRuntime._source_forms(src):
+                start = 0
+                while True:
+                    i = message.find(form, start)
+                    if i == -1:
+                        break
+                    spans.append((i, i + len(form)))
+                    start = i + len(form)
+        if not spans:
+            return message, None
+        spans.sort()
+        merged = [list(spans[0])]
+        for a, b in spans[1:]:
+            if a <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], b)
+            else:
+                merged.append([a, b])
+        protected = sum(b - a for a, b in merged)
+        base = {"original_chars": len(message), "protected_chars": protected, "cap": cap}
+        if protected + min_context > cap:
+            return message, {**base, "status": "source_oversized_unpreserved"}
+        # unprotected segments in order
+        segs, pos = [], 0
+        for a, b in merged:
+            segs.append(("free", message[pos:a]))
+            segs.append(("keep", message[a:b]))
+            pos = b
+        segs.append(("free", message[pos:]))
+        marker = "\n...[{n} chars of other prompt text removed to preserve bound source]...\n"
+        need = len(message) - cap + len(marker.format(n=len(message))) * max(1, sum(1 for k, t in segs if k == "free" and t))
+        free_idx = [i for i, (k, t) in enumerate(segs) if k == "free" and t]
+        removed_total = 0
+        out_segs = list(segs)
+        # cut from the largest free segment's middle first, keeping its head 60% / tail 40%
+        while need > 0 and free_idx:
+            i = max(free_idx, key=lambda j: len(out_segs[j][1]))
+            text = out_segs[i][1]
+            overhead = len(marker.format(n=len(message)))
+            cut = min(len(text), need)
+            if cut <= overhead:
+                break
+            keep_total = len(text) - cut
+            head = int(keep_total * 0.6)
+            tail = keep_total - head
+            removed = len(text) - head - tail
+            out_segs[i] = ("free", text[:head] + marker.format(n=removed) + (text[len(text) - tail:] if tail else ""))
+            removed_total += removed
+            need -= (removed - overhead)
+            free_idx.remove(i)
+        new_msg = "".join(t for _, t in out_segs)
+        if len(new_msg) > cap or any(src_form not in new_msg for src_form in
+                                     [message[a:b] for a, b in merged]):
+            return message, {**base, "status": "source_oversized_unpreserved"}
+        return new_msg, {**base, "status": "preserved_other_text_trimmed",
+                         "removed_chars": len(message) - len(new_msg), "final_chars": len(new_msg)}
+
     def _install_selector_source_binding(self):
         # Analysis-input root cause #2 (2026-11-05, verified): canonical traces
         # carry calldata-selector function identity, but parse_contract keys
@@ -1116,6 +1201,10 @@ class PipelineRuntime:
                     unit = {"candidates": 1, "selected_path": candidates[0].get("path"),
                             "disambiguated_by": "single_candidate_exact_types",
                             "evidence_basis": "abi_internal_type_and_canonical_match"}
+                for _o in out:
+                    _sc = _o.get("source_code") if isinstance(_o, dict) else None
+                    if _sc and _sc not in runtime.bound_source_texts:
+                        runtime.bound_source_texts.append(_sc)
                 runtime.selector_resolution_log.append(
                     {**base, **context, "status": "resolved", "resolved_name": entry["name"],
                      "signature": entry["signature"], "source_entries": len(out),
@@ -1197,6 +1286,17 @@ class PipelineRuntime:
             original = agent_class._send_message
             def checked_send(agent, *args, _original=original, **kwargs):
                 self.assert_healthy()
+                if self.bound_source_texts:
+                    if args and isinstance(args[0], str):
+                        _msg, _ev = self._preserve_bound_sources(args[0], self.bound_source_texts, self.PROMPT_CAP, self.MIN_CONTEXT)
+                        args = (_msg,) + tuple(args[1:])
+                    elif isinstance(kwargs.get("user_message"), str):
+                        _msg, _ev = self._preserve_bound_sources(kwargs["user_message"], self.bound_source_texts, self.PROMPT_CAP, self.MIN_CONTEXT)
+                        kwargs = {**kwargs, "user_message": _msg}
+                    else:
+                        _ev = None
+                    if _ev:
+                        self.source_retention_events.append(_ev)
                 try:
                     result = _original(agent, *args, **kwargs)
                 except Exception:
@@ -1762,6 +1862,23 @@ class PipelineRuntime:
                     f"{wall['unknown_exit']} ended without an observed normal exit, {wall['error']} errored. "
                     f"Non-normal functions: {capped}. Candidates from those functions are partial; scoring is not validated. "
                     "An iteration-ceiling exit is the fork's completion rule, not substantive verification of that function's analysis.")
+        if self.source_retention_events:
+            _ev = self.source_retention_events
+            _bad = [e for e in _ev if e.get("status") == "source_oversized_unpreserved"]
+            _trim = [e for e in _ev if e.get("status") == "preserved_other_text_trimmed"]
+            result["source_retention"] = {
+                "prompt_cap": self.PROMPT_CAP, "preserved_with_other_text_trimmed": len(_trim),
+                "source_unpreserved": len(_bad), "events": deepcopy(_ev[:20])}
+            if _bad:
+                result["analysis_status"] = "partial"
+                result["stage_completed"] = "function-analysis-partial"
+                result["sections"] = {**(result.get("sections") or {}), "function_analysis": "partial_bound_source_unpreserved", "scoring": "not_validated"}
+                result.setdefault("limitations", []).append(
+                    f"{len(_bad)} model request(s) carried a bound source too large to preserve within the {self.PROMPT_CAP}-character request cap; "
+                    "the engine cut it. Those analyses are incomplete and the run is not fully analyzed.")
+            if _trim:
+                result.setdefault("limitations", []).append(
+                    f"{len(_trim)} model request(s) exceeded the {self.PROMPT_CAP}-character cap; other prompt text was trimmed (marked inline) to keep the bound source intact.")
         return result
 
     def failure_report(self, error=None):
