@@ -114,13 +114,16 @@ def test_real_cache_identity_guard_rejects_wrong_chain(pinned, monkeypatch):
 
 
 @pytest.mark.parametrize("statuses,expected", [
-    ([401, 200, 200, 200], ["first", "second", "second", "second"]),
-    ([403, 200, 200, 200], ["first", "second", "second", "second"]),
+    # NR2-F1: preflight never rotates (fail-fast there is covered in
+    # test_pipeline_guards). Rotation is the analysis phase's alone: the
+    # mid-run 401/403 below rotates to the second key through the real agents.
+    ([200, 401, 200, 200], ["first", "first", "second", "second"]),
+    ([200, 403, 200, 200], ["first", "first", "second", "second"]),
     # A mid-run 429 never rotates credentials (limit bypass); it consumes the
     # operator's shared retry allowance and re-tries the SAME credential.
     ([200, 429, 200, 200], ["first", "first", "first", "first"]),
 ])
-def test_real_agents_keep_preflight_rotation_and_rotate_mid_run(pinned, monkeypatch, statuses, expected):
+def test_real_agents_preflight_never_rotates_and_rotate_mid_run(pinned, monkeypatch, statuses, expected):
     agents = importlib.import_module("faultseeker.utils.agent")
     monkeypatch.setenv("OPENAI_API_KEY", "test-first,test-second")
     calls, events = [], []
@@ -143,7 +146,7 @@ def test_real_agents_keep_preflight_rotation_and_rotate_mid_run(pinned, monkeypa
         for agent_class in (agents.GPTAgent, agents.UniversalAgent):
             assert agent_class("offline", MODEL)._send_message("Mocked request") == "OK"
         assert calls == ["Bearer test-"+key for key in expected]
-        assert session.retries_left == (1 if statuses_initial[0] == 200 else 2)
+        assert session.retries_left == 1
         assert session.failure is None
         assert "test-first" not in json.dumps(events)
         assert "PRIVATE_PROVIDER_BODY" not in json.dumps(events)

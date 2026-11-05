@@ -360,14 +360,20 @@ def test_preflight_zero_shared_budget_fails_fast_without_attempts():
     assert len(calls) == 0
 
 
-def test_preflight_key_rotation_stays_bounded_by_key_count():
+def test_preflight_authentication_failure_never_rotates_credentials():
+    # NR2-F1: preflight has no automatic retries of any kind by default, and
+    # an automatically dispatched fresh credential is still an automatic
+    # preflight retry. A 401/403 in preflight fails fast after ONE dispatch;
+    # the second configured key is never used. Rotation remains available to
+    # the analysis phase only (see test_equivalent_endpoint_urls_preserve_
+    # rotation, which exercises analysis).
     m, session, factory, calls, events, _ = setup(
         [httpx.Response(401, json={"error": {"message": "SECRET"}})] * 4)
     session.register_keys("https://model.invalid/v1", ["key-one", "key-two"])
     with pytest.raises(m.ModelEndpointFailure) as failure:
         session.preflight(factory, MODEL, timeout=30)
     assert failure.value.kind == "authentication"
-    assert len(calls) == 2  # one attempt per configured key, then fail fast
+    assert len(calls) == 1  # fail fast: no credential rotation in preflight
     assert session.retries_left == 2
     assert "SECRET" not in json.dumps(events)
 
@@ -384,6 +390,9 @@ def test_preflight_rate_limit_retry_after_beyond_deadline_stays_bounded():
 
 @pytest.mark.parametrize("endpoint", ["https://MODEL.invalid:443/v1", "https://model.invalid/v1/"])
 def test_equivalent_endpoint_urls_preserve_rotation(endpoint):
+    # Rotation is an ANALYSIS-phase capability after NR2-F1 (preflight never
+    # rotates). Equivalent endpoint spellings must still map to one key pool
+    # so the analysis-phase rotation finds both keys.
     calls = []
     def reply(request):
         calls.append(request.headers["authorization"])
@@ -394,7 +403,7 @@ def test_equivalent_endpoint_urls_preserve_rotation(endpoint):
     from app.model_endpoint import ModelEndpointSession
     session = ModelEndpointSession()
     session.register_keys(endpoint, ["invalid-key", "valid-key"], model=MODEL)
-    session.preflight(factory, MODEL)
+    session.call(factory, {"model": MODEL, "messages": []}, MODEL)
     assert calls == ["Bearer invalid-key", "Bearer valid-key"]
 
 
@@ -436,7 +445,10 @@ def test_foreign_url_object_compatibility_contract_simulated():
         def close(self): self.client.close()
     session = ModelEndpointSession()
     session.register_keys(ForeignURL(), ["invalid-key", "valid-key"], model=MODEL)
-    assert session.preflight(ForeignClient, MODEL).choices[0].message.content == "OK"
+    # Rotation is exercised on the analysis path: preflight never rotates
+    # (NR2-F1). Equivalent foreign URL objects must still hit one key pool.
+    out = session.call(ForeignClient, {"model": MODEL, "messages": []}, MODEL)
+    assert out.choices[0].message.content == "OK"
     assert calls == ["Bearer invalid-key", "Bearer valid-key"]
     assert session.failure is None
 

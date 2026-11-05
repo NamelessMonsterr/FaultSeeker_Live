@@ -107,30 +107,41 @@ def rotation_runtime(monkeypatch, statuses, retry_limit=3, budget=60, seconds=1)
 
 
 @pytest.mark.parametrize("first_status", [401, 403])
-def test_preflight_rotates_key_specific_failures_and_keeps_valid_key(monkeypatch, first_status):
-    runtime, calls, events, query = rotation_runtime(monkeypatch, [first_status, 200, 200])
-    runtime.preflight(["gpt-6.1-sol-low"])
-    query()  # Upstream factories may still seed the rejected first key.
-    assert calls == ["Bearer test-first", "Bearer test-second", "Bearer test-second"]
-    # Preflight rotation is bounded by the configured key count and no longer
-    # consumes the shared analysis retry allowance.
+def test_preflight_key_specific_failures_fail_fast_without_rotation(monkeypatch, first_status):
+    # NR2-F1: preflight never rotates credentials - an automatically
+    # dispatched fresh credential is still an automatic preflight retry, and
+    # preflight has none by default. 401/403 fails after ONE dispatch, and
+    # the failed preflight marks the session unhealthy (assert_healthy), so
+    # no later call starts another ladder on this session either.
+    from app.model_endpoint import ModelEndpointFailure
+    runtime, calls, events, query = rotation_runtime(monkeypatch, [first_status, 200])
+    with pytest.raises(ModelEndpointFailure) as failure:
+        runtime.preflight(["gpt-6.1-sol-low"])
+    assert failure.value.kind == "authentication"
+    assert failure.value.as_dict()["scope"] == "credential"
+    assert calls == ["Bearer test-first"]
     assert runtime.session.retries_left == 3
-    assert runtime.session.failure is None
+    with pytest.raises(ModelEndpointFailure):
+        query()
+    assert calls == ["Bearer test-first"]
     assert "test-first" not in json.dumps(events)
     assert "PRIVATE_PROVIDER_BODY" not in json.dumps(events)
 
 
-def test_all_keys_invalid_fails_once_without_another_ladder(monkeypatch):
+def test_preflight_all_keys_invalid_fails_fast_first_dispatch_only(monkeypatch):
+    # NR2-F1: with no preflight rotation, an invalid first credential ends
+    # preflight after one dispatch; the second key is never probed, and the
+    # unhealthy session blocks any later ladder.
     from app.model_endpoint import ModelEndpointFailure
-    runtime, calls, events, query = rotation_runtime(monkeypatch, [401, 401])
+    runtime, calls, events, query = rotation_runtime(monkeypatch, [401])
     with pytest.raises(ModelEndpointFailure) as failure:
         runtime.preflight(["gpt-6.1-sol-low"])
-    assert len(calls) == 2
+    assert len(calls) == 1
     assert failure.value.kind == "authentication"
     assert failure.value.as_dict()["scope"] == "credential"
     with pytest.raises(ModelEndpointFailure):
         query()
-    assert len(calls) == 2
+    assert len(calls) == 1
 
 
 def test_preflight_429_never_rotates_credentials_and_fails_fast(monkeypatch):
@@ -163,35 +174,43 @@ def test_endpoint_outage_does_not_rotate_keys_or_reset_budget(monkeypatch):
 
 def test_shared_retry_budget_survives_key_rotation_and_success(monkeypatch):
     from app.model_endpoint import ModelEndpointFailure
-    runtime, calls, events, query = rotation_runtime(monkeypatch, [401, 200, 502, 502], retry_limit=1)
+    runtime, calls, events, query = rotation_runtime(monkeypatch, [200, 401, 200, 502], retry_limit=1)
     runtime.preflight(["gpt-6.1-sol-low"])
-    # Preflight rotation consumed nothing: analysis still has its full allowance.
     assert runtime.session.retries_left == 1
+    # Analysis 401 rotates (one allowance spent) and succeeds on the second key.
+    query()
+    assert len(calls) == 3
+    assert runtime.session.retries_left == 0
+    # Allowance exhausted: the next transient failure cannot retry.
     with pytest.raises(ModelEndpointFailure):
         query()
     assert len(calls) == 4
     assert runtime.session.retries_left == 0
-    assert runtime.session.spent == 5  # 4 one-second calls + 1s retry backoff
+    assert runtime.session.spent == 4  # 4 one-second calls, rotation has no backoff
 
 
 def test_shared_time_budget_survives_rotation(monkeypatch):
     from app.model_endpoint import ModelEndpointFailure
-    runtime, calls, events, query = rotation_runtime(monkeypatch, [401, 200, 200], budget=5, seconds=2)
+    runtime, calls, events, query = rotation_runtime(monkeypatch, [200, 401, 200], budget=5, seconds=2)
     runtime.preflight(["gpt-6.1-sol-low"])
-    assert runtime.session.spent == 4
+    assert runtime.session.spent == 2
+    # Analysis rotation shares the same clock: the rotated attempt pushes
+    # spent past the budget and the boundary check reports it honestly.
     with pytest.raises(ModelEndpointFailure) as failure:
         query()
     assert failure.value.kind == "budget_exhausted"
     assert len(calls) == 3 and runtime.session.spent == 6
 
 
-def test_preflight_rotation_is_bounded_by_key_count_not_allowance(monkeypatch):
+def test_preflight_never_rotates_regardless_of_analysis_allowance(monkeypatch):
     from app.model_endpoint import ModelEndpointFailure
-    # Even with a zero analysis retry allowance, preflight may rotate through
-    # the configured keys (bounded by key count) to find a working credential.
-    runtime, calls, events, query = rotation_runtime(monkeypatch, [401, 200], retry_limit=0)
-    runtime.preflight(["gpt-6.1-sol-low"])
-    assert calls == ["Bearer test-first", "Bearer test-second"]
+    # NR2-F1: preflight rotation is gone entirely; the analysis allowance
+    # (even zero) is irrelevant to that. One dispatch, fail fast.
+    runtime, calls, events, query = rotation_runtime(monkeypatch, [401], retry_limit=0)
+    with pytest.raises(ModelEndpointFailure) as failure:
+        runtime.preflight(["gpt-6.1-sol-low"])
+    assert failure.value.kind == "authentication"
+    assert calls == ["Bearer test-first"]
     assert runtime.session.retries_left == 0
 
 
@@ -202,15 +221,6 @@ def test_analysis_rotation_still_requires_shared_retry_allowance(monkeypatch):
     with pytest.raises(ModelEndpointFailure):
         query()
     assert len(calls) == 2 and runtime.session.retries_left == 0
-
-
-def test_preflight_deadline_is_not_restarted_by_key_rotation(monkeypatch):
-    from app.model_endpoint import ModelEndpointFailure
-    runtime, calls, events, query = rotation_runtime(monkeypatch, [401, 200], seconds=11)
-    with pytest.raises(ModelEndpointFailure) as failure:
-        runtime.preflight(["gpt-6.1-sol-low"], timeout=20)
-    assert failure.value.kind == "budget_exhausted"
-    assert len(calls) == 2 and runtime.session.spent == 22
 
 
 def test_second_model_cannot_start_after_shared_preflight_deadline(monkeypatch):

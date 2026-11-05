@@ -593,7 +593,8 @@ class ModelEndpointSession:
                 if deadline is not None and self.clock() >= deadline:
                     self._fail(self._out_of_time(phase, deadline, last_error))
                 next_key = None
-                if pool and len(pool["keys"]) > 1 and error.kind == "authentication":
+                if (phase != "preflight" and pool and len(pool["keys"]) > 1
+                        and error.kind == "authentication"):
                     pool["rejected"].add(pool["active"])
                     next_key = next((key for key in pool["keys"] if key not in pool["rejected"]), None)
                     if next_key is None:
@@ -611,10 +612,15 @@ class ModelEndpointSession:
                     # policy. A 429 fails immediately regardless: it is the
                     # provider saying stop, and it never rotates credentials
                     # above - rotating keys against one account's rate limit
-                    # is a limit bypass, not failover. (An available
-                    # authentication-failure rotation, next_key set above,
-                    # skips this gate: a fresh credential is not a retry.)
-                    # Keep the provider's Retry-After hint on the record.
+                    # is a limit bypass, not failover. Preflight also never
+                    # rotates credentials on authentication failure (NR2-F1):
+                    # an automatically dispatched fresh credential is still an
+                    # automatic preflight retry, and preflight has none by
+                    # default - 401/403 fails fast here like every other
+                    # non-transient error. Rotation stays available to the
+                    # analysis phase only, bounded by the shared configured
+                    # allowance. Keep the provider's Retry-After hint on the
+                    # record.
                     if (error.kind == "rate_limited"
                             or not _preflight_cold_start_retries_enabled()):
                         if retry_hint and error.kind == "rate_limited":
