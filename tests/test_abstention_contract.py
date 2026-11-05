@@ -516,11 +516,24 @@ def test_summary_exposes_abstention_counters_on_real_dispatch():
     assert summary["abstention_augmented_calls"] == 1
     assert summary["abstention_targeting_mismatches"] == 0
     # wire proof: the request that left for the provider carried the contract
-    assert sent[0]["messages"][-1]["content"].endswith(me.ABSTENTION_CONTRACT.strip().splitlines()[-1].strip()[-20:]) \
-        or me.ABSTENTION_CONTRACT.splitlines()[1].strip()[:30] in sent[0]["messages"][-1]["content"]
+    assert me.ABSTENTION_CONTRACT.strip()[-40:] in sent[0]["messages"][-1]["content"]
+    # per-call correlation: the log names the exact call, its phase, and a
+    # non-secret hash + structural contract-presence check captured at the
+    # provider request boundary
+    log = summary["abstention_calls"]
+    assert len(log) == 1
+    entry = log[0]
+    assert entry["seq"] == 1 and entry["phase"] == "analysis"
+    assert entry["model"] == "mercury-3" and entry["augmented"] is True
+    assert entry["targeting_mismatch"] is False
+    assert entry["contract_on_wire"] is True
+    assert len(entry["wire_messages_sha256_16"]) == 16
     # an ordinary prompt neither augments nor flags drift
     session.call(factory, {"model": "mercury-3",
                            "messages": [{"role": "user", "content": "rank these"}]}, "mercury-3")
     summary = session.summary()
     assert summary["abstention_augmented_calls"] == 1
     assert summary["abstention_targeting_mismatches"] == 0
+    assert len(summary["abstention_calls"]) == 2
+    assert summary["abstention_calls"][1]["augmented"] is False
+    assert "contract_on_wire" not in summary["abstention_calls"][1]

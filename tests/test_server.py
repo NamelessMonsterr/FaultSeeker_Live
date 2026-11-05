@@ -809,3 +809,11 @@ def test_adapter_matched_rule_comes_from_deterministic_observation_not_cards(ser
                                                                               "matched_rule": "approval_abuse"}})
     assert value["classification"]["matched_rule"] == "approval_abuse"
     assert value["deterministic_rule_observation"]["rule_verdict"] == "EXPLOIT"
+
+
+def test_history_brief_never_interpolates_priority_object():
+    # Regression: the /history brief rendered "priority [object Object] (0.94)"
+    # because the priority object was interpolated raw next to the score.
+    from app.server import HISTORY_PAGE
+    assert "${b.priority??" not in HISTORY_PAGE
+    assert "b.priority_score" in HISTORY_PAGE

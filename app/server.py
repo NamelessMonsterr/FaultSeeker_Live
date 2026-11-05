@@ -1432,7 +1432,7 @@ async function main(){
     const cls = e.status==='completed'?'ok':(e.status==='running'?'warn':'err');
     const b = e.brief||{};
     const brief = e.status==='completed'
-      ? `scored ${b.scored_functions??0} fn, ${b.evidence_cards??0} evidence cards, priority ${b.priority??'-'} (${b.priority_score??'-'})`
+      ? `scored ${b.scored_functions??0} fn, ${b.evidence_cards??0} evidence cards, priority ${b.priority_score ?? (b.priority&&b.priority.total) ?? '-'}`
       : (e.detail||'');
     const esc = s => String(s??'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
     div.innerHTML = `<span class="badge ${cls}">${esc(e.status)||'?'}</span> `+

@@ -246,6 +246,13 @@ class ModelEndpointSession:
         # Probable vuln prompts whose signature drifted (2 of 3 elements):
         # observable drift signal, never a silent feature disable.
         self.abstention_targeting_mismatches = 0
+        # Per-call correlation log for the abstention contract: which analysis
+        # calls were augmented, plus a non-secret hash and a structural
+        # presence check captured AT the provider request boundary. Proves
+        # augmentation happened on the relevant call and survived onto the
+        # wire - aggregate counters alone cannot show either.
+        self.call_seq = 0
+        self.abstention_call_log = []
         self.failure = None
         self.lock = threading.RLock()
         self.blank_answer_retries = 0  # ledgered: user-granted blank-answer re-asks
@@ -343,6 +350,8 @@ class ModelEndpointSession:
     def call(self, factory, kwargs, model, phase="analysis", deadline=None):
         with self.lock:
             self.assert_healthy()
+            self.call_seq += 1
+            call_seq = self.call_seq
             retry_number = 0
             blank_retried = False  # one blank-answer re-ask per call, never per run
             pending_blank_reask = False  # granted but not yet dispatched
@@ -403,6 +412,30 @@ class ModelEndpointSession:
                         self.blank_answer_retries += 1
                         pending_blank_reask = False
                     adapted = adapt_request(model, kwargs)
+                    if phase == "analysis":
+                        entry = {"seq": call_seq, "phase": phase, "model": model,
+                                 "attempt": self.attempts,
+                                 "augmented": abstention_augmented,
+                                 "targeting_mismatch": abstention_mismatch}
+                        wire_messages = adapted.get("messages")
+                        if isinstance(wire_messages, list):
+                            import hashlib as _hl, json as _js
+                            entry["wire_messages_sha256_16"] = _hl.sha256(
+                                _js.dumps(wire_messages, sort_keys=True,
+                                          default=str).encode()).hexdigest()[:16]
+                            _last_user = next(
+                                (m.get("content") for m in reversed(wire_messages)
+                                 if isinstance(m, dict) and m.get("role") == "user"
+                                 and isinstance(m.get("content"), str)), None)
+                            if abstention_augmented:
+                                # Observability only: confirms the contract
+                                # survived adapt_request onto the wire. Never
+                                # feeds targeting decisions (structural state
+                                # above remains the sole authority).
+                                entry["contract_on_wire"] = bool(
+                                    _last_user
+                                    and ABSTENTION_CONTRACT.strip()[-40:] in _last_user)
+                        self.abstention_call_log.append(entry)
                     self._record_dispatched(model, adapted, phase)
                     completion = bounded.chat.completions.create(**adapted)
                     # Token accounting happens at receipt, before any validation can
@@ -543,4 +576,5 @@ class ModelEndpointSession:
                 "time_budget_seconds": self.time_budget,
                 "abstention_augmented_calls": self.abstention_augmented_calls,
                 "abstention_targeting_mismatches": self.abstention_targeting_mismatches,
+                "abstention_calls": list(self.abstention_call_log),
                 "failure": self.failure.as_dict() if self.failure else None}
