@@ -91,9 +91,11 @@ def _merged_sequence(identity, tx, chain):
             "created_address": [], "storage_events": [], "trace_state_diff": {}}
 
 
-def _run_production_path(pinned, monkeypatch, fixture, tx, chain, attacker, victim):
+def _run_production_path(pinned, monkeypatch, fixture, tx, chain, attacker, victim, stop_env=False):
     from app.trace_identity import sequence_from_parity
     m = importlib.import_module("app.pipeline_guards")
+    if stop_env:
+        monkeypatch.setenv("FAULTSEEKER_STOP_AFTER_NARROWDOWN", "1")
     identity = sequence_from_parity(fixture["responses"]["trace_transaction"], tx, chain,
                                     verified_chain=chain)
     seq = _merged_sequence(identity, tx, chain)
@@ -157,11 +159,21 @@ def _run_production_path(pinned, monkeypatch, fixture, tx, chain, attacker, vict
     analyzer.fundflow_analysis = {"balance_change": {}}
     analyzer.repeated_patterns = []
     captured = {}
+    monkeypatch.delenv("FAULTSEEKER_MAX_FUNCTIONS", raising=False)
+    if stop_env:
+        # No instance override: the production class-level hook runs, records
+        # the post-selection entry, and stops the run diagnostically.
+        with pytest.raises(m.NarrowdownCaptureStop) as excinfo:
+            analyzer._review_function_calls()
+        report = runtime.failure_report(excinfo.value)
+        captures = list(runtime.narrowdown_capture)
+        runtime.close()
+        return {"ranked": ranked, "ranked_keys": ranked_keys, "captures": captures,
+                "failure": report.get("failure"), "report": report}
     def _capture_selection(selected):
         captured["selected"] = list(selected) if not isinstance(selected, dict) else list(selected.keys())
         raise _SelectionCaptured()
     monkeypatch.setattr(analyzer, "_prepare_children_call_memo", _capture_selection)
-    monkeypatch.delenv("FAULTSEEKER_MAX_FUNCTIONS", raising=False)
     with pytest.raises(_SelectionCaptured):
         analyzer._review_function_calls()
     narrowdown_prompt = stub.prompts[0] if stub.prompts else ""
@@ -222,3 +234,25 @@ def test_e2e_bsc_uranium_production_path(pinned, monkeypatch):
     assert "0x022c0d9f" in r["prompt"] and BSC_PAIR in r["prompt"]
     assert "possible signature" in r["prompt"].lower() or "possible_signature" in r["prompt"]
     assert 0 < len(r["selected"]) <= 5
+
+
+def test_e2e_stop_after_narrowdown_is_diagnostic(pinned, monkeypatch):
+    """FAULTSEEKER_STOP_AFTER_NARROWDOWN=1: the run halts right after the real
+    selection loop with a clearly diagnostic failure record, retaining the
+    actual serializer prompt, raw reply, pre/post counts and model config."""
+    r = _run_production_path(pinned, monkeypatch, ETH_FIX, ETH_TX, "eth", ETH_ATTACKER, ETH_VULN,
+                             stop_env=True)
+    assert r["failure"]["kind"] == "diagnostic_stop", r["failure"]
+    assert "not a provider or product failure" in r["failure"]["message"].lower()
+    nd = [c for c in r["captures"] if c.get("kind") == "narrowdown"]
+    assert nd, "no narrow-down query captures"
+    assert nd[0]["candidate_count"] == len(r["ranked"].functions_to_be_inspected)
+    assert nd[0]["prompt"] and nd[0]["reply"] is not None
+    sel = [c for c in r["captures"] if c.get("kind") == "narrowdown_selection"]
+    assert len(sel) == 1, f"expected exactly one post-selection entry: {sel}"
+    s = sel[0]
+    assert s["pre_candidate_count"] == len(r["ranked"].functions_to_be_inspected)
+    assert 0 < s["post_selection_count"] <= 5
+    assert all(k.lower() in r["ranked_keys"] for k in s["post_selection_keys"])
+    assert set(s["model_config"]) >= {"model", "reasoning_effort", "retry_limit", "max_functions"}
+    assert any("intentionally" in l for l in r["report"].get("limitations", []))

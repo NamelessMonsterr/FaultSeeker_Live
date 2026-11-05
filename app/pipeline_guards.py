@@ -294,6 +294,13 @@ def walk(node):
         pending.extend(reversed(current.get("children", [])))
 
 
+class NarrowdownCaptureStop(Exception):
+    """Intentional diagnostic stop (FAULTSEEKER_STOP_AFTER_NARROWDOWN=1): the
+    narrow-down selection boundary has been captured and the run halts before
+    any per-function analysis. This is a requested measurement, not a provider
+    or product failure."""
+
+
 class PipelineRuntime:
     def __init__(self, tx_hash, chain, session=None, emit=lambda event: None):
         self.tx_hash, self.chain = tx_hash.lower(), chain.lower()
@@ -532,6 +539,36 @@ class PipelineRuntime:
             finally:
                 analyzer.agent = real_agent
         self.replace(FunctionAnalyzer, "_review_function_calls", capturing_rfc)
+
+        # Post-selection boundary: _prepare_children_call_memo is called exactly
+        # once, immediately after BOTH narrow-down loops finish and before any
+        # per-function analysis. Record the pre/post selection state so the
+        # captured payload can be compared against the model's final choice.
+        # FAULTSEEKER_STOP_AFTER_NARROWDOWN=1 then stops the run here
+        # (diagnostic, bounded: no per-function model calls are made).
+        original_pccm = FunctionAnalyzer._prepare_children_call_memo
+        stop_env = os.getenv("FAULTSEEKER_STOP_AFTER_NARROWDOWN") == "1"
+        model_cfg = {"model": os.getenv("FAULTSEEKER_MODEL", ""),
+                     "reasoning_effort": os.getenv("FAULTSEEKER_MERCURY_REASONING_EFFORT", ""),
+                     "retry_limit": os.getenv("FAULTSEEKER_MODEL_RETRY_LIMIT", ""),
+                     "max_functions": os.getenv("FAULTSEEKER_MAX_FUNCTIONS", "")}
+        def capturing_pccm(analyzer, selected_functions, *args, **kwargs):
+            post_keys = (list(selected_functions.keys()) if isinstance(selected_functions, dict)
+                         else list(selected_functions or []))
+            self.narrowdown_capture.append({"kind": "narrowdown_selection",
+                             "model_config": dict(model_cfg),
+                             "pre_candidate_count": len(getattr(analyzer, "functions_to_be_inspected", {}) or {}),
+                             "pre_created_contract_candidates": list(getattr(analyzer, "address_calls_with_created_contract_in_params", {}) or {}),
+                             "post_selection_count": len(post_keys),
+                             "post_selection_keys": post_keys,
+                             "repeated_patterns_count": len(getattr(analyzer, "repeated_patterns", []) or [])})
+            if stop_env:
+                raise NarrowdownCaptureStop(
+                    f"Intentional diagnostic stop after the narrow-down selection boundary "
+                    f"({len(post_keys)} functions selected). Payload and raw replies retained in "
+                    "_debug.narrowdown_capture. Not a provider or product failure.")
+            return original_pccm(analyzer, selected_functions, *args, **kwargs)
+        self.replace(FunctionAnalyzer, "_prepare_children_call_memo", capturing_pccm)
         return self
 
     def _model_config(self, model):
@@ -726,6 +763,12 @@ class PipelineRuntime:
                                 "narrowdown_capture": deepcopy(self.narrowdown_capture)}
         if isinstance(error, TraceIdentityError):
             result["failure"] = {"kind": "trace_identity", "message": str(error)}
+        if isinstance(error, NarrowdownCaptureStop):
+            result["failure"] = {"kind": "diagnostic_stop", "message": str(error)}
+            result["limitations"].append(
+                "Run halted intentionally at the narrow-down selection boundary for payload capture "
+                "(FAULTSEEKER_STOP_AFTER_NARROWDOWN=1). No per-function analysis was attempted; "
+                "this is a diagnostic measurement, not an analysis failure.")
         result["trace_provenance"] = deepcopy((self.sequence or {}).get("trace_provenance", {}))
         return result
 
