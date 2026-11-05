@@ -102,3 +102,8 @@ def test_structured_blocks_consumed_within_scan_budget():
                                  "token: abcdefghijklmnop", 'passwd="abcdefghijklmnop"', "id_token: 'abcdefghijklmnop'"])
 def test_unquoted_and_quoted_credential_fields_redacted(raw):
     assert "abcdefghijklmnop" not in ce.redact(raw)
+
+
+def test_hash_precheck_counts_json_escape_expansion():
+    assert ce.sha16(["\x00" * 500_000]) == "skipped_oversize"
+    assert ce.sha16(["abc"]) not in ("skipped_oversize", "unserializable")

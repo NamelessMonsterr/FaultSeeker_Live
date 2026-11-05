@@ -1365,12 +1365,21 @@ async def evidence(run_id: str, request: Request):
         return JSONResponse({"error": "not found"}, status_code=404)
     path = os.path.join(RUNS_DIR, run_id + ".evidence.json")
     try:
-        st = os.lstat(path)
-        if not stat_mod.S_ISREG(st.st_mode) or st.st_size > 3_000_000:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            st = os.fstat(fd)
+            if not stat_mod.S_ISREG(st.st_mode) or st.st_size > 3_000_000:
+                return JSONResponse({"error": "not found"}, status_code=404)
+            with os.fdopen(fd, "rb") as f:
+                fd = None
+                raw = f.read(3_000_001)
+        finally:
+            if fd is not None:
+                os.close(fd)
+        if len(raw) > 3_000_000:
             return JSONResponse({"error": "not found"}, status_code=404)
-        with open(path, encoding="utf-8") as f:
-            body = json.load(f)
-    except (OSError, json.JSONDecodeError):
+        body = json.loads(raw.decode("utf-8"))
+    except (OSError, ValueError):
         return JSONResponse({"error": "not found"}, status_code=404)
     return JSONResponse(body, headers={"Cache-Control": "no-store"})
 

@@ -81,7 +81,7 @@ def _within_budget(value, budget):
         if nodes > 20000 or d > 12:
             return False
         if isinstance(v, str):
-            used += len(v)
+            used += 6 * len(v)  # worst-case JSON escaping (\\uXXXX per char)
         elif isinstance(v, dict):
             used += 4 * len(v)
             if len(v) > 5000:
@@ -89,7 +89,7 @@ def _within_budget(value, budget):
             for k, x in v.items():
                 if not isinstance(k, str):
                     return False
-                used += len(k)
+                used += 6 * len(k)
                 stack.append((x, d + 1))
         elif isinstance(v, (list, tuple)):
             used += len(v)
@@ -109,7 +109,7 @@ def sha16(value):
     """Digest of the canonical JSON of the WHOLE value. A bounded structural
     pre-check runs first; oversized or unbounded structures are not serialized
     at all (explicit marker). Identity only, not a wire hash."""
-    if not _within_budget(value, MAX_HASH_CHARS // 2):
+    if not _within_budget(value, MAX_HASH_CHARS):
         return "skipped_oversize"
     h = hashlib.sha256()
     n = 0
