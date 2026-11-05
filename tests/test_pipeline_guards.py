@@ -847,3 +847,41 @@ def test_calibrated_confidence_presentation_is_reconciled():
                                              "explanation": ["Overall confidence: 62.0% (moderate) — Further analysis recommended"]}}]})
     conf2 = value2["scored_functions"][0]["confidence"]
     assert conf2["level"] == "moderate" and "proxy_overall" not in conf2
+
+
+def test_function_verdict_capture_records_proposals_and_rejections():
+    # The per-function verdict hook must record what each analyzer's deep
+    # analysis proposed and rejected, so the micro-loss point between deep
+    # analysis and final scoring is evidence. No engine edit; no model calls.
+    from app.pipeline_guards import PipelineRuntime
+    runtime = PipelineRuntime(TX, "eth")
+
+    class _StubAnalyzer:
+        functions_to_be_inspected = {
+            "0xefd86b62_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511": {
+                "analysis_result": {"potentially_vulnerable_functions": {
+                    "0x095ea7b3_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": {"evidence": ["x"]}}}},
+            "0xc9a69562_0xc793113f1548b97e37c409f39244ee44241bf2b3": {
+                "analysis_result": {"potentially_vulnerable_functions": {}}},
+        }
+        rejected_findings = [{"key": "0xdead", "reason": "unbindable_target"}]
+
+    runtime._capture_function_verdicts(_StubAnalyzer())
+    assert len(runtime.function_verdicts) == 1
+    entry = runtime.function_verdicts[0]
+    assert entry["known_buckets"] == ["0xefd86b62_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+                                      "0xc9a69562_0xc793113f1548b97e37c409f39244ee44241bf2b3"]
+    assert entry["proposals"] == {
+        "0xefd86b62_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511":
+            ["0x095ea7b3_0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"]}
+    assert entry["rejected_findings"] == [{"key": "0xdead", "reason": "unbindable_target"}]
+
+    # Malformed analyzer state must never break the run
+    runtime._capture_function_verdicts(object())
+    assert len(runtime.function_verdicts) == 2
+    assert runtime.function_verdicts[1]["proposals"] == {}
+
+    # Serialized into _debug by annotate_result
+    runtime.sequence = None
+    result = runtime.annotate_result({"scored_functions": [], "evidence_cards": []})
+    assert result["_debug"]["function_verdicts"] == runtime.function_verdicts

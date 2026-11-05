@@ -351,6 +351,7 @@ class PipelineRuntime:
         self.sequence = None
         self.ranked_targets = []
         self.narrowdown_capture = []
+        self.function_verdicts = []  # per-analyzer deep-analysis proposals + rejections
         self.restorers = []
         self.source = None
         self.model_keys = {}
@@ -546,6 +547,7 @@ class PipelineRuntime:
                 raise
             self.assert_healthy()  # ThreadPoolExecutor may catch individual failures.
             self.function_analysis["completed"] += 1
+            self._capture_function_verdicts(analyzer)
             return result
         self.replace(FunctionAnalyzer, "run", checked_analysis)
         for _name, _kind in (("_function_analysis_init", "function"), ("_txn_analysis_init", "transaction")):
@@ -615,6 +617,29 @@ class PipelineRuntime:
         self.replace(FunctionAnalyzer, "_prepare_children_call_memo", capturing_pccm)
         return self
 
+    def _capture_function_verdicts(self, analyzer):
+        # Minimal per-function verdict capture (parent directive 2026-11-05
+        # 17:38; no engine edit - the run() wrap already holds the analyzer
+        # instance). Records what each analyzer's deep analysis PROPOSED and
+        # REJECTED, so the micro-loss point between deep analysis and final
+        # scoring is evidence, not hypothesis. Observability must never
+        # break the run.
+        try:
+            buckets = getattr(analyzer, "functions_to_be_inspected", None) or {}
+            proposals = {}
+            for bucket, value in buckets.items():
+                res = (value or {}).get("analysis_result") or {}
+                pvf = res.get("potentially_vulnerable_functions") or {}
+                if isinstance(pvf, dict) and pvf:
+                    proposals[bucket] = list(pvf.keys())
+            self.function_verdicts.append({
+                "known_buckets": list(buckets.keys()),
+                "proposals": proposals,
+                "rejected_findings": deepcopy(getattr(analyzer, "rejected_findings", None) or []),
+            })
+        except Exception:
+            pass
+
     def _dispatched_configs(self):
         # Effective configs live on the run's model-endpoint session, recorded
         # at the provider send boundary (ModelEndpointSession.call). Offline
@@ -647,11 +672,12 @@ class PipelineRuntime:
         self.assert_healthy()
         result = deepcopy(value)
         reconcile_calibrated_confidence(result)
-        if self.narrowdown_capture or self.ranked_targets:
+        if self.narrowdown_capture or self.ranked_targets or self.function_verdicts:
             dbg = result.setdefault("_debug", {})
             if isinstance(dbg, dict):
                 dbg["ranked_targets"] = list(self.ranked_targets)
                 dbg["narrowdown_capture"] = deepcopy(self.narrowdown_capture)
+                dbg["function_verdicts"] = deepcopy(self.function_verdicts)
                 dbg["dispatched_configs"] = self._dispatched_configs()
         allowed = {(str(n.get("address", "")).lower(), n["function"].lower()) for n in walk(self.sequence["trace"])} if self.sequence else set()
         unsupported = []
