@@ -868,6 +868,7 @@ def worker(run_id, req, q):
             raise ValueError("pipeline returned an invalid result")
         if runtime:
             result = runtime.annotate_result(result)
+            _write_private_evidence(runtime, run_id)
         result["_demo_model_requested"] = mode
         result["analysis_mode"] = "no-llm" if mode == "no-llm" else "live-pipeline"
         if result.get("error"):
@@ -882,6 +883,7 @@ def worker(run_id, req, q):
         q.put(("done", {"ok": result.get("analysis_status") == "completed", "analysis_status": result.get("analysis_status")}))
     except Exception as e:  # A failed transport never becomes a no-finding verdict.
         if runtime is not None:
+            _write_private_evidence(runtime, run_id)
             try:
                 failed = _redact(runtime.failure_report(e), request_secrets)
                 failed_path = os.path.join(RUNS_DIR, run_id + ".json")
@@ -1331,6 +1333,37 @@ def _adapt_result_for_view(res):
         if res.get("analysis_status") != "completed":
             view["classification"]["rule_verdict"] = "INCONCLUSIVE"
     return view
+
+
+def _write_private_evidence(runtime, run_id):
+    """Bounded model-boundary evidence goes to a private 0600 file only: never
+    into the result JSON, event stream, history mirror or UI. Best effort."""
+    try:
+        fn = getattr(runtime, "write_private_evidence", None)
+        if callable(fn):
+            fn(RUNS_DIR, run_id)
+    except Exception:
+        pass
+
+
+def _evidence_export_enabled():
+    return os.environ.get("FAULTSEEKER_EVIDENCE_EXPORT", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+@app.get("/api/evidence/{run_id}")
+async def evidence(run_id: str):
+    """Operator-only export of the private per-call evidence. OFF unless
+    FAULTSEEKER_EVIDENCE_EXPORT is set on the service; behind the access gate
+    in every case; never linked from the UI; not mirrored to history."""
+    if not _evidence_export_enabled() or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", run_id):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    path = os.path.join(RUNS_DIR, run_id + ".evidence.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            body = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/result/{run_id}")

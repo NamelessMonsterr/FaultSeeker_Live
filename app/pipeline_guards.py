@@ -4,6 +4,7 @@ Hooks are installed per worker before main() is entered, and removed on exit.
 The upstream checkout is not edited. This keeps local and Docker execution on
 the same transport/identity policy while retaining the pinned source revision.
 """
+import hashlib
 import inspect
 import json
 import threading
@@ -355,6 +356,9 @@ class PipelineRuntime:
     def __init__(self, tx_hash, chain, session=None, emit=lambda event: None):
         self.tx_hash, self.chain = tx_hash.lower(), chain.lower()
         self.session = session
+        _ce = getattr(session, "call_evidence", None)
+        if _ce is not None:
+            _ce.bound_source_probe = self._probe_bound_sources
         self.emit = emit
         self.partial = None
         self.sequence = None
@@ -1566,6 +1570,45 @@ class PipelineRuntime:
         except Exception:
             pass
 
+    def _probe_bound_sources(self, text, scan_complete):
+        """Which of this run's verified bound sources appear in the scanned
+        adapted request. Exact-substring observation only (all escape forms the
+        outbound guard uses). NOT proof that the source the analyzed function
+        needs is present: bound sources are run-wide, not per analyzed bucket."""
+        sources = list(self.bound_source_texts)
+        listed = []
+        for src in sources[:20]:
+            forms = PipelineRuntime._source_forms(src)
+            if any(f in text for f in forms if f):
+                status = "included_exact"
+            elif scan_complete:
+                status = "not_found"
+            else:
+                status = "unknown_scan_truncated"
+            listed.append({"chars": len(src), "sha256_16": hashlib.sha256(src.encode("utf-8", "replace")).hexdigest()[:16],
+                           "status": status})
+        return {"bound_source_count": len(sources), "listed": listed,
+                "not_listed": max(0, len(sources) - 20),
+                "note": "run-wide bound sources; inclusion of one is not proof the analyzed function's own source is present"}
+
+    def write_private_evidence(self, runs_dir, run_id):
+        """Write the bounded call evidence to a private 0600 file beside the run.
+        Never part of the result JSON, events, history mirror or any route that
+        is on by default (see server /api/evidence). Best effort, never raises."""
+        try:
+            snap = self._call_evidence_snapshot()
+            if not snap:
+                return None
+            path = os.path.join(runs_dir, run_id + ".evidence.json")
+            tmp = path + ".tmp"
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(snap, f)
+            os.replace(tmp, path)
+            return path
+        except Exception:
+            return None
+
     def _call_evidence_snapshot(self):
         # Observability only: any failure (or a session without the recorder)
         # yields None and never affects the result.
@@ -1756,11 +1799,6 @@ class PipelineRuntime:
                 with self._verdicts_lock:
                     dbg["function_verdicts"] = deepcopy(self.function_verdicts)
                 dbg["dispatched_configs"] = self._dispatched_configs()
-        _ce = self._call_evidence_snapshot()
-        if _ce and isinstance(result, dict):
-            _dbg = result.setdefault("_debug", {})
-            if isinstance(_dbg, dict):
-                _dbg["call_evidence"] = _ce
         self._annotate_finding_provenance(result)
         # Score provenance: the priority "exploitability" component IS the
         # deterministic rule's confidence (engine pipeline.py passes
@@ -1943,11 +1981,6 @@ class PipelineRuntime:
             result["_debug"] = {"ranked_targets": list(self.ranked_targets),
                                 "narrowdown_capture": deepcopy(self.narrowdown_capture),
                                 "dispatched_configs": self._dispatched_configs()}
-        _ce = self._call_evidence_snapshot()
-        if _ce:
-            _dbg = result.setdefault("_debug", {})
-            if isinstance(_dbg, dict):
-                _dbg["call_evidence"] = _ce
         if isinstance(error, TraceIdentityError):
             result["failure"] = {"kind": "trace_identity", "message": str(error)}
         if isinstance(error, OutboundRequestRejected) or self.outbound_rejection is not None:

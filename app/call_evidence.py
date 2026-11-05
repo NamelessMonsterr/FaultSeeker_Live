@@ -119,6 +119,10 @@ def _ids(text, limit=MAX_IDS):
 def request_features(adapted_messages):
     """Program-computed facts about the ADAPTED messages (not template text)."""
     msgs = adapted_messages if isinstance(adapted_messages, list) else []
+    return _features(msgs)[0]
+
+
+def _features(msgs):
     parts, total, scanned = [], 0, 0
     for m in msgs[:MAX_MESSAGES_SCAN]:
         c = m.get("content") if isinstance(m, dict) else None
@@ -130,7 +134,8 @@ def request_features(adapted_messages):
                 scanned += len(chunk)
     full = "\n".join(parts)
     ids, ids_more = _ids(full)
-    return {
+    complete = not (total > scanned or len(msgs) > MAX_MESSAGES_SCAN)
+    return ({
         "message_count": len(msgs),
         "roles": [label(m.get("role"), 20) if isinstance(m, dict) else None for m in msgs[:60]],
         "total_chars": total,
@@ -140,7 +145,7 @@ def request_features(adapted_messages):
         "source_markers": {k: len(rx.findall(full)) for k, rx in _SOURCE_MARKERS.items()},
         "call_ids_in_request": ids,
         "call_ids_in_request_more": ids_more,
-    }
+    }, full, complete)
 
 
 def response_features(content):
@@ -187,6 +192,10 @@ class CallEvidence:
         self.dropped_calls = 0
         self._text_used = 0
         self._lock = threading.Lock()
+        # Optional callable(text, scan_complete) -> dict describing which of the
+        # run's verified bound sources appear in the scanned request text.
+        # Observation only; any error is swallowed at the call site below.
+        self.bound_source_probe = None
 
     def _text(self, text, head, tail):
         b = bounded_text(text, head, tail)
@@ -209,6 +218,13 @@ class CallEvidence:
             self.dropped_calls += 1
             return None
         msgs = adapted_messages if isinstance(adapted_messages, list) else []
+        req_feats, full_text, complete = _features(msgs)
+        bound = None
+        if self.bound_source_probe is not None:
+            try:
+                bound = self.bound_source_probe(full_text, complete)
+            except Exception:
+                bound = {"status": "probe_error"}
         last_user = next((m for m in reversed(msgs[-MAX_MESSAGES_SCAN:])
                           if isinstance(m, dict) and m.get("role") == "user"), None)
         content = last_user.get("content") if isinstance(last_user, dict) else None
@@ -216,7 +232,9 @@ class CallEvidence:
                  "adapted_model": label(adapted_model) if adapted_model is not None else None,
                  "attempt": attempt, "prompt_family": label(family, 40) if family else None,
                  "adapted_messages_sha256_16": sha16(msgs),
-                 "request": request_features(msgs),
+                 "request": req_feats,
+                 "bound_sources": bound,
+                 "analyzed_bucket": "not_recorded_at_transport",
                  "last_user_message": self._text(content, HEAD_REQUEST, TAIL_REQUEST),
                  "response": None}
         self.entries.append(entry)
