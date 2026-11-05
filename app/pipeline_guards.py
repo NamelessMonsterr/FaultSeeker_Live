@@ -374,6 +374,36 @@ class PipelineRuntime:
         if self.session:
             self.session.assert_healthy()
 
+    def _ensure_eth_explorer_fallback(self):
+        # Source-acquisition root cause (2026-11-05, verified live): the engine's
+        # 'eth' explorer list is Etherscan-V1-only, and api.etherscan.io/api now
+        # answers every call with status 0 "deprecated V1 endpoint" - which the
+        # engine's explorer_call counts as success, so it never fails over and
+        # get_abi/get_source_code return None even for publicly verified
+        # contracts. Register keyless Blockscout mainnet AHEAD of the dead V1
+        # entries (higher initial score so it is tried first; V1 specs kept
+        # untouched as documented-dead config and future V2 swap point).
+        # Runtime-only registration with restorer - the pinned engine checkout
+        # is never edited. Rebuild the endpoint registry so no cached eth
+        # endpoint list from before install() survives.
+        try:
+            from faultseeker.utils import explorer_provider as _xp
+        except ImportError:
+            return
+        specs = _xp._CHAIN_EXPLORERS.get('eth')
+        if not isinstance(specs, list):
+            return
+        if any('blockscout' in str(url) for url, *_ in specs):
+            return
+        merged = dict(_xp._CHAIN_EXPLORERS)
+        merged['eth'] = [('https://eth.blockscout.com/api', '', 95)] + list(specs)
+        self.replace(_xp, '_CHAIN_EXPLORERS', merged)
+        try:
+            self.replace(_xp, '_registry', _xp._ExplorerRegistry())
+        except AttributeError:
+            pass
+        self.replace(_xp, '_registry', _xp._ExplorerRegistry())
+
     def install_model_hooks(self, agent_module):
         if not self.session:
             return
@@ -462,6 +492,7 @@ class PipelineRuntime:
         self.source = agents
         from faultseeker.forensics import signal_extractor as _sig
         extend_signal_sets(_sig)
+        self._ensure_eth_explorer_fallback()
         if os.getenv("FAULTSEEKER_VISITOR_RPC_RELAY"):
             # Forked workers may inherit a registry populated by a prior diagnostic.
             # Rebuild it after the visitor URL was replaced with the checked relay.

@@ -1092,3 +1092,42 @@ def test_hedgey_provenance_replay_fixture_is_faithful():
     parsed = [_json.loads(l) for l in events]
     assert all(set(e) >= {"t", "ev", "data"} for e in parsed)
     assert not any(e["ev"] in ("done", "end") for e in parsed)  # replay harness appends these
+
+
+def test_eth_explorer_fallback_registers_blockscout_once_and_restores():
+    import importlib
+    m = importlib.import_module("app.pipeline_guards")
+    from faultseeker.utils import explorer_provider as xp
+    original = [list(t) for t in xp._CHAIN_EXPLORERS.get('eth', [])]
+    runtime = m.PipelineRuntime(TX, "eth")
+    runtime._ensure_eth_explorer_fallback()
+    specs = xp._CHAIN_EXPLORERS['eth']
+    assert [list(t) for t in specs[1:]] == original  # originals kept, untouched order
+    assert specs[0][0] == 'https://eth.blockscout.com/api' and specs[0][1] == ''  # keyless, tried first
+    runtime._ensure_eth_explorer_fallback()  # idempotent
+    assert len(xp._CHAIN_EXPLORERS['eth']) == len(original) + 1
+    assert 'eth' not in xp._registry._chains or any('blockscout' in e.base_url for e in xp._registry._chains['eth'])
+    for owner, name, value in reversed(runtime.restorers):
+        setattr(owner, name, value)
+    assert [list(t) for t in xp._CHAIN_EXPLORERS['eth']] == original
+
+
+def test_get_abi_uses_blockscout_failover_shape(monkeypatch):
+    # Blockscout v1-compatible getabi payload parses through the engine's
+    # ContractDownloader.get_abi unchanged; Etherscan-first failover order kept.
+    import importlib
+    importlib.import_module("app.pipeline_guards")
+    from faultseeker.data_collection.contract_downloader import ContractDownloader
+    from faultseeker.utils import explorer_provider as xp
+    calls = []
+    payload = {"status": "1", "message": "OK",
+               "result": '[{"inputs":[],"name":"createLockedCampaign","type":"function"}]'}
+    def fake_call(chain, params, timeout=20):
+        calls.append(chain)
+        return payload
+    monkeypatch.setattr(xp, 'explorer_call', fake_call)
+    import faultseeker.data_collection.contract_downloader as cd
+    monkeypatch.setattr(cd, 'explorer_call', fake_call)
+    abi = ContractDownloader.get_abi('eth', '0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511')
+    assert abi == [{"inputs": [], "name": "createLockedCampaign", "type": "function"}]
+    assert calls
