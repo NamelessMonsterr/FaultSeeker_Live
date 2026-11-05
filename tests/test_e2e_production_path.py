@@ -165,6 +165,11 @@ def _run_production_path(pinned, monkeypatch, fixture, tx, chain, attacker, vict
     with pytest.raises(_SelectionCaptured):
         analyzer._review_function_calls()
     narrowdown_prompt = stub.prompts[0] if stub.prompts else ""
+    # The production capture hook must record the exact payload + raw reply.
+    assert runtime.narrowdown_capture, "narrowdown capture hook did not fire"
+    assert runtime.narrowdown_capture[0]["prompt"] == narrowdown_prompt
+    assert runtime.narrowdown_capture[0]["reply"] == list(ranked.functions_to_be_inspected)[:5]
+    assert runtime.narrowdown_capture[0]["candidate_count"] == len(ranked.functions_to_be_inspected)
     runtime.close()
 
     return {

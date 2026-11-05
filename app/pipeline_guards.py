@@ -302,6 +302,7 @@ class PipelineRuntime:
         self.partial = None
         self.sequence = None
         self.ranked_targets = []
+        self.narrowdown_capture = []
         self.restorers = []
         self.source = None
         self.model_keys = {}
@@ -504,6 +505,33 @@ class PipelineRuntime:
                 self.replace(FunctionAnalyzer, _name, self.wall_cap.wrap(getattr(FunctionAnalyzer, _name), _kind))
         self.replace(FunctionAnalyzer, "_update_potentially_vulnerable_function",
                      self.wall_cap.wrap_update(FunctionAnalyzer._update_potentially_vulnerable_function))
+
+        # Instrumented selection boundary (parent directive 2026-11-05 13:13):
+        # capture the EXACT narrow-down payload and the model's raw reply in
+        # production so selection quality is evaluated on evidence, not on
+        # reconstructed stage guesses. The artifact records pre-selection
+        # candidates (ranked_targets) and each serializer prompt + reply.
+        original_rfc = FunctionAnalyzer._review_function_calls
+        def capturing_rfc(analyzer, *args, **kwargs):
+            real_agent = analyzer.agent
+            captures = self.narrowdown_capture
+            runtime = self
+            class _CapturingAgent:
+                def query(self, prompt, *a, **k):
+                    reply = real_agent.query(prompt, *a, **k)
+                    captures.append({"kind": "narrowdown",
+                                     "candidate_count": len(getattr(analyzer, "functions_to_be_inspected", {}) or {}),
+                                     "prompt": str(prompt),
+                                     "reply": reply})
+                    return reply
+                def __getattr__(self, name):
+                    return getattr(real_agent, name)
+            analyzer.agent = _CapturingAgent()
+            try:
+                return original_rfc(analyzer, *args, **kwargs)
+            finally:
+                analyzer.agent = real_agent
+        self.replace(FunctionAnalyzer, "_review_function_calls", capturing_rfc)
         return self
 
     def _model_config(self, model):
@@ -531,6 +559,11 @@ class PipelineRuntime:
     def annotate_result(self, value):
         self.assert_healthy()
         result = deepcopy(value)
+        if self.narrowdown_capture or self.ranked_targets:
+            dbg = result.setdefault("_debug", {})
+            if isinstance(dbg, dict):
+                dbg["ranked_targets"] = list(self.ranked_targets)
+                dbg["narrowdown_capture"] = deepcopy(self.narrowdown_capture)
         allowed = {(str(n.get("address", "")).lower(), n["function"].lower()) for n in walk(self.sequence["trace"])} if self.sequence else set()
         unsupported = []
         for item in (result.get("scored_functions") or []) + (result.get("evidence_cards") or []):
