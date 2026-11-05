@@ -165,7 +165,7 @@ def bounded_text(text, head, tail):
         # a credential value left open to the end of the text, whose key lies
         # before the retained window, would put secret words in the tail.
         um = _UNTERM.search(text)
-        if um and um.start(2) <= n - tail:
+        if um and (um.start(2) <= n - tail or um.start(1) < n - (tail + _EDGE_MARGIN)):
             t = "[REDACTED_OPEN_CREDENTIAL_VALUE]"
     if n > tail and text[-tail - 1:-tail + 1].strip() and len(text[-tail - 1:-tail + 1].strip()) == 2:
         m = _EDGE_RUN.match(t)

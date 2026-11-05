@@ -134,3 +134,10 @@ def test_open_credential_opposite_and_escaped_quotes_still_redacted():
         assert "beta" not in b["text"] and "gamma" not in b["text"], inner
     single = "x" * 2000 + " password: 'one \"two\" three four " + "Q " * 150
     assert "three" not in ce.bounded_text(single, 2000, 100)["text"]
+
+
+def test_open_credential_key_before_inspection_window_value_inside_tail():
+    gap = " " * (ce._EDGE_MARGIN + 20)
+    secret = "x" * 2000 + " token:" + gap + ' "alpha beta gamma delta epsilon'
+    b = ce.bounded_text(secret, 2000, 100)
+    assert "beta" not in b["text"] and "gamma" not in b["text"]
