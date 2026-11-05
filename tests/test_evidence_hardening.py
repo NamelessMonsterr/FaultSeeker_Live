@@ -80,3 +80,25 @@ def test_replace_failure_cleans_tmp_and_fchmod_failure_closes_fd(tmp_path, monke
     monkeypatch.setattr(os, "close", lambda fd: (closed.append(fd), real_close(fd)))
     assert rt.write_private_evidence(str(tmp_path), "r3") is None
     assert closed and not os.listdir(tmp_path)
+
+
+def test_hash_precheck_bounds_wide_and_deep_and_big_scalars():
+    assert ce.sha16({"k%d" % i: i for i in range(6000)}) == "skipped_oversize"
+    deep = cur = []
+    for _ in range(50):
+        n = []; cur.append(n); cur = n
+    assert ce.sha16(deep) == "skipped_oversize"
+    assert ce.sha16(["z" * 5_000_000]) == "skipped_oversize"
+    assert ce.sha16({"a": 1}) not in ("skipped_oversize", "unserializable")
+
+
+def test_structured_blocks_consumed_within_scan_budget():
+    big = "q" * (ce.MAX_FEATURE_SCAN_CHARS)
+    feats, full, complete = ce._features([{"role": "user", "content": [{"type": "text", "text": big}] * 200}])
+    assert len(full) <= ce.MAX_FEATURE_SCAN_CHARS + 200 and not complete
+
+
+@pytest.mark.parametrize("raw", ["token=abcdefghijklmnop", "passwd=abcdefghijklmnop", "id_token=abcdefghijklmnop",
+                                 "token: abcdefghijklmnop", 'passwd="abcdefghijklmnop"', "id_token: 'abcdefghijklmnop'"])
+def test_unquoted_and_quoted_credential_fields_redacted(raw):
+    assert "abcdefghijklmnop" not in ce.redact(raw)

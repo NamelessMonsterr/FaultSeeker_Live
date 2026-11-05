@@ -7,6 +7,7 @@ import json
 import os
 import multiprocessing as mp
 import queue
+import stat as stat_mod
 import re
 import sys
 import threading
@@ -1364,6 +1365,9 @@ async def evidence(run_id: str, request: Request):
         return JSONResponse({"error": "not found"}, status_code=404)
     path = os.path.join(RUNS_DIR, run_id + ".evidence.json")
     try:
+        st = os.lstat(path)
+        if not stat_mod.S_ISREG(st.st_mode) or st.st_size > 3_000_000:
+            return JSONResponse({"error": "not found"}, status_code=404)
         with open(path, encoding="utf-8") as f:
             body = json.load(f)
     except (OSError, json.JSONDecodeError):

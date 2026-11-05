@@ -50,7 +50,7 @@ _REDACTIONS = [
     (re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}"), "[REDACTED_JWT]"),
     (re.compile(r"\b(?:sk|pk|rk|key|tok)[-_][A-Za-z0-9_-]{16,}"), "[REDACTED_KEY]"),
     (re.compile(r"(?i)(authorization|api[_-]?key|x-api-key|access[_-]?token|refresh[_-]?token|"
-                r"client[_-]?secret|password|secret)([\"']?\s*[:=]\s*[\"']?)[^\s\"',}\]]{6,}"),
+                r"id[_-]?token|client[_-]?secret|password|passwd|secret|token)([\"']?\s*[:=]\s*[\"']?)[^\s\"',}\]]{6,}"),
      r"\1\2[REDACTED]"),
 ]
 
@@ -71,15 +71,49 @@ def label(value, limit=MAX_LABEL):
 MAX_HASH_CHARS = 1_500_000
 
 
+def _within_budget(value, budget):
+    """Cheap bounded walk BEFORE any serialization: True only if the structure
+    is small enough (strings, containers, nodes, depth) to hash within budget."""
+    stack, used, nodes = [(value, 0)], 0, 0
+    while stack:
+        v, d = stack.pop()
+        nodes += 1
+        if nodes > 20000 or d > 12:
+            return False
+        if isinstance(v, str):
+            used += len(v)
+        elif isinstance(v, dict):
+            used += 4 * len(v)
+            if len(v) > 5000:
+                return False
+            for k, x in v.items():
+                if not isinstance(k, str):
+                    return False
+                used += len(k)
+                stack.append((x, d + 1))
+        elif isinstance(v, (list, tuple)):
+            used += len(v)
+            if len(v) > 5000:
+                return False
+            stack.extend((x, d + 1) for x in v)
+        elif v is None or isinstance(v, (bool, int, float)):
+            used += 8
+        else:
+            return False
+        if used > budget:
+            return False
+    return True
+
+
 def sha16(value):
-    """Digest of the canonical JSON of the WHOLE value, bounded: the serialized
-    form is measured first and hashing is skipped (explicit marker) above
-    MAX_HASH_CHARS. Identity only, not a wire hash."""
+    """Digest of the canonical JSON of the WHOLE value. A bounded structural
+    pre-check runs first; oversized or unbounded structures are not serialized
+    at all (explicit marker). Identity only, not a wire hash."""
+    if not _within_budget(value, MAX_HASH_CHARS // 2):
+        return "skipped_oversize"
     h = hashlib.sha256()
     n = 0
     try:
-        # streamed: abort as soon as the serialized-size budget is exceeded,
-        # never materializing the full serialization.
         for chunk in json.JSONEncoder(sort_keys=True, default=str).iterencode(value):
             n += len(chunk)
             if n > MAX_HASH_CHARS:
@@ -149,15 +183,21 @@ def _features(msgs):
         if isinstance(c, list):
             # structured content blocks: scan text parts; anything else is
             # unexamined content, so the scan cannot be called complete.
-            tx = []
+            tx, room = [], max(0, MAX_FEATURE_SCAN_CHARS - scanned)
             for b in c[:200]:
                 if isinstance(b, dict) and isinstance(b.get("text"), str) and set(b) <= {"type", "text"}:
-                    tx.append(b["text"])
+                    t = b["text"]
+                    total += len(t)
+                    if room > 0:
+                        tx.append(t[:room])
+                        room -= len(tx[-1])
                 else:
                     unexamined = True
             if len(c) > 200:
                 unexamined = True
-            c = "\n".join(tx)
+            parts.extend(tx)
+            scanned += sum(len(x) for x in tx)
+            c = None
         elif c is not None and not isinstance(c, str):
             unexamined = True
             c = None

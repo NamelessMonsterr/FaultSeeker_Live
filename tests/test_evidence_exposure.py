@@ -111,3 +111,13 @@ def test_worker_writes_evidence_on_success_and_failure_without_raising(server, m
 def _evidence_on(monkeypatch):
     if "disabled_by_env" not in getattr(monkeypatch, "_name", ""):
         monkeypatch.setenv("FAULTSEEKER_CALL_EVIDENCE", "1")
+
+
+def test_route_rejects_symlink_and_oversize_evidence(client, server, monkeypatch):
+    monkeypatch.setenv("FAULTSEEKER_EVIDENCE_TOKEN", "T"*32)
+    H = {"X-Evidence-Token": "T"*32}
+    real = Path(server.RUNS_DIR, "real.txt"); real.write_text('{"a": 1}')
+    os.symlink(real, Path(server.RUNS_DIR, "lnk.evidence.json"))
+    assert client.get("/api/evidence/lnk", headers=H).status_code == 404
+    Path(server.RUNS_DIR, "big.evidence.json").write_text('{"x": "' + "y" * 3_100_000 + '"}')
+    assert client.get("/api/evidence/big", headers=H).status_code == 404
