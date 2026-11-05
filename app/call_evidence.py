@@ -19,6 +19,7 @@ Design rules (tested):
 import hashlib
 import json
 import re
+import threading
 
 MAX_CALLS = 80
 HEAD_REQUEST = 2000
@@ -27,6 +28,9 @@ HEAD_RESPONSE = 3000
 TAIL_RESPONSE = 1000
 TOTAL_TEXT_BUDGET = 450_000   # characters of captured text across all calls
 MAX_IDS = 40
+MAX_FEATURE_SCAN_CHARS = 400_000   # features/regex scan at most this much text
+MAX_PARSE_CHARS = 200_000          # responses larger than this are not JSON-parsed
+MAX_LABEL = 120                    # model/phase/role/finish_reason/key strings
 
 _CALL_ID = re.compile(r"0x[0-9a-fA-F]{8}_0x[0-9a-fA-F]{40}")
 _SOURCE_MARKERS = {
@@ -35,6 +39,12 @@ _SOURCE_MARKERS = {
     "function_decl": re.compile(r"\bfunction\s+\w+\s*\("),
 }
 _REDACTIONS = [
+    (re.compile(r"(?i)([\"']?(?:authorization|api[_-]?key|x-api-key|access[_-]?token|refresh[_-]?token|"
+                r"id[_-]?token|client[_-]?secret|password|passwd|secret|token)[\"']?\s*[:=]\s*)"
+                r"(\"[^\"]*\"|'[^']*')"), r"\1[REDACTED]"),
+    (re.compile(r"(?i)([?&](?:api[_-]?key|key|token|access_token|auth|secret|sig|signature)=)[^&\s\"']+"),
+     r"\1[REDACTED]"),
+    (re.compile(r"(?i)(https?://)[^/\s:@]+:[^/\s@]+@"), r"\1[REDACTED]@"),
     (re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]{8,}"), "Bearer [REDACTED]"),
     (re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}"), "[REDACTED_JWT]"),
     (re.compile(r"\b(?:sk|pk|rk|key|tok)[-_][A-Za-z0-9_-]{16,}"), "[REDACTED_KEY]"),
@@ -50,6 +60,11 @@ def redact(text):
     for pattern, repl in _REDACTIONS:
         text = pattern.sub(repl, text)
     return text
+
+
+def label(value, limit=MAX_LABEL):
+    """Short, redacted, length-bounded string for any retained label or key."""
+    return redact(str(value))[:limit]
 
 
 def sha16(value):
@@ -83,13 +98,23 @@ def _ids(text, limit=MAX_IDS):
 def request_features(adapted_messages):
     """Program-computed facts about the ADAPTED messages (not template text)."""
     msgs = adapted_messages if isinstance(adapted_messages, list) else []
-    full = "\n".join(m.get("content") for m in msgs
-                     if isinstance(m, dict) and isinstance(m.get("content"), str))
+    parts, total, scanned = [], 0, 0
+    for m in msgs:
+        c = m.get("content") if isinstance(m, dict) else None
+        if isinstance(c, str):
+            total += len(c)
+            if scanned < MAX_FEATURE_SCAN_CHARS:
+                chunk = c[:MAX_FEATURE_SCAN_CHARS - scanned]
+                parts.append(chunk)
+                scanned += len(chunk)
+    full = "\n".join(parts)
     ids, ids_more = _ids(full)
     return {
         "message_count": len(msgs),
-        "roles": [m.get("role") if isinstance(m, dict) else None for m in msgs][:60],
-        "total_chars": len(full),
+        "roles": [label(m.get("role"), 20) if isinstance(m, dict) else None for m in msgs][:60],
+        "total_chars": total,
+        "scanned_chars": scanned,
+        "scan_truncated": total > scanned,
         "source_markers": {k: len(rx.findall(full)) for k, rx in _SOURCE_MARKERS.items()},
         "call_ids_in_request": ids,
         "call_ids_in_request_more": ids_more,
@@ -101,6 +126,11 @@ def response_features(content):
     out = {"chars": len(content) if isinstance(content, str) else 0,
            "json_parse": "not_text"}
     if not isinstance(content, str):
+        return out
+    if len(content) > MAX_PARSE_CHARS:
+        out["json_parse"] = "skipped_oversize"
+        ids, more = _ids(content[:MAX_FEATURE_SCAN_CHARS])
+        out["call_ids_in_text"] = ids
         return out
     body = content.strip()
     fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", body, re.S)
@@ -116,12 +146,12 @@ def response_features(content):
     out["json_parse"] = "ok"
     out["json_type"] = type(parsed).__name__
     if isinstance(parsed, dict):
-        keys = [str(k) for k in parsed][:MAX_IDS]
+        keys = [label(k) for k in list(parsed)[:MAX_IDS]]
         out["top_level_keys"] = keys
         out["top_level_key_count"] = len(parsed)
         wrapper = parsed.get("vulnerable_functions") or parsed.get("functions")
         if len(parsed) == 1 and isinstance(wrapper, dict):
-            out["wrapped_keys"] = [str(k) for k in wrapper][:MAX_IDS]
+            out["wrapped_keys"] = [label(k) for k in list(wrapper)[:MAX_IDS]]
     elif isinstance(parsed, list):
         out["list_len"] = len(parsed)
     return out
@@ -134,6 +164,7 @@ class CallEvidence:
         self.entries = []
         self.dropped_calls = 0
         self._text_used = 0
+        self._lock = threading.Lock()
 
     def _text(self, text, head, tail):
         b = bounded_text(text, head, tail)
@@ -145,7 +176,13 @@ class CallEvidence:
         self._text_used += size
         return b
 
-    def record_request(self, seq, phase, model, attempt, adapted_messages, family=None):
+    def record_request(self, seq, phase, model, attempt, adapted_messages, family=None,
+                       adapted_model=None):
+        with self._lock:
+            return self._record_request(seq, phase, model, attempt, adapted_messages,
+                                        family, adapted_model)
+
+    def _record_request(self, seq, phase, model, attempt, adapted_messages, family, adapted_model):
         if len(self.entries) >= MAX_CALLS:
             self.dropped_calls += 1
             return None
@@ -153,8 +190,9 @@ class CallEvidence:
         last_user = next((m for m in reversed(msgs)
                           if isinstance(m, dict) and m.get("role") == "user"), None)
         content = last_user.get("content") if isinstance(last_user, dict) else None
-        entry = {"seq": seq, "phase": phase, "model": str(model), "attempt": attempt,
-                 "prompt_family": family,
+        entry = {"seq": seq, "phase": label(phase, 40), "model": label(model),
+                 "adapted_model": label(adapted_model) if adapted_model is not None else None,
+                 "attempt": attempt, "prompt_family": label(family, 40) if family else None,
                  "adapted_messages_sha256_16": sha16(msgs),
                  "request": request_features(msgs),
                  "last_user_message": self._text(content, HEAD_REQUEST, TAIL_REQUEST),
@@ -166,11 +204,16 @@ class CallEvidence:
         if entry is None:
             return
         feats = response_features(content)
-        feats["finish_reason"] = finish_reason
-        feats["text"] = self._text(content, HEAD_RESPONSE, TAIL_RESPONSE)
-        entry["response"] = feats
+        feats["finish_reason"] = label(finish_reason, 40) if finish_reason is not None else None
+        with self._lock:
+            feats["text"] = self._text(content, HEAD_RESPONSE, TAIL_RESPONSE)
+            entry["response"] = feats
 
     def snapshot(self):
+        with self._lock:
+            return self._snapshot()
+
+    def _snapshot(self):
         return {"schema": 1,
                 "note": "Private diagnostic. Adapted request captured at the provider "
                         "boundary; text is redacted and size-bounded, cuts are marked "

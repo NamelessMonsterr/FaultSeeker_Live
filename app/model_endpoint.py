@@ -425,6 +425,7 @@ class ModelEndpointSession:
                 self.emit({"warning": "abstention_targeting_mismatch",
                            "phase": phase, "model": model})
             while True:
+                evidence_entry = None  # per dispatched attempt, never carried over
                 remaining = self.time_budget - self.spent
                 if deadline is not None:
                     remaining = min(remaining, deadline - self.clock())
@@ -537,6 +538,7 @@ class ModelEndpointSession:
                                 evidence_entry = self.call_evidence.record_request(
                                     call_seq, phase, model, self.attempts,
                                     adapted.get("messages"),
+                                    adapted_model=adapted.get("model"),
                                     family=("cloud_vuln_update" if abstention_augmented
                                             else "local_family_like" if abstention_mismatch
                                             else "other"))
@@ -544,6 +546,16 @@ class ModelEndpointSession:
                             evidence_entry = None
                     self._record_dispatched(model, adapted, phase)
                     completion = bounded.chat.completions.create(**adapted)
+                    # Evidence at receipt: before token accounting or validation.
+                    try:
+                        if self.call_evidence is not None and evidence_entry is not None:
+                            _ch = getattr(completion, "choices", None)
+                            self.call_evidence.record_response(
+                                evidence_entry,
+                                getattr(_ch[0].message, "content", None) if _ch else None,
+                                getattr(_ch[0], "finish_reason", None) if _ch else None)
+                    except Exception:
+                        pass
                     # Token accounting happens at receipt, before any validation can
                     # raise: blank completions and refusals still consumed tokens, and
                     # their usage belongs in the ledger and the rolling output window.
@@ -573,15 +585,6 @@ class ModelEndpointSession:
                     # _count_tokens failure can no longer lose the attempt's
                     # finish_reason/usage record - R30 finding)
                     self._count_tokens(completion)
-                    try:
-                        if self.call_evidence is not None and evidence_entry is not None:
-                            _ch = getattr(completion, "choices", None)
-                            self.call_evidence.record_response(
-                                evidence_entry,
-                                getattr(_ch[0].message, "content", None) if _ch else None,
-                                getattr(_ch[0], "finish_reason", None) if _ch else None)
-                    except Exception:
-                        pass
                     choices = getattr(completion, "choices", None)
                     content = getattr(choices[0].message, "content", None) if choices else None
                     finish = getattr(choices[0], "finish_reason", None) if choices else None

@@ -136,3 +136,98 @@ def test_runtime_snapshot_helper_is_failsafe():
     session.call(factory, vuln_kwargs(), MODEL)
     rt.session = session
     assert rt._call_evidence_snapshot()["calls"][0]["phase"] == "analysis"
+
+
+@pytest.mark.parametrize("raw,secret", [
+    ('{"api_key": "my confidential credential value"}', "confidential credential"),
+    ("{'password': 'hunter two three'}", "hunter two"),
+    ("https://user:p4ssw0rd@host.example/v1", "p4ssw0rd"),
+    ("https://h.example/x?token=abcdef123456&a=1", "abcdef123456"),
+    ("Authorization: Bearer abcdefghijklmnop", "abcdefghijklmnop"),
+])
+def test_more_credential_shapes_are_redacted(raw, secret):
+    assert secret not in ce.redact(raw)
+
+
+def test_credential_shaped_json_keys_are_redacted_in_features():
+    key = "sk-ABCDEFGHIJKLMNOPQRSTUVWX"
+    f = ce.response_features(json.dumps({key: 1, SELF: 2, "wrap": 3}))
+    assert key not in json.dumps(f) and SELF in f["top_level_keys"]
+    w = ce.response_features(json.dumps({"functions": {key: {}}}))
+    assert key not in json.dumps(w)
+    assert len(ce.label("x" * 1000)) == ce.MAX_LABEL
+
+
+def test_oversized_response_is_not_parsed_and_oversized_request_scan_is_capped(monkeypatch):
+    monkeypatch.setattr(ce, "MAX_PARSE_CHARS", 50)
+    f = ce.response_features(json.dumps({"k" * 80: 1}))
+    assert f["json_parse"] == "skipped_oversize" and "top_level_keys" not in f
+    monkeypatch.setattr(ce, "MAX_FEATURE_SCAN_CHARS", 100)
+    r = ce.request_features([{"role": "user", "content": "a" * 80},
+                             {"role": "user", "content": "b" * 80 + " " + SELF}])
+    assert r["total_chars"] == 80 + 80 + 1 + len(SELF) and r["scanned_chars"] == 100 and r["scan_truncated"]
+    assert r["call_ids_in_request"] == []  # id lies beyond the scan cap: reported as truncated
+
+
+def test_retry_attempt_never_inherits_previous_attempts_entry(monkeypatch):
+    # attempt 1 fails retryably (captured); attempt 2's request capture raises,
+    # attempt 2 gets a 200. Attempt 2's response must NOT be attached to attempt 1.
+    m, session, factory, calls, _, _ = setup(
+        [httpx.Response(502, text="bad gateway"), resp(json.dumps({CHILD: {}}))], retry_limit=2)
+    real = session.call_evidence.record_request
+    n = {"i": 0}
+    def flaky(*a, **k):
+        n["i"] += 1
+        if n["i"] == 2:
+            raise RuntimeError("capture bug")
+        return real(*a, **k)
+    monkeypatch.setattr(session.call_evidence, "record_request", flaky)
+    session.call(factory, vuln_kwargs(), MODEL)
+    (entry,) = session.evidence_snapshot()["calls"]
+    assert entry["attempt"] == 1 and entry["response"] is None
+    assert len(calls) == 2
+
+
+def test_response_evidence_recorded_even_if_token_accounting_raises(monkeypatch):
+    m, session, factory, calls, _, _ = setup([resp(json.dumps({CHILD: {}}))], codex_zero_retry=True)
+    def bad_count(_c):
+        raise RuntimeError("usage bug")
+    monkeypatch.setattr(session, "_count_tokens", bad_count)
+    with pytest.raises(Exception):
+        session.call(factory, vuln_kwargs(), MODEL)
+    (entry,) = session.evidence_snapshot()["calls"]
+    assert entry["response"]["top_level_keys"] == [CHILD]
+
+
+def test_response_recorder_failure_does_not_alter_result(monkeypatch):
+    m, session, factory, calls, _, _ = setup([resp("{}")])
+    monkeypatch.setattr(session.call_evidence, "record_response",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+    assert session.call(factory, vuln_kwargs(), MODEL) is not None and session.attempts == 1
+
+
+def test_adapted_model_recorded_separately():
+    m, session, factory, calls, _, _ = setup([resp("{}")])
+    session.call(factory, vuln_kwargs(), MODEL)
+    (entry,) = session.evidence_snapshot()["calls"]
+    assert entry["model"] == MODEL and entry["adapted_model"] == calls[-1]["model"]
+
+
+def test_concurrent_snapshot_while_recording():
+    import threading
+    rec = ce.CallEvidence()
+    errors, stop = [], threading.Event()
+    def writer():
+        for i in range(200):
+            e = rec.record_request(i, "analysis", MODEL, i, [{"role": "user", "content": "x" * 50}])
+            rec.record_response(e, "{}", "stop")
+        stop.set()
+    def reader():
+        while not stop.is_set():
+            try:
+                json.dumps(rec.snapshot())
+            except Exception as exc:  # pragma: no cover
+                errors.append(exc)
+    ts = [threading.Thread(target=writer)] + [threading.Thread(target=reader) for _ in range(3)]
+    [t.start() for t in ts]; [t.join() for t in ts]
+    assert not errors and len(rec.snapshot()["calls"]) == ce.MAX_CALLS
