@@ -1365,7 +1365,10 @@ async def evidence(run_id: str, request: Request):
         return JSONResponse({"error": "not found"}, status_code=404)
     path = os.path.join(RUNS_DIR, run_id + ".evidence.json")
     try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        nofollow = getattr(os, "O_NOFOLLOW", None)
+        if nofollow is None:  # fail closed where symlink-safe open is unavailable
+            return JSONResponse({"error": "not found"}, status_code=404)
+        fd = os.open(path, os.O_RDONLY | nofollow)
         try:
             st = os.fstat(fd)
             if not stat_mod.S_ISREG(st.st_mode) or st.st_size > 3_000_000:
