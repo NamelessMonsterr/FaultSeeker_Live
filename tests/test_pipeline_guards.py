@@ -654,3 +654,44 @@ def test_ranker_filter_covers_standard_selectors(pinned_fork):
     kept = [c["function"] for p in out.repeated_patterns for c in p["pattern"]]
     assert "0x70a08231" not in kept      # standard read filtered out
     assert "0x52f18fc3" in kept          # custom function survives
+
+
+def test_malicious_standard_selector_impl_stays_discoverable(pinned_fork):
+    # Selector identity is not behavioral proof: a custom/malicious contract
+    # can implement the ERC-20 surface with exploit logic, so state-changing
+    # token selectors (transfer/transferFrom/approve) must NEVER be filtered
+    # out of ranked targets; only read-only standard reads are noise.
+    m = importlib.import_module("app.pipeline_guards")
+    from types import SimpleNamespace
+    from faultseeker.function_analysis.function_ranker import FunctionRanker
+    ranker = FunctionRanker()
+    m.extend_ranker_filters(ranker)
+    for sel in ("0xa9059cbb", "0x23b872dd", "0x095ea7b3"):
+        assert sel not in ranker.filtered_functions, sel
+    forensics = SimpleNamespace(address_calls_with_created_contract=[], functions_to_be_inspected={})
+    tx_analysis = {"function_call_loc_memo": {}, "repeated_patterns": {"0xmal": [
+        {"pattern": [{"function": "0x0902f1ac", "address": "0xmal"}, {"function": "0xa9059cbb", "address": "0xmal"}], "repeats": 2},
+    ]}}
+    out = ranker.rank(forensics, tx_analysis)
+    kept = [c["function"] for p in out.repeated_patterns for c in p["pattern"]]
+    assert "0xa9059cbb" in kept       # malicious transfer impl survives
+    assert "0x0902f1ac" not in kept   # read-only getReserves still filtered
+
+
+def test_canonical_flash_callbacks_detected_as_selectors(pinned_fork):
+    # Balancer receiveFlashLoan and Aave executeOperation are canonical fixed
+    # selectors (4byte-verified); the Hedgey trace's 0xf04f2707 callback must
+    # light up the callback signal, not sit as an unknown selector.
+    m = importlib.import_module("app.pipeline_guards")
+    from faultseeker.forensics import signal_extractor as sig
+    m.extend_signal_sets(sig)
+    vault = "0xba12222222228d8ba445958a75a0704d566bf2c8"
+    attacker = "0xc793113f15"
+    flat = [
+        {"function": "0x5c38449e", "address": vault, "call_type": "call"},        # Balancer flashLoan
+        {"function": "0xf04f2707", "address": attacker, "call_type": "call"},     # receiveFlashLoan
+    ]
+    ex = sig.SignalExtractor({}, {"flatten_trace": flat}, TX, "eth")
+    ex._check_flash_loan()
+    assert ex.signals.flash_loan_detected is True
+    assert ex.signals.flash_callback_detected is True

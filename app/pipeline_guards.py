@@ -28,10 +28,11 @@ CHAIN_IDS = {"eth": 1, "bsc": 56, "polygon": 137, "arbitrum": 42161,
 # decoded cast-text traces; on canonical traces the function identity is the
 # calldata SELECTOR, so name-only sets silently never match. Extending the
 # sets with selectors revives the upstream logic for both identity forms.
-SEL_ERC20_STANDARD = {
-    "0xa9059cbb",  # transfer(address,uint256)
-    "0x23b872dd",  # transferFrom(address,address,uint256)
-    "0x095ea7b3",  # approve(address,uint256)
+# Read-only standard calls only. transfer/transferFrom/approve selectors are
+# deliberately NOT here: a 4-byte selector is not behavioral proof - a custom
+# or malicious contract can implement the ERC-20 surface with exploit logic,
+# so state-changing token functions must stay discoverable in ranked targets.
+SEL_ERC20_READS = {
     "0x70a08231",  # balanceOf(address)
     "0xdd62ed3e",  # allowance(address,address)
     "0x18160ddd",  # totalSupply()
@@ -45,6 +46,9 @@ SEL_DEX_READS = {
     "0x0902f1ac",  # getReserves()
 }
 SEL_PRICE_READS = {"0x0902f1ac", "0x3850c7bd"}  # getReserves(), slot0()
+# Presence of any of these is an OBSERVATION about the trace, never proof of
+# a mechanism; mechanism classification belongs to the rule layer, which
+# requires its own verified effects before naming an exploit class.
 SEL_STATE_WRITES = {
     "0xa9059cbb", "0x23b872dd",  # transfer, transferFrom
     "0x6a627842", "0x89afcb44",  # mint(address), burn(address)
@@ -56,10 +60,11 @@ SEL_FLASH_BORROW = {
     "0xab9c4b5d",  # Aave flashLoan(...,uint16)
     "0x490e6cbc",  # UniswapV3 Pool flash(address,uint256,uint256,bytes)
 }
-SEL_FLASH_CALLBACK = {"0x10d1e85c"}  # uniswapV2Call(address,uint256,uint256,bytes)
-# Other flash callbacks (Balancer receiveFlashLoan, Aave executeOperation) are
-# receiver-defined interface implementations whose selectors vary by contract;
-# only canonical fixed selectors belong here.
+SEL_FLASH_CALLBACK = {
+    "0x10d1e85c",  # uniswapV2Call(address,uint256,uint256,bytes)
+    "0xf04f2707",  # Balancer IFlashLoanRecipient.receiveFlashLoan (4byte-verified)
+    "0x920f5c84",  # Aave IFlashLoanReceiver.executeOperation (4byte-verified)
+}
 
 
 def extend_signal_sets(sig_module):
@@ -73,12 +78,14 @@ def extend_signal_sets(sig_module):
 
 def extend_ranker_filters(ranker):
     """The upstream "standard safe function" filter lists names only; under
-    selector identity it never matched, so ERC-20 noise crowded custom
-    functions out of the ranked targets."""
+    selector identity it never matched, so ERC-20 read noise crowded custom
+    functions out of the ranked targets. Only read-only standard selectors are
+    added: state-changing token functions stay ranked even as selectors,
+    because a custom implementation can hide exploit logic behind them."""
     for attr in ("filtered_functions", "extended_filtered_functions"):
         current = getattr(ranker, attr, None)
         if isinstance(current, list):
-            setattr(ranker, attr, sorted(set(current) | SEL_ERC20_STANDARD | SEL_DEX_READS))
+            setattr(ranker, attr, sorted(set(current) | SEL_ERC20_READS | SEL_DEX_READS))
 
 
 def walk(node):
