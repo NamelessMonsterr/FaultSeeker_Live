@@ -904,6 +904,9 @@ class PipelineRuntime:
         return True
 
     PROMPT_CAP = 10000  # pinned engine GPTAgent/UniversalAgent._send_message cap (agent.py: >10000 -> first 8000 + last 2000)
+    # any quoted key containing 'source' (sourceCode, contract_source, verified_source, ...); a
+    # conservative heuristic for the no-bound-source case, not a completeness proof
+    SOURCE_FIELD_RE = re.compile(r'["\']\w*source\w*["\']\s*:', re.IGNORECASE)
     ENGINE_KEEP_HEAD = 8000    # pinned engine _send_message keeps head 8000 + tail 2000 above the 10000 cap
     ENGINE_KEEP_TAIL = 2000
     SOURCE_KEYS = ("function_source_code", "'source_code'", '"source_code"')  # engine payload keys that carry source
@@ -957,7 +960,7 @@ class PipelineRuntime:
         spans = P._find_spans(message, needles)
         base = {"original_chars": len(message), "cap": cap}
         if not spans:
-            if sources or any(k in message for k in P.SOURCE_KEYS):
+            if sources or any(k in message for k in P.SOURCE_KEYS) or P.SOURCE_FIELD_RE.search(message):
                 # fail closed: a run with ANY bound source, or a prompt carrying a
                 # source-bearing key, whose over-cap request does not contain the
                 # bound source text cannot be shown to carry verified source.
@@ -1275,14 +1278,15 @@ class PipelineRuntime:
                 # Inspect only (never rewrite). Resolve user_message through the real
                 # pinned signature, so positional/keyword binding is exact.
                 try:
-                    _um = _sig.bind(agent, *args, **kwargs).arguments.get("user_message")
+                    _bound = _sig.bind(agent, *args, **kwargs)
+                    _um = _bound.arguments.get("user_message")
+                    _resolved = "user_message" in _bound.arguments
                 except TypeError:
-                    _um = None
-                _ev = None
-                if isinstance(_um, str):
-                    _, _ev = self._check_outbound_source_fit(_um, self.bound_source_texts, self.PROMPT_CAP)
-                elif _um is not None or "user_message" not in _sig.parameters:
+                    _um, _resolved = None, False
+                if not _resolved or not isinstance(_um, str):
                     _ev = {"status": "bound_source_unverified_outbound", "reason": "user_message not a string / not resolvable"}
+                else:
+                    _, _ev = self._check_outbound_source_fit(_um, self.bound_source_texts, self.PROMPT_CAP)
                 if _ev:
                     self.source_retention_events.append(_ev)
                 try:
@@ -1682,6 +1686,28 @@ class PipelineRuntime:
                      "was additionally analyzed on its own. analyzed_target marks functions the "
                      "analysis unit itself analyzed.")}
 
+    def _apply_retention_report(self, result, failure=False):
+        """Attach outbound-retention events and the partial/not-fully-analyzed marking to a result (success or failure path)."""
+        if self.source_retention_events:
+            _ev = self.source_retention_events
+            _bad = [e for e in _ev if e.get("status") in ("over_cap_request_cut", "bound_source_unverified_outbound")]
+            result["source_retention"] = {
+                "prompt_cap": self.PROMPT_CAP, "requests_not_fit": len(_bad),
+                "events": deepcopy(_ev[:20])}
+            if _bad:
+                _lim = result.get("limitations")
+                result["limitations"] = [_lim] if isinstance(_lim, str) else (list(_lim) if isinstance(_lim, (list, tuple)) else [])
+                if not failure:   # a failure report already is failed/partial; never relax or relabel its status
+                    result["analysis_status"] = "partial"
+                    result["stage_completed"] = "function-analysis-partial"
+                    result["sections"] = {**(result.get("sections") or {}), "function_analysis": "partial_request_exceeded_cap", "scoring": "not_validated"}
+                _txt = (
+                    f"{len(_bad)} model request(s) with source-bearing content exceeded the {self.PROMPT_CAP}-character request cap (or the bound source could not be verified in the outbound request). "
+                    "The engine cut those requests (head 8000 + tail 2000), so bound source and/or other required evidence may be missing. "
+                    "Nothing was trimmed or rewritten by FaultSeeker. Those analyses are incomplete and the run is not fully analyzed.")
+                if _txt not in result["limitations"]:
+                    result["limitations"].append(_txt)
+
     def annotate_result(self, value):
         self.assert_healthy()
         result = deepcopy(value)
@@ -1853,24 +1879,7 @@ class PipelineRuntime:
                     f"{wall['unknown_exit']} ended without an observed normal exit, {wall['error']} errored. "
                     f"Non-normal functions: {capped}. Candidates from those functions are partial; scoring is not validated. "
                     "An iteration-ceiling exit is the fork's completion rule, not substantive verification of that function's analysis.")
-        if self.source_retention_events:
-            _ev = self.source_retention_events
-            _bad = [e for e in _ev if e.get("status") in ("over_cap_request_cut", "bound_source_unverified_outbound")]
-            result["source_retention"] = {
-                "prompt_cap": self.PROMPT_CAP, "requests_not_fit": len(_bad),
-                "events": deepcopy(_ev[:20])}
-            if _bad:
-                _lim = result.get("limitations")
-                result["limitations"] = [_lim] if isinstance(_lim, str) else (list(_lim) if isinstance(_lim, (list, tuple)) else [])
-                result["analysis_status"] = "partial"
-                result["stage_completed"] = "function-analysis-partial"
-                result["sections"] = {**(result.get("sections") or {}), "function_analysis": "partial_request_exceeded_cap", "scoring": "not_validated"}
-                _txt = (
-                    f"{len(_bad)} model request(s) with source-bearing content exceeded the {self.PROMPT_CAP}-character request cap (or the bound source could not be verified in the outbound request). "
-                    "The engine cut those requests (head 8000 + tail 2000), so bound source and/or other required evidence may be missing. "
-                    "Nothing was trimmed or rewritten by FaultSeeker. Those analyses are incomplete and the run is not fully analyzed.")
-                if _txt not in result["limitations"]:
-                    result["limitations"].append(_txt)
+        self._apply_retention_report(result)
         return result
 
     def failure_report(self, error=None):
@@ -1905,6 +1914,7 @@ class PipelineRuntime:
                 "(FAULTSEEKER_STOP_AFTER_NARROWDOWN=1). No per-function analysis was attempted; "
                 "this is a diagnostic measurement, not an analysis failure.")
         result["trace_provenance"] = deepcopy((self.sequence or {}).get("trace_provenance", {}))
+        self._apply_retention_report(result, failure=True)
         return result
 
     def close(self):

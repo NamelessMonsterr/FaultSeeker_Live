@@ -1037,6 +1037,12 @@ def test_outbound_source_fit_component(pinned_fork):
     plain = "x" * 12000
     out, ev = P._check_outbound_source_fit(plain, [src], cap)
     assert out is plain and ev["status"] == "bound_source_unverified_outbound"
+    for k in ('"source"', '"sourceCode"', '"contract_source"', '"verified_source"', '"functionSourceCode"', "'Source_Code'"):
+        for emp in ([], None):
+            m_ = "{" + k + ': "body"}' + ("y" * 12000)
+            o_, e_ = P._check_outbound_source_fit(m_, emp, cap)
+            assert o_ is m_ and e_["status"] == "bound_source_unverified_outbound", (k, emp)
+    assert P._check_outbound_source_fit("resource sources are fine " + "y" * 12000, [], cap) == ("resource sources are fine " + "y" * 12000, None)
     alt_key = '{"source": "?"}' + ("y" * 12000)
     assert P._check_outbound_source_fit(alt_key, [src], cap)[1]["status"] == "bound_source_unverified_outbound"
     # no bound source at all and no source-bearing key: nothing to protect -> no event
@@ -1186,3 +1192,58 @@ def test_reporting_hardening_malformed_limitations_and_repeat(pinned_fork):
     again = rt.annotate_result(r)
     assert sum("not fully analyzed" in l for l in again["limitations"]) == 1
     assert again["analysis_status"] == "partial"
+
+
+def test_hook_non_string_and_unbindable_user_message(pinned_fork, monkeypatch):
+    """user_message=None / non-string / unbindable call: event recorded for both
+    agent classes (inspection contract); then the engine's own behavior stands."""
+    import types
+    from faultseeker.utils import agent as A
+    monkeypatch.setenv("OPENAI_API_KEY", "dummy-test-value")
+    rt = _runtime()
+    rt.session = types.SimpleNamespace(assert_healthy=lambda: None, call=lambda *a, **k: None, route_policy=None)
+    rt._model_config = None
+    try:
+        rt.install_model_hooks(A)
+        for cls in (A.GPTAgent, A.UniversalAgent):
+            agent = cls("system", "qwen-plus") if cls is A.GPTAgent else cls("system", "qwen-plus", api_key="dummy")
+            for call in (lambda a: a._send_message(user_message=None), lambda a: a._send_message(None), lambda a: a._send_message(12345),
+                         lambda a: a._send_message(bogus_kw="x")):
+                n = len(rt.source_retention_events)
+                try:
+                    call(agent)
+                except Exception:
+                    pass   # engine may reject the invalid call; the inspection event must exist regardless
+                assert len(rt.source_retention_events) == n + 1, (cls, call)
+                assert rt.source_retention_events[-1]["status"] == "bound_source_unverified_outbound"
+                assert "not a string" in rt.source_retention_events[-1]["reason"]
+    finally:
+        _restore(rt)
+
+
+def test_failure_report_and_repeat_preserve_retention_events(pinned_fork):
+    """Component test: events recorded before a failure appear in failure_report
+    (status stays failed/partial, never relaxed); multiple events + repeated annotation stay consistent."""
+    from types import SimpleNamespace
+    from pathlib import Path
+    m = importlib.import_module("app.pipeline_guards")
+    identity = importlib.import_module("app.trace_identity")
+    fx = json.loads((Path(__file__).resolve().parent / "fixtures/hedgey_verified_trace.json").read_text())
+    tx = fx["provenance"]["transaction_hash"]
+    rt = m.PipelineRuntime(tx, "eth")
+    rt.sequence = identity.sequence_from_parity(fx["responses"]["trace_transaction"], tx, "eth")
+    rt.session = SimpleNamespace(summary=lambda: {"calls": {}, "tokens": {}}, assert_healthy=lambda: None)
+    evs = [{"status": "over_cap_request_cut", "original_chars": 12000, "cap": 10000},
+           {"status": "bound_source_unverified_outbound", "original_chars": 13000, "cap": 10000}]
+    rt.source_retention_events = list(evs)
+    f = rt.failure_report(RuntimeError("model call failed"))
+    assert f["analysis_status"] in ("failed", "partial") and f["analysis_status"] != "completed"
+    assert f["source_retention"]["requests_not_fit"] == 2 and len(f["source_retention"]["events"]) == 2
+    assert any("not fully analyzed" in l for l in f["limitations"])
+    rt2 = m.PipelineRuntime(tx, "eth"); rt2.sequence = rt.sequence; rt2.session = rt.session
+    f2 = rt2.failure_report(RuntimeError("x"))
+    assert "source_retention" not in f2 and f2["analysis_status"] == f["analysis_status"]   # status not relabeled by events
+    r = rt.annotate_result({"transaction_hash": tx, "chain": "eth", "analysis_status": "completed"})
+    r2 = rt.annotate_result(r)
+    assert r2["analysis_status"] == "partial" and r2["source_retention"]["requests_not_fit"] == 2
+    assert sum("not fully analyzed" in l for l in r2["limitations"]) == 1
