@@ -1017,17 +1017,17 @@ def test_outbound_source_fit_component(pinned_fork):
         # source in the engine-dropped middle (head 8000 / tail 2000): flagged, unchanged
         mid = ("a" * 8500) + form + ("b" * 3000)
         out, ev = P._check_outbound_source_fit(mid, [src], cap)
-        assert out is mid and ev["status"] == "over_cap_request_cut" and ev["source_text_match_in_retained_region"] is False, name
+        assert out is mid and ev["status"] == "over_cap_request_rejected" and ev["source_text_match_in_retained_region"] is False, name
         # source inside the retained head: still flagged (other evidence in the middle may be cut), unchanged
         headcase = ("a" * 100) + form + ("b" * 12000)
         out, ev = P._check_outbound_source_fit(headcase, [src], cap)
-        assert out is headcase and ev["status"] == "over_cap_request_cut" and ev["source_text_match_in_retained_region"] is True, name
+        assert out is headcase and ev["status"] == "over_cap_request_rejected" and ev["source_text_match_in_retained_region"] is True, name
     # exact boundary: len == cap is under; cap + 1 is over
     form = forms["json"]
     exact = form + ("z" * (cap - len(form)))
     assert len(exact) == cap and P._check_outbound_source_fit(exact, [src], cap) == (exact, None)
     over = exact + "z"
-    assert P._check_outbound_source_fit(over, [src], cap)[1]["status"] == "over_cap_request_cut"
+    assert P._check_outbound_source_fit(over, [src], cap)[1]["status"] == "over_cap_request_rejected"
     # source-bearing key but bound source not found (including EMPTY bound set): explicit
     key_msg = '{"function_source_code": [{"source_code": "other"}]}' + ("k" * 10000)
     for srcs in ([src], [], None):
@@ -1056,8 +1056,8 @@ def test_outbound_boundary_fail_closed_with_real_engine_truncation(pinned_fork, 
     """OUTBOUND-BOUNDARY regression (synthetic padding, no model/network): real
     UniversalAgent._send_message wrapped by the production checked_send hook,
     capture below it at _llm_call_with_retry. Under-cap bound-source requests
-    pass byte-for-byte; over-cap source-bearing requests are NOT rewritten, the
-    engine cut stays visible, and an explicit event is recorded."""
+    pass byte-for-byte; over-cap/unverifiable requests are REJECTED before the engine can cut or
+    send them (zero completion-boundary calls), sticky for the run."""
     import types
     from faultseeker.utils import agent as A
     m = importlib.import_module("app.pipeline_guards")
@@ -1081,25 +1081,38 @@ def test_outbound_boundary_fail_closed_with_real_engine_truncation(pinned_fork, 
         rt.install_model_hooks(A)
         esc = json.dumps(src)[1:-1]
         agent = A.UniversalAgent("system", "qwen-plus", api_key="dummy")
-        # under cap, bound source present: unchanged, no event
-        n0 = len(rt.source_retention_events)
+        Rej = m.OutboundRequestRejected
+        # under cap, bound source present: unchanged byte-for-byte, no event, exactly one completion-boundary call
         under = "CALLDATA:" + "c" * 700 + esc + "TRACE:" + "t" * 700
         assert len(under) <= 10000
         agent._send_message(under)
-        assert sent[-1] == under and len(rt.source_retention_events) == n0
-        # over cap with source in the engine's dropped middle: not rewritten, cut visible, event recorded
+        assert sent == [under] and rt.source_retention_events == [] and rt.outbound_rejection is None
+        # exactly at the cap: passes unchanged
+        at_cap = esc + "e" * (10000 - len(esc))
+        assert len(at_cap) == 10000
+        agent._send_message(at_cap)
+        assert sent[-1] == at_cap and len(sent) == 2
+        # over cap with the source in the engine's dropped middle: REJECTED before the engine cuts or sends
         over = ("a" * 8500) + esc + ("b" * 3000)
-        agent._send_message(over)
-        assert "middle truncated" in sent[-1] and esc not in sent[-1]
+        with pytest.raises(Rej):
+            agent._send_message(over)
+        assert len(sent) == 2, "rejected request must make ZERO completion-boundary calls"
         ev = rt.source_retention_events[-1]
-        assert ev["status"] == "over_cap_request_cut" and ev["source_text_match_in_retained_region"] is False
-        # empty source collection + oversized source-bearing prompt through the real hook
-        saved = list(rt.bound_source_texts)
-        rt.bound_source_texts[:] = []
-        agent._send_message('{"function_source_code": [{"source_code": "unknown"}]}' + ("k" * 10000))
-        assert rt.source_retention_events[-1]["status"] == "bound_source_unverified_outbound"
-        assert "middle truncated" in sent[-1]
-        rt.bound_source_texts[:] = saved
+        assert ev["status"] == "over_cap_request_rejected" and ev["source_text_match_in_retained_region"] is False
+        # sticky: even a short, valid request is refused afterwards, still zero completion calls
+        with pytest.raises(Rej):
+            agent._send_message("short and valid")
+        assert len(sent) == 2
+        with pytest.raises(Rej):
+            rt.assert_healthy()
+        # terminal reporting is truthful: failure kind, no "engine cut" claim, never completed
+        rt.session.summary = lambda: {"calls": {}, "tokens": {}}
+        f = rt.failure_report(Rej("x"))
+        assert f["failure"]["kind"] == "outbound_request_rejected" and f["analysis_status"] != "completed"
+        txt = " ".join(f["limitations"])
+        assert "rejected before sending" in txt and "No request was transmitted" in txt and "engine cut" not in txt
+        with pytest.raises(Rej):
+            rt.annotate_result({"analysis_status": "completed"})
     finally:
         _restore(rt)
 
@@ -1124,12 +1137,12 @@ def test_unpreserved_bound_source_marks_run_partial(pinned_fork):
 
     clean = run([])
     assert "source_retention" not in clean
-    for st in ("over_cap_request_cut", "bound_source_unverified_outbound"):
+    for st in ("over_cap_request_rejected", "bound_source_unverified_outbound"):
         x = run([{"status": st, "original_chars": 15000, "cap": 10000}])
         assert x["analysis_status"] == "partial" and x["stage_completed"] == "function-analysis-partial"
-        assert x["sections"]["function_analysis"] == "partial_request_exceeded_cap"
+        assert x["sections"]["function_analysis"] == "request_rejected_before_sending"
         assert x["source_retention"]["requests_not_fit"] == 1
-        assert any("not fully analyzed" in l and "Nothing was trimmed" in l for l in x["limitations"])
+        assert any("not fully analyzed" in l and "No request was transmitted" in l for l in x["limitations"])
 
 
 def test_outbound_hook_binding_for_both_agent_classes(pinned_fork, tmp_path, monkeypatch):
@@ -1156,17 +1169,21 @@ def test_outbound_hook_binding_for_both_agent_classes(pinned_fork, tmp_path, mon
         rt.install_model_hooks(A)
         big = ("a" * 8500) + ("b" * 4000)   # over cap, bound source not present
         for cls in (A.GPTAgent, A.UniversalAgent):
-            agent = cls("system", "qwen-plus") if cls is A.GPTAgent else cls("system", "qwen-plus", api_key="dummy")
             for call in (lambda a: a._send_message(big), lambda a: a._send_message(user_message=big),
                          lambda a: a._send_message(big, temperature=0.1), lambda a: a._send_message(temperature=0.1, user_message=big)):
-                n = len(rt.source_retention_events)
-                call(agent)
-                assert len(rt.source_retention_events) == n + 1, (cls, call)
+                rt.outbound_rejection = None
+                agent = cls("system", "qwen-plus") if cls is A.GPTAgent else cls("system", "qwen-plus", api_key="dummy")
+                before_sent, n = len(sent), len(rt.source_retention_events)
+                with pytest.raises(m.OutboundRequestRejected):
+                    call(agent)
+                assert len(sent) == before_sent, (cls, "completion boundary invoked for a rejected request")
+                assert len(rt.source_retention_events) == n + 1
                 assert rt.source_retention_events[-1]["status"] == "bound_source_unverified_outbound"
-                assert "middle truncated" in sent[-1]
-            n = len(rt.source_retention_events)
+            rt.outbound_rejection = None
+            agent = cls("system", "qwen-plus") if cls is A.GPTAgent else cls("system", "qwen-plus", api_key="dummy")
+            n, k = len(rt.source_retention_events), len(sent)
             agent._send_message(user_message="short prompt")
-            assert len(rt.source_retention_events) == n and sent[-1] == "short prompt"
+            assert len(rt.source_retention_events) == n and sent[-1] == "short prompt" and len(sent) == k + 1
     finally:
         _restore(rt)
 
@@ -1184,11 +1201,11 @@ def test_reporting_hardening_malformed_limitations_and_repeat(pinned_fork):
     rt.sequence = identity.sequence_from_parity(fx["responses"]["trace_transaction"], tx, "eth")
     rt.session = SimpleNamespace(summary=lambda: {"calls": {"preflight": {"ok": 1}, "analysis": {"ok": 3, "failed": 0}}, "tokens": {}},
                                  assert_healthy=lambda: None)
-    rt.source_retention_events = [{"status": "over_cap_request_cut", "original_chars": 12000, "cap": 10000}]
+    rt.source_retention_events = [{"status": "over_cap_request_rejected", "original_chars": 12000, "cap": 10000}]
     for bad in (None, "a string", 7, ["ok"]):
         r = rt.annotate_result({"transaction_hash": tx, "chain": "eth", "analysis_status": "completed", "limitations": bad})
         assert isinstance(r["limitations"], list) and r["analysis_status"] == "partial"
-        assert r["sections"]["function_analysis"] == "partial_request_exceeded_cap"
+        assert r["sections"]["function_analysis"] == "request_rejected_before_sending"
     again = rt.annotate_result(r)
     assert sum("not fully analyzed" in l for l in again["limitations"]) == 1
     assert again["analysis_status"] == "partial"
@@ -1200,6 +1217,7 @@ def test_hook_non_string_and_unbindable_user_message(pinned_fork, monkeypatch):
     import types
     from faultseeker.utils import agent as A
     monkeypatch.setenv("OPENAI_API_KEY", "dummy-test-value")
+    m = importlib.import_module("app.pipeline_guards")
     rt = _runtime()
     rt.session = types.SimpleNamespace(assert_healthy=lambda: None, call=lambda *a, **k: None, route_policy=None)
     rt._model_config = None
@@ -1209,11 +1227,10 @@ def test_hook_non_string_and_unbindable_user_message(pinned_fork, monkeypatch):
             agent = cls("system", "qwen-plus") if cls is A.GPTAgent else cls("system", "qwen-plus", api_key="dummy")
             for call in (lambda a: a._send_message(user_message=None), lambda a: a._send_message(None), lambda a: a._send_message(12345),
                          lambda a: a._send_message(bogus_kw="x")):
+                rt.outbound_rejection = None
                 n = len(rt.source_retention_events)
-                try:
+                with pytest.raises(m.OutboundRequestRejected):
                     call(agent)
-                except Exception:
-                    pass   # engine may reject the invalid call; the inspection event must exist regardless
                 assert len(rt.source_retention_events) == n + 1, (cls, call)
                 assert rt.source_retention_events[-1]["status"] == "bound_source_unverified_outbound"
                 assert "not a string" in rt.source_retention_events[-1]["reason"] and "not proof" in rt.source_retention_events[-1]["reason"]
@@ -1233,7 +1250,7 @@ def test_failure_report_and_repeat_preserve_retention_events(pinned_fork):
     rt = m.PipelineRuntime(tx, "eth")
     rt.sequence = identity.sequence_from_parity(fx["responses"]["trace_transaction"], tx, "eth")
     rt.session = SimpleNamespace(summary=lambda: {"calls": {}, "tokens": {}}, assert_healthy=lambda: None)
-    evs = [{"status": "over_cap_request_cut", "original_chars": 12000, "cap": 10000},
+    evs = [{"status": "over_cap_request_rejected", "original_chars": 12000, "cap": 10000},
            {"status": "bound_source_unverified_outbound", "original_chars": 13000, "cap": 10000}]
     rt.source_retention_events = list(evs)
     f = rt.failure_report(RuntimeError("model call failed"))
@@ -1260,15 +1277,15 @@ def test_reporting_survives_malformed_sections(pinned_fork):
     rt = m.PipelineRuntime(tx, "eth")
     rt.sequence = identity.sequence_from_parity(fx["responses"]["trace_transaction"], tx, "eth")
     rt.session = SimpleNamespace(summary=lambda: {"calls": {}, "tokens": {}}, assert_healthy=lambda: None)
-    rt.source_retention_events = [{"status": "over_cap_request_cut", "original_chars": 12000, "cap": 10000}]
+    rt.source_retention_events = [{"status": "over_cap_request_rejected", "original_chars": 12000, "cap": 10000}]
     for bad in (None, "str", ["function_analysis"], 5):
         res = {"analysis_status": "completed", "sections": bad, "limitations": None}
         rt._apply_retention_report(res)
         assert res["analysis_status"] == "partial" and isinstance(res["sections"], dict)
-        assert res["sections"]["function_analysis"] == "partial_request_exceeded_cap"
+        assert res["sections"]["function_analysis"] == "request_rejected_before_sending"
         assert any("not fully analyzed" in l for l in res["limitations"])
         a = rt.annotate_result({"transaction_hash": tx, "chain": "eth", "analysis_status": "completed", "sections": bad})
-        assert a["analysis_status"] == "partial" and a["sections"]["function_analysis"] == "partial_request_exceeded_cap"
+        assert a["analysis_status"] == "partial" and a["sections"]["function_analysis"] == "request_rejected_before_sending"
         fres = {"analysis_status": "failed", "sections": bad}
         rt._apply_retention_report(fres, failure=True)
         assert fres["analysis_status"] == "failed" and fres["source_retention"]["requests_not_fit"] == 1
@@ -1281,12 +1298,12 @@ def test_completed_status_never_coexists_with_retention_event_and_regex_and_sig_
     from types import SimpleNamespace
     m = importlib.import_module("app.pipeline_guards")
     rt = m.PipelineRuntime("0x" + "1" * 64, "eth")
-    rt.source_retention_events = [{"status": "over_cap_request_cut", "original_chars": 12000, "cap": 10000}]
+    rt.source_retention_events = [{"status": "over_cap_request_rejected", "original_chars": 12000, "cap": 10000}]
     for bad in (None, {}, "x"):
         res = {"analysis_status": "completed", "sections": bad}
         rt._apply_retention_report(res, failure=True)
         assert res["analysis_status"] == "partial" and res["stage_completed"] == "function-analysis-partial"
-        assert res["sections"]["function_analysis"] == "partial_request_exceeded_cap"
+        assert res["sections"]["function_analysis"] == "request_rejected_before_sending"
     f = {"analysis_status": "failed", "sections": {}}
     rt._apply_retention_report(f, failure=True)
     assert f["analysis_status"] == "failed" and "function_analysis" not in f["sections"]

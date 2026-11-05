@@ -339,6 +339,11 @@ def reconcile_calibrated_confidence(result):
         conf["level"] = level
 
 
+class OutboundRequestRejected(RuntimeError):
+    """A model request was rejected at the outbound boundary BEFORE the engine could cut or send it.
+    Sticky: the runtime refuses every later model call (the engine swallows some exceptions)."""
+
+
 class NarrowdownCaptureStop(Exception):
     """Intentional diagnostic stop (FAULTSEEKER_STOP_AFTER_NARROWDOWN=1): the
     narrow-down selection boundary has been captured and the run halts before
@@ -364,6 +369,7 @@ class PipelineRuntime:
         self.selector_bindings = {}        # address -> ABI selector->source-name binding + code-hash evidence
         self.selector_resolution_log = []  # per-lookup resolution records from the analysis path
         self.bound_source_texts = []       # verified bound source bodies handed to the analyzer (retention checks)
+        self.outbound_rejection = None   # sticky OutboundRequestRejected once any request is rejected
         self.source_retention_events = []  # outbound-boundary retention outcomes (preserved / trimmed / oversized)
         self._frame_index = None           # lazy (address, selector) -> code-context map from the canonical trace
         try:
@@ -379,6 +385,8 @@ class PipelineRuntime:
         return original
 
     def assert_healthy(self):
+        if self.outbound_rejection is not None:
+            raise self.outbound_rejection
         if self.session:
             self.session.assert_healthy()
 
@@ -946,8 +954,8 @@ class PipelineRuntime:
         required evidence). This helper never edits the message. For an
         over-cap, source-bearing request it records an explicit event so the
         run is reported partial / not fully analyzed. Returns (message, event).
-        Statuses: over_cap_request_cut (bound source present, request will be
-        cut by the engine; source_text_match_in_retained_region is an informational
+        Statuses: over_cap_request_rejected (bound source present, request would be
+        cut by the engine, so it is REJECTED before sending; source_text_match_in_retained_region is an informational
         substring-location observation, NOT a preservation guarantee; the run is
         partial regardless), bound_source_unverified_outbound (source-bearing key present
         but no bound source located, OR any bound source exists for the run but is not
@@ -968,7 +976,7 @@ class PipelineRuntime:
             return message, None
         head, tail = P.ENGINE_KEEP_HEAD, P.ENGINE_KEEP_TAIL
         kept = all(b <= head or a >= len(message) - tail for a, b in spans)
-        return message, {**base, "status": "over_cap_request_cut",
+        return message, {**base, "status": "over_cap_request_rejected",
                          "source_chars": sum(b - a for a, b in spans),
                          "source_text_match_in_retained_region": kept}  # informational substring-location only; never a preservation guarantee
 
@@ -1288,7 +1296,15 @@ class PipelineRuntime:
                 else:
                     _, _ev = self._check_outbound_source_fit(_um, self.bound_source_texts, self.PROMPT_CAP)
                 if _ev:
+                    # FAIL CLOSED: reject BEFORE the engine can cut or send. Zero outbound calls for this request.
                     self.source_retention_events.append(_ev)
+                    self.outbound_rejection = self.outbound_rejection or OutboundRequestRejected(
+                        "A model request was rejected before sending: " + (
+                            f"it exceeded the {self.PROMPT_CAP}-character request cap and the pinned engine would silently cut it"
+                            if _ev.get("status") == "over_cap_request_rejected" else
+                            "the bound source could not be verified in an over-cap or non-string outbound request")
+                        + ". No request was transmitted for it and the run was stopped.")
+                    raise self.outbound_rejection
                 try:
                     result = _original(agent, *args, **kwargs)
                 except Exception:
@@ -1690,7 +1706,7 @@ class PipelineRuntime:
         """Attach outbound-retention events and the partial/not-fully-analyzed marking to a result (success or failure path)."""
         if self.source_retention_events:
             _ev = self.source_retention_events
-            _bad = [e for e in _ev if e.get("status") in ("over_cap_request_cut", "bound_source_unverified_outbound")]
+            _bad = [e for e in _ev if e.get("status") in ("over_cap_request_rejected", "bound_source_unverified_outbound")]
             result["source_retention"] = {
                 "prompt_cap": self.PROMPT_CAP, "requests_not_fit": len(_bad),
                 "events": deepcopy(_ev[:20])}
@@ -1703,11 +1719,10 @@ class PipelineRuntime:
                     # but a COMPLETED status can never coexist with a retention event, on any path
                     result["analysis_status"] = "partial"
                     result["stage_completed"] = "function-analysis-partial"
-                    result["sections"] = {**(_sec if isinstance(_sec, dict) else {}), "function_analysis": "partial_request_exceeded_cap", "scoring": "not_validated"}
+                    result["sections"] = {**(_sec if isinstance(_sec, dict) else {}), "function_analysis": "request_rejected_before_sending", "scoring": "not_validated"}
                 _txt = (
-                    f"{len(_bad)} model request(s) with source-bearing content exceeded the {self.PROMPT_CAP}-character request cap (or the bound source could not be verified in the outbound request). "
-                    "The engine cut those requests (head 8000 + tail 2000), so bound source and/or other required evidence may be missing. "
-                    "Nothing was trimmed or rewritten by FaultSeeker. Those analyses are incomplete and the run is not fully analyzed.")
+                    f"{len(_bad)} model request(s) were rejected before sending because they exceeded the {self.PROMPT_CAP}-character request cap or the bound source could not be verified in them. "
+                    "No request was transmitted for those and nothing was trimmed or rewritten. The run was stopped; those analyses did not happen and the run is not fully analyzed.")
                 if _txt not in result["limitations"]:
                     result["limitations"].append(_txt)
 
@@ -1912,6 +1927,8 @@ class PipelineRuntime:
                                 "dispatched_configs": self._dispatched_configs()}
         if isinstance(error, TraceIdentityError):
             result["failure"] = {"kind": "trace_identity", "message": str(error)}
+        if isinstance(error, OutboundRequestRejected) or self.outbound_rejection is not None:
+            result["failure"] = {"kind": "outbound_request_rejected", "message": str(self.outbound_rejection or error)}
         if isinstance(error, NarrowdownCaptureStop):
             result["failure"] = {"kind": "diagnostic_stop", "message": str(error)}
             result["limitations"].append(

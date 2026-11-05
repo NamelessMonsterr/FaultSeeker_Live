@@ -16,7 +16,7 @@ def test_swallowed_model_error_is_rethrown_at_agent_boundary():
     endpoint = importlib.import_module("app.model_endpoint")
     session = endpoint.ModelEndpointSession()
     class Agent:
-        def _send_message(self, *args, **kwargs):
+        def _send_message(self, user_message, temperature=0):
             session.failure = endpoint.ModelEndpointFailure("upstream_http", 502)
             return "An error occurred."
     module = types.SimpleNamespace(GPTAgent=Agent, UniversalAgent=type("OtherAgent", (Agent,), {}))
