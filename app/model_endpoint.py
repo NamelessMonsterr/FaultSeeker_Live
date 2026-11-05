@@ -112,6 +112,7 @@ class ModelEndpointSession:
         self.calls = {}  # phase -> {"ok": n, "failed": n}; real completions, not token counts
         self.failure = None
         self.lock = threading.RLock()
+        self.blank_answer_retries = 0  # ledgered: user-granted blank-answer re-asks
         self.key_pools = {}
         self.model_routes = {}
         self.route_policy = None
@@ -201,6 +202,7 @@ class ModelEndpointSession:
         with self.lock:
             self.assert_healthy()
             retry_number = 0
+            blank_retried = False  # one blank-answer re-ask per call, never per run
             last_error = None
             while True:
                 remaining = self.time_budget - self.spent
@@ -215,6 +217,7 @@ class ModelEndpointSession:
                 client = None
                 pool = None
                 error = None
+                blank_retry = False
                 try:
                     if model not in self.model_routes and self.route_policy is not None:
                         route, keys = self.route_policy(model)
@@ -248,6 +251,19 @@ class ModelEndpointSession:
                         raise ModelEndpointFailure("truncated_output", phase=phase)
                 except Exception as exc:
                     error, retryable = classify(exc, phase)
+                    # User-granted narrow exception (2026-11-05, comparison task):
+                    # a Mercury blank completion (invalid_response) may be re-asked
+                    # exactly once per call. The blank answer still consumed tokens
+                    # and the re-ask is another real, ledgered call; every other
+                    # failure kind and every other model keeps the zero-retry rule.
+                    blank_retry = (not retryable and phase != "preflight"
+                                   and not blank_retried
+                                   and str(model).startswith("mercury-")
+                                   and getattr(error, "kind", None) == "invalid_response")
+                    if blank_retry:
+                        retryable = True
+                        blank_retried = True
+                        self.blank_answer_retries += 1
                     error.detail = _error_detail(exc)
                     response = getattr(exc, "response", None)
                     retry_hint = getattr(response, "headers", {}).get("retry-after", "")
@@ -283,10 +299,12 @@ class ModelEndpointSession:
                     retryable = True
                 if not retryable:
                     self._fail(error)
-                if phase != "preflight":
+                if phase != "preflight" and not blank_retry:
                     # Only analysis retries consume the shared allowance. Preflight
                     # retries are bounded by the preflight deadline instead, so a
                     # cold-starting endpoint gets the whole window to wake up.
+                    # The granted blank-answer re-ask has its own per-call budget
+                    # and never touches the shared allowance.
                     if self.retries_left <= 0:
                         self._fail(error)
                     self.retries_left -= 1
@@ -310,6 +328,7 @@ class ModelEndpointSession:
                 self.emit({"state": "waiting_on_model_endpoint", **error.as_dict(),
                            **getattr(error, "detail", {}),
                            "attempt": self.attempts, "model": model,
+                           "blank_answer_retry": blank_retry,
                            "retry_in_seconds": delay, "retries_remaining": self.retries_left})
                 before = self.clock()
                 self.sleep(delay)
@@ -328,6 +347,7 @@ class ModelEndpointSession:
 
     def summary(self):
         return {"attempts": self.attempts, "tokens": dict(self.tokens), "retries_remaining": self.retries_left,
+                "blank_answer_retries": self.blank_answer_retries,
                 "calls": {phase: dict(counts) for phase, counts in self.calls.items()},
                 "transport_seconds": round(self.spent, 3),
                 "time_budget_seconds": self.time_budget,

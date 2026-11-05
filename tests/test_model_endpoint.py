@@ -40,7 +40,7 @@ def setup(responses, **options):
         clients.append(client)
         return client
     session = module.ModelEndpointSession(emit=events.append, clock=clock.monotonic,
-                                         sleep=clock.sleep, retry_limit=2,
+                                         sleep=clock.sleep, retry_limit=options.pop("retry_limit", 2),
                                          time_budget=60, call_timeout=10, **options)
     return module, session, factory, calls, events, clock
 
@@ -350,3 +350,58 @@ def test_foreign_url_object_compatibility_contract_simulated():
     assert session.preflight(ForeignClient, MODEL).choices[0].message.content == "OK"
     assert calls == ["Bearer invalid-key", "Bearer valid-key"]
     assert session.failure is None
+
+
+MERCURY = "mercury-3"
+BLANK = {"id": "mock", "object": "chat.completion", "created": 0, "model": MERCURY,
+         "choices": [{"index": 0, "message": {"role": "assistant", "content": ""}, "finish_reason": "stop"}]}
+OK_MERCURY = {"id": "mock", "object": "chat.completion", "created": 0, "model": MERCURY,
+              "choices": [{"index": 0, "message": {"role": "assistant", "content": "analysis"}, "finish_reason": "stop"}]}
+
+
+def test_mercury_blank_answer_gets_exactly_one_granted_retry():
+    # User-granted narrow exception: one re-ask per blank Mercury completion.
+    m, session, factory, calls, events, _ = setup([httpx.Response(200, json=BLANK),
+                                                   httpx.Response(200, json=OK_MERCURY)], retry_limit=0)
+    out = session.call(factory, {"model": MERCURY, "messages": []}, MERCURY)
+    assert out.choices[0].message.content == "analysis"
+    assert len(calls) == 2
+    assert session.blank_answer_retries == 1
+    assert session.retries_left == 0  # shared allowance untouched
+    assert any(e.get("blank_answer_retry") for e in events)
+
+
+def test_mercury_second_blank_answer_fails_without_another_retry():
+    m, session, factory, calls, _, _ = setup([httpx.Response(200, json=BLANK)] * 3, retry_limit=0)
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.call(factory, {"model": MERCURY, "messages": []}, MERCURY)
+    assert failure.value.kind == "invalid_response"
+    assert len(calls) == 2  # the granted re-ask, then stop
+    assert session.blank_answer_retries == 1
+
+
+def test_blank_answer_retry_is_per_call_not_per_run():
+    m, session, factory, calls, _, _ = setup([httpx.Response(200, json=BLANK), httpx.Response(200, json=OK_MERCURY),
+                                              httpx.Response(200, json=BLANK), httpx.Response(200, json=OK_MERCURY)],
+                                             retry_limit=0)
+    session.call(factory, {"model": MERCURY, "messages": []}, MERCURY)
+    session.call(factory, {"model": MERCURY, "messages": []}, MERCURY)
+    assert session.blank_answer_retries == 2
+
+
+def test_non_mercury_blank_answer_gets_no_retry():
+    m, session, factory, calls, _, _ = setup([httpx.Response(200, json=BLANK)] * 3, retry_limit=0)
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.call(factory, {"model": "itera/qwen3.8-27b", "messages": []}, "itera/qwen3.8-27b")
+    assert failure.value.kind == "invalid_response"
+    assert len(calls) == 1
+    assert session.blank_answer_retries == 0
+
+
+def test_mercury_other_failures_still_get_zero_retries():
+    m, session, factory, calls, _, _ = setup([httpx.Response(401, json={"error": {"message": "no"}})] * 3, retry_limit=0)
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.call(factory, {"model": MERCURY, "messages": []}, MERCURY)
+    assert failure.value.kind == "authentication"
+    assert len(calls) == 1
+    assert session.blank_answer_retries == 0
