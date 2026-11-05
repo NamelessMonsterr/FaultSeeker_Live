@@ -691,8 +691,21 @@ class PipelineRuntime:
                 i = base.rindex("[")
                 suffix = base[i:] + suffix
                 base = base[:i]
-            if base.rsplit(".", 1)[-1] != it_short:
-                return False
+            if "." in base:
+                # qualified source name: full dotted path must equal the ABI's
+                if base != it_name:
+                    return False
+            else:
+                # unqualified source name: a final-segment match is proof only
+                # when that name is unique among this signature's user-defined
+                # inputs; otherwise the source context cannot establish which
+                # declaration it refers to and identity is unproven.
+                siblings = [(s or "").partition(" ")[2].split("[")[0].rsplit(".", 1)[-1]
+                            for s in internal_types if (s or "").startswith(("struct", "enum", "contract"))]
+                if siblings.count(it_short) != 1:
+                    return None
+                if base != it_short:
+                    return False
             abi_suffix = canon_abi
             while abi_suffix.endswith("]"):
                 i = abi_suffix.rindex("[")
@@ -825,10 +838,17 @@ class PipelineRuntime:
                     # input-type list to match. Any non-elementary (struct/enum)
                     # parameter is not parser-comparable, so such candidates
                     # cannot be distinguished and must fail unresolved.
-                    matched = [c for c in candidates
-                               if runtime._header_matches_abi(c.get("source_code"),
-                                                              entry.get("input_types"),
-                                                              entry.get("input_internal_types")) is True]
+                    verdicts = [runtime._header_matches_abi(c.get("source_code"),
+                                                            entry.get("input_types"),
+                                                            entry.get("input_internal_types"))
+                                for c in candidates]
+                    # Exactly one proven match AND every other candidate
+                    # provably excluded: an undecidable (None) candidate might
+                    # be the ABI-matched overload, so it fails the whole
+                    # disambiguation closed.
+                    matched = [c for c, v in zip(candidates, verdicts) if v is True]
+                    if any(v is None for v in verdicts):
+                        matched = []
                     if len(matched) == 1:
                         out = matched
                         unit = {"candidates": len(candidates), "selected_path": matched[0].get("path"),

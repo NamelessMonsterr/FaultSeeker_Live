@@ -423,6 +423,18 @@ def test_overloaded_source_units_disambiguated_or_fail(pinned_fork):
         assert len(out2) == 1 and "B memory b" in out2[0]["source_code"]
         rec2 = rt.selector_resolution_log[-1]
         assert rec2["status"] == "resolved"
+        # One proven match + one UNDECIDABLE candidate: the undecidable one
+        # might be the ABI-matched overload -> fail closed, no silent select.
+        rt.selector_bindings[addr] = {"selectors": {
+            "0xefd86b62": {"name": "foo", "signature": "foo((address,uint256))",
+                           "input_count": 1, "input_types": ["(address,uint256)"],
+                           "input_internal_types": ["struct X.B"]}}}
+        stub2c, FA2c = _analyzer_stub({addr: {"foo": [
+            {"path": "./S1.sol", "start_line": 1, "end_line": 1, "content": "// no header here"},
+            {"path": "./S2.sol", "start_line": 1, "end_line": 1, "content": "function foo(B memory b) external { _use(b); }"}]}})
+        out2c = FA2c._retrieve_source_code(stub2c, addr, "0xefd86b62")
+        assert out2c == []
+        assert rt.selector_resolution_log[-1]["status"] == "ambiguous_overload"
         # Without internalType the same pair is indistinguishable -> ambiguous
         rt.selector_bindings[addr] = {"selectors": {
             "0xefd86b62": {"name": "foo", "signature": "foo((address,uint256))",
@@ -520,6 +532,52 @@ def test_source_header_params_vectors(pinned_fork):
     assert f("function x(a b c) {}") == ("unparseable", None)                  # malformed parameter
 
 
+def test_delegatecall_restoration_via_production_trace_route(monkeypatch, pinned_fork):
+    """R2/R6 blocker: exercise the ACTUAL production trace-acquisition entry
+    point (TxnReplayer._rpc_structured_trace), not the hooked functions
+    directly. The engine's call sites import build_parity_tree and
+    normalize_trace_node function-locally (txn_replayer.py), so the runtime
+    replace() hooks are picked up at call time; this test proves the canonical
+    trace that production receives preserves the Erigon delegatecall frames."""
+    import json
+    from faultseeker.data_collection import txn_replayer as tr
+    fixture = json.load(open(os.path.join(FIXTURES, "hedgey_tx1_parity_trace.json")))
+    trace_list = fixture["responses"]["trace_transaction"]
+
+    def fake_rpc_call(chain, method, params, timeout=None):
+        if method == "trace_replayTransaction":
+            return {"trace": trace_list, "stateDiff": {}}
+        return None  # debug_traceTransaction variants: force the parity path
+
+    monkeypatch.setattr(tr, "rpc_call", fake_rpc_call)
+    rt = _runtime()  # installs the runtime replace() hooks, as production does
+    try:
+        result = tr.TransactionReplayer._rpc_structured_trace(
+            "0xa17fdb804728f226fcd10e78eae5247abd984e0f03301312315b89cae25aa517", "eth")
+        assert result and result.get("trace"), "production route returned no canonical trace"
+        canonical = result["trace"]
+        target = "0x43506849d7c04f9138d1a2050bbf3a0c054402dd"   # USDC implementation
+        caller = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"   # USDC proxy
+        found = {}
+        def walk(n):
+            if str(n.get("call_type", "")).upper() == "DELEGATECALL" \
+                    and str(n.get("callee") or n.get("to")).lower() == target:
+                found["node"] = n
+            for c in n.get("children", []) or []:
+                walk(c)
+        walk(canonical)
+        assert found, "production-route canonical trace lost the DELEGATECALL frame"
+        assert found["node"]["function_selector"] == "0x70a08231"
+        rt.sequence = {"canonical_trace": canonical}
+        idx = rt._frame_code_index()
+        entry = idx[(target, "0x70a08231")]
+        assert entry["code_address"] == target
+        assert entry["execution_context"] == caller
+        assert entry["call_type"] == "delegatecall"
+    finally:
+        _restore(rt)
+
+
 def test_header_matches_abi_exact_type_identity(pinned_fork):
     m = importlib.import_module("app.pipeline_guards")
     f = m.PipelineRuntime._header_matches_abi
@@ -540,6 +598,14 @@ def test_header_matches_abi_exact_type_identity(pinned_fork):
     assert f("garbage", ["uint256"], ["uint256"]) is None
     # arity mismatch -> False
     assert f("function f(uint a) {}", ["uint256", "uint256"], ["uint256", "uint256"]) is False
+    # qualified source name: full dotted path must equal the ABI internalType's
+    assert f("function f(X.Campaign memory c) {}", ["(address)"], ["struct X.Campaign"]) is True
+    assert f("function f(Y.Campaign memory c) {}", ["(address)"], ["struct X.Campaign"]) is False
+    # unqualified name: final-segment match only when unique among user-defined inputs
+    assert f("function f(Campaign memory a, Campaign memory b) {}", ["(address)", "(address)"],
+             ["struct X.Campaign", "struct X.Campaign"]) is None  # ambiguous namespace -> unproven
+    assert f("function f(Campaign memory c, Lock memory l) {}", ["(address)", "(address)"],
+             ["struct X.Campaign", "struct X.Lock"]) is True
 
 
 @pytest.mark.skipif(os.getenv("FAULTSEEKER_LIVE_NETWORK") != "1",
