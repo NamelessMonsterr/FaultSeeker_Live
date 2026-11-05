@@ -1065,6 +1065,10 @@ def test_hedgey_provenance_replay_fixture_is_faithful():
     assert prov["matched_rule"] == "closed_source_access_control"
     assert result["priority"]["exploitability"] == 0.85  # original numbers untouched
     assert result["analysis_status"] == "completed"
+    # Replay identity must never regress to looking like a fresh live analysis;
+    # the original run's mode is preserved separately as historical provenance.
+    assert result["analysis_mode"] == "saved-replay"
+    assert result["source_analysis_mode"] == "live-pipeline"
     pvf = result["potentially_vulnerable_functions"]
     analyzed = set(result["finding_provenance"]["analyzed_units"])
     assert analyzed == {"0xefd86b62_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
@@ -1078,7 +1082,12 @@ def test_hedgey_provenance_replay_fixture_is_faithful():
             assert cit["trace_relation"] in ("direct_child", "transitive_descendant", "referenced")
     for coll in ("scored_functions", "evidence_cards"):
         for record in result[coll]:
-            assert record.get("analysis_context", {}).get("analysis_role") == "unknown_suspect"
+            ctx = record.get("analysis_context", {})
+            assert ctx.get("analysis_role") == "unknown_suspect"
+            assert ctx.get("citations"), coll
+            for cit in ctx["citations"]:
+                assert cit["unit"] in analyzed
+                assert cit["trace_relation"] in ("direct_child", "transitive_descendant", "referenced")
     events = [l for l in open(entry["events"], encoding="utf-8").read().splitlines() if l.strip()]
     parsed = [_json.loads(l) for l in events]
     assert all(set(e) >= {"t", "ev", "data"} for e in parsed)

@@ -2042,7 +2042,7 @@
  },
  "stage_completed": "stage-3",
  "priority_basis": "model_scored_functions",
- "analysis_mode": "live-pipeline",
+ "analysis_mode": "saved-replay",
  "analysis_status": "completed",
  "transaction": {
   "hash": "0xa17fdb804728f226fcd10e78eae5247abd984e0f03301312315b89cae25aa517",
@@ -2175,5 +2175,6 @@
     "meaning": "Deterministic pre-analysis rule confidence, not an exploitability assessment. No function-level model evidence feeds the priority score."
    }
   }
- }
+ },
+ "source_analysis_mode": "live-pipeline"
 }
