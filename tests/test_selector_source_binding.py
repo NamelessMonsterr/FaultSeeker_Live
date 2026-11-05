@@ -1002,87 +1002,51 @@ def _P():
     return importlib.import_module("app.pipeline_guards").PipelineRuntime
 
 
-def test_preserve_bound_sources_component(pinned_fork):
-    """COMPONENT test of the retention helper (synthetic strings). Policy:
-    only verbatim earlier MODEL REPLIES are trimmable; bound source and all
-    other prompt text are required evidence."""
+def test_outbound_source_fit_component(pinned_fork):
+    """COMPONENT test (synthetic strings) of the fail-closed outbound check.
+    The helper NEVER edits the message: it only records an event for over-cap
+    source-bearing requests. Under cap: no event."""
     P = _P()
-    cap, M, K = 10000, len(P.MODEL_TEXT_MARKER), P.MODEL_TEXT_KEEP
-    src = "function f(address a) external {\n  _x(a);\n}\n" * 20   # ~800 chars
-    model = "".join(f"reply sentence {i} about the transaction. " for i in range(120))   # ~5.4k chars
-    evid_a, evid_b = "EVIDENCE-A:" + "a" * 1500, "EVIDENCE-B:" + "b" * 1500
-    for name, form in {"raw": src, "json": json.dumps(src)[1:-1], "repr": repr(src)[1:-1]}.items():
-        msg = evid_a + model + form + evid_b + ("x" * 4000)   # model text is not the cause here: pad is evidence
-        assert len(msg) > cap
-        out, ev = P._preserve_bound_sources(msg, [src], [model], cap)
-        # the 4000 'x' evidence pad is NOT trimmable; model text alone must absorb the cut
-        need = len(msg) - cap
-        if need <= (len(model) - K - M):
-            assert ev["status"] == "preserved_other_text_trimmed", name
-            assert len(out) <= cap and form in out and evid_a in out and evid_b in out and ("x" * 4000) in out, name
-            assert P.MODEL_TEXT_MARKER in out, name
-        else:
-            assert ev["status"] == "required_evidence_unfit" and out == msg, name
-    # evidence-only overflow (no model text to trim): fail closed, unchanged, explicit
-    msg = evid_a + json.dumps(src)[1:-1] + ("z" * 9500)
-    out, ev = P._preserve_bound_sources(msg, [src], [model], cap)
-    assert out == msg and ev["status"] == "required_evidence_unfit" and ev["available_reduction"] == 0
-    # exact budget boundary: cut == available reduction fits, one more char does not
-    form = json.dumps(src)[1:-1]
-    avail = len(model) - K - M
-    pad = cap + avail - len(form) - len(model)            # makes cut == avail exactly
-    msg_ok = ("e" * pad) + model + form
-    assert len(msg_ok) - cap == avail
-    out_ok, ev_ok = P._preserve_bound_sources(msg_ok, [src], [model], cap)
-    assert ev_ok["status"] == "preserved_other_text_trimmed" and len(out_ok) <= cap and form in out_ok
-    out_no, ev_no = P._preserve_bound_sources(msg_ok + "e", [src], [model], cap)
-    assert ev_no["status"] == "required_evidence_unfit"
-    # absence of a match is not proof: source-bearing key but no bound source located
-    msg_k = '{"function_source_code": [{"source_code": "something else"}]}' + ("k" * 10000)
-    out_k, ev_k = P._preserve_bound_sources(msg_k, [src], [model], cap)
-    assert out_k == msg_k and ev_k["status"] == "bound_source_unverified_outbound"
-    # no key, no match: not a source-bearing prompt -> untouched, no event
-    assert P._preserve_bound_sources("x" * 12000, [src], [model], cap) == ("x" * 12000, None)
-    assert P._preserve_bound_sources("x" * 9999, [src], [model], cap) == ("x" * 9999, None)
-    # B2: empty source collection must still detect a source-bearing over-cap prompt
-    out_e, ev_e = P._preserve_bound_sources(msg_k, [], [model], cap)
-    assert out_e == msg_k and ev_e["status"] == "bound_source_unverified_outbound"
-    assert P._preserve_bound_sources("x" * 12000, [], [model], cap) == ("x" * 12000, None)
-    # B1: a model reply that ALSO appears in required evidence is ambiguous -> required, not trimmed
-    form = json.dumps(src)[1:-1]
-    dup = "EVID:" + model + "|" + form + "|MODEL:" + model + ("p" * 2000)
-    assert len(dup) > cap
-    out_d, ev_d = P._preserve_bound_sources(dup, [src], [model], cap)
-    assert out_d == dup and ev_d["status"] == "required_evidence_unfit" and ev_d["available_reduction"] == 0
-    # multi-span: two distinct replies with different capacity, source between them, ceiling rounding
-    m1 = "".join(f"alpha reply {i} on approvals. " for i in range(100))
-    m2 = "".join(f"beta reply {i} on balances and flows. " for i in range(160))
-    e1 = "E1:" + "1" * 1200
-    msg2 = e1 + m1 + form + m2 + "|E2:" + "2" * 1500
-    assert len(msg2) > cap
-    out_m, ev_m = P._preserve_bound_sources(msg2, [src], [m1, m2], cap)
-    assert ev_m["status"] == "preserved_other_text_trimmed" and len(out_m) <= cap
-    assert form in out_m and e1 in out_m and ("2" * 1500) in out_m
-    assert out_m.count(P.MODEL_TEXT_MARKER) == 2
-    assert out_m.index(m1[:200]) < out_m.index(form) < out_m.index(m2[:200])
-    # adjacent replies (touching spans) must not double-count or overlap
-    msg3 = ("q" * 800) + m1 + m2 + form + ("r" * 900)
-    out3, ev3 = P._preserve_bound_sources(msg3, [src], [m1, m2], cap)
-    assert len(msg3) <= cap or (ev3["status"] == "preserved_other_text_trimmed" and len(out3) <= cap and form in out3)
-    # oversized source: unchanged, explicit
-    huge = "function g() {\n" + "  y();\n" * 1700 + "}\n"
-    m2 = ("P" * 3000) + huge + ("Q" * 3000)
-    out2, ev2 = P._preserve_bound_sources(m2, [huge], [model], cap)
-    assert out2 == m2 and ev2["status"] == "source_oversized_unpreserved"
+    cap = 10000
+    src = "function f(address a) external {\n  _x(a);\n}\n" * 20
+    forms = {"raw": src, "json": json.dumps(src)[1:-1], "repr": repr(src)[1:-1]}
+    for name, form in forms.items():
+        under = ("a" * 3000) + form + ("b" * 3000)
+        assert len(under) <= cap
+        assert P._check_outbound_source_fit(under, [src], cap) == (under, None), name
+        # source in the engine-dropped middle (head 8000 / tail 2000): flagged, unchanged
+        mid = ("a" * 8500) + form + ("b" * 3000)
+        out, ev = P._check_outbound_source_fit(mid, [src], cap)
+        assert out is mid and ev["status"] == "over_cap_request_cut" and ev["source_in_retained_region"] is False, name
+        # source inside the retained head: still flagged (other evidence in the middle may be cut), unchanged
+        headcase = ("a" * 100) + form + ("b" * 12000)
+        out, ev = P._check_outbound_source_fit(headcase, [src], cap)
+        assert out is headcase and ev["status"] == "over_cap_request_cut" and ev["source_in_retained_region"] is True, name
+    # exact boundary: len == cap is under; cap + 1 is over
+    form = forms["json"]
+    exact = form + ("z" * (cap - len(form)))
+    assert len(exact) == cap and P._check_outbound_source_fit(exact, [src], cap) == (exact, None)
+    over = exact + "z"
+    assert P._check_outbound_source_fit(over, [src], cap)[1]["status"] == "over_cap_request_cut"
+    # source-bearing key but bound source not found (including EMPTY bound set): explicit
+    key_msg = '{"function_source_code": [{"source_code": "other"}]}' + ("k" * 10000)
+    for srcs in ([src], [], None):
+        out, ev = P._check_outbound_source_fit(key_msg, srcs, cap)
+        assert out is key_msg and ev["status"] == "bound_source_unverified_outbound"
+    # no key, no source: not source-bearing -> no event
+    plain = "x" * 12000
+    assert P._check_outbound_source_fit(plain, [src], cap) == (plain, None)
+    assert P._check_outbound_source_fit(plain, [], cap) == (plain, None)
+    # non-string input is passed through
+    assert P._check_outbound_source_fit(None, [src], cap) == (None, None)
 
 
-def test_outbound_boundary_retention_with_real_engine_truncation(pinned_fork, tmp_path):
+def test_outbound_boundary_fail_closed_with_real_engine_truncation(pinned_fork, tmp_path):
     """OUTBOUND-BOUNDARY regression (synthetic padding, no model/network): real
     UniversalAgent._send_message wrapped by the production checked_send hook,
-    capture below it at _llm_call_with_retry. A long model reply (recorded at
-    the boundary) later embedded in a prompt with the bound source used to push
-    the source into the engine's dropped middle; now only that model text is
-    shortened, all other text and the source stay intact."""
+    capture below it at _llm_call_with_retry. Under-cap bound-source requests
+    pass byte-for-byte; over-cap source-bearing requests are NOT rewritten, the
+    engine cut stays visible, and an explicit event is recorded."""
     import types
     from faultseeker.utils import agent as A
     m = importlib.import_module("app.pipeline_guards")
@@ -1105,23 +1069,19 @@ def test_outbound_boundary_retention_with_real_engine_truncation(pinned_fork, tm
         assert src in rt.bound_source_texts
         rt.install_model_hooks(A)
         esc = json.dumps(src)[1:-1]
-        model_reply = "".join(f"understanding line {i}: balances and approvals. " for i in range(160))   # ~8k
-        replies.append(model_reply)
         agent = A.UniversalAgent("system", "qwen-plus", api_key="dummy")
-        assert agent._send_message("seed prompt") == model_reply
-        assert model_reply in rt.model_texts
-        evidence_a, evidence_b = "CALLDATA:" + "c" * 700, "TRACE:" + "t" * 700
-        prompt = evidence_a + model_reply + esc + evidence_b
-        assert len(prompt) > 10000
-        agent._send_message(prompt)
-        out = sent[-1]
-        assert esc in out and evidence_a in out and evidence_b in out and len(out) <= 10000
-        assert rt.MODEL_TEXT_MARKER in out and "middle truncated" not in out
-        assert rt.source_retention_events[-1]["status"] == "preserved_other_text_trimmed"
-        # evidence-only overflow: engine truncation applies and the event is explicit
-        agent._send_message(evidence_a + esc + ("e" * 9500))
-        assert rt.source_retention_events[-1]["status"] == "required_evidence_unfit"
-        assert "middle truncated" in sent[-1]
+        # under cap, bound source present: unchanged, no event
+        n0 = len(rt.source_retention_events)
+        under = "CALLDATA:" + "c" * 700 + esc + "TRACE:" + "t" * 700
+        assert len(under) <= 10000
+        agent._send_message(under)
+        assert sent[-1] == under and len(rt.source_retention_events) == n0
+        # over cap with source in the engine's dropped middle: not rewritten, cut visible, event recorded
+        over = ("a" * 8500) + esc + ("b" * 3000)
+        agent._send_message(over)
+        assert "middle truncated" in sent[-1] and esc not in sent[-1]
+        ev = rt.source_retention_events[-1]
+        assert ev["status"] == "over_cap_request_cut" and ev["source_in_retained_region"] is False
         # empty source collection + oversized source-bearing prompt through the real hook
         saved = list(rt.bound_source_texts)
         rt.bound_source_texts[:] = []
@@ -1129,18 +1089,13 @@ def test_outbound_boundary_retention_with_real_engine_truncation(pinned_fork, tm
         assert rt.source_retention_events[-1]["status"] == "bound_source_unverified_outbound"
         assert "middle truncated" in sent[-1]
         rt.bound_source_texts[:] = saved
-        # oversized source
-        huge = "function g() {\n" + "  y();\n" * 1700 + "}\n"
-        rt.bound_source_texts.append(huge)
-        agent._send_message(("P" * 3000) + json.dumps(huge)[1:-1] + ("Q" * 3000))
-        assert rt.source_retention_events[-1]["status"] == "source_oversized_unpreserved"
     finally:
         _restore(rt)
 
 
 def test_unpreserved_bound_source_marks_run_partial(pinned_fork):
-    """Reporting (component test): an unpreserved source can never leave a run
-    'completed' / fully analyzed; trimmed-but-preserved is a visible limitation."""
+    """Reporting (component test): an over-cap / unverified source request can never leave a run
+    'completed' / fully analyzed."""
     from types import SimpleNamespace
     from pathlib import Path
     m = importlib.import_module("app.pipeline_guards")
@@ -1156,19 +1111,11 @@ def test_unpreserved_bound_source_marks_run_partial(pinned_fork):
         rt.source_retention_events = events
         return rt.annotate_result({"transaction_hash": tx, "chain": "eth", "analysis_status": "completed"})
 
-    for st in ("required_evidence_unfit", "bound_source_unverified_outbound"):
-        x = run([{"status": st, "original_chars": 15000, "cap": 10000}])
-        assert x["analysis_status"] == "partial" and x["sections"]["function_analysis"] == "partial_bound_source_unpreserved"
-    bad = run([{"status": "source_oversized_unpreserved", "original_chars": 15000, "protected_chars": 12000, "cap": 10000}])
     clean = run([])
     assert "source_retention" not in clean
-    assert bad["analysis_status"] == "partial" and bad["stage_completed"] == "function-analysis-partial"
-    assert bad["sections"]["function_analysis"] == "partial_bound_source_unpreserved"
-    assert bad["source_retention"]["source_unpreserved"] == 1
-    assert any("not fully analyzed" in l for l in bad["limitations"])
-    trimmed = run([{"status": "preserved_other_text_trimmed", "original_chars": 11000, "protected_chars": 2000, "cap": 10000}])
-    # trimming alone adds a limitation but does not change status/stage vs the baseline
-    assert trimmed["analysis_status"] == clean["analysis_status"]
-    assert trimmed.get("stage_completed") == clean.get("stage_completed")
-    assert trimmed["source_retention"]["preserved_with_other_text_trimmed"] == 1
-    assert any("shortened" in l for l in trimmed["limitations"])
+    for st in ("over_cap_request_cut", "bound_source_unverified_outbound"):
+        x = run([{"status": st, "original_chars": 15000, "cap": 10000}])
+        assert x["analysis_status"] == "partial" and x["stage_completed"] == "function-analysis-partial"
+        assert x["sections"]["function_analysis"] == "partial_request_exceeded_cap"
+        assert x["source_retention"]["requests_not_fit"] == 1
+        assert any("not fully analyzed" in l and "Nothing was trimmed" in l for l in x["limitations"])

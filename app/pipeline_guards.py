@@ -364,7 +364,6 @@ class PipelineRuntime:
         self.selector_resolution_log = []  # per-lookup resolution records from the analysis path
         self.bound_source_texts = []       # verified bound source bodies handed to the analyzer (retention checks)
         self.source_retention_events = []  # outbound-boundary retention outcomes (preserved / trimmed / oversized)
-        self.model_texts = []              # model replies seen at the boundary (regenerable text, the only trimmable class)
         self._frame_index = None           # lazy (address, selector) -> code-context map from the canonical trace
         try:
             from .function_wall_guard import WallCapLedger
@@ -904,8 +903,8 @@ class PipelineRuntime:
         return True
 
     PROMPT_CAP = 10000  # pinned engine GPTAgent/UniversalAgent._send_message cap (agent.py: >10000 -> first 8000 + last 2000)
-    MODEL_TEXT_KEEP = 200      # minimum chars kept (head+tail) of each trimmed model-written span
-    MODEL_TEXT_MARKER = "\n...[model-written text trimmed to keep bound source and evidence intact]...\n"
+    ENGINE_KEEP_HEAD = 8000    # pinned engine _send_message keeps head 8000 + tail 2000 above the 10000 cap
+    ENGINE_KEEP_TAIL = 2000
     SOURCE_KEYS = ("function_source_code", "'source_code'", '"source_code"')  # engine payload keys that carry source
 
     @staticmethod
@@ -936,91 +935,34 @@ class PipelineRuntime:
         return [tuple(x) for x in merged]
 
     @staticmethod
-    def _preserve_bound_sources(message, sources, model_texts=(), cap=10000):
-        """Outbound-boundary retention for bound source. Returns (message, event).
-        The pinned engine cuts any message over `cap` to head 8000 + tail 2000,
-        which can silently drop a bound source (or any evidence) in the middle.
-
-        Policy: bound source and ALL non-model-written prompt text are
-        REQUIRED evidence and are never trimmed. Only text that is verbatim a
-        previous MODEL REPLY (understanding, task tree, processing result:
-        regenerable model narrative, not evidence) may be shortened, each span
-        keeping head+tail with a fixed inline marker, by a deterministic
-        proportional budget. If required evidence cannot fit, or a source-
-        bearing prompt cannot be positively verified to contain the bound
-        source, the message is left unchanged and an explicit event says so
-        (fail closed: such a run is never reported as fully analyzed).
-        Statuses: preserved_other_text_trimmed, source_oversized_unpreserved,
-        required_evidence_unfit, bound_source_unverified_outbound. At/under
-        the cap, or when no source-bearing key and no bound source: (message, None)."""
+    def _check_outbound_source_fit(message, sources, cap=10000):
+        """Outbound-boundary FAIL-CLOSED check (no trimming, no rewriting).
+        The pinned engine cuts any message over `cap` to head 8000 + marker +
+        tail 2000, silently dropping the middle (bound source and/or other
+        required evidence). This helper never edits the message. For an
+        over-cap, source-bearing request it records an explicit event so the
+        run is reported partial / not fully analyzed. Returns (message, event).
+        Statuses: over_cap_request_cut (bound source present, request will be
+        cut by the engine; source_in_retained_region says whether the source
+        itself happens to fall in the kept head/tail, other evidence may still
+        be cut), bound_source_unverified_outbound (source-bearing key present
+        but no bound source located, including an empty bound set).
+        At/under cap, or over cap with neither: (message, None)."""
         if not isinstance(message, str) or len(message) <= cap:
             return message, None
-        sources = sources or ()
         P = PipelineRuntime
-        needles = [f for src in sources for f in P._source_forms(src)]
-        src_spans = P._find_spans(message, needles)
+        needles = [f for src in (sources or ()) for f in P._source_forms(src)]
+        spans = P._find_spans(message, needles)
         base = {"original_chars": len(message), "cap": cap}
-        if not src_spans:
+        if not spans:
             if any(k in message for k in P.SOURCE_KEYS):
-                # a source-bearing prompt whose bound source cannot be located:
-                # absence of a match is NOT proof that preservation was unneeded
                 return message, {**base, "status": "bound_source_unverified_outbound"}
             return message, None
-        src_chars = sum(b - a for a, b in src_spans)
-        base["protected_source_chars"] = src_chars
-        if src_chars > cap:
-            return message, {**base, "status": "source_oversized_unpreserved"}
-        cut = len(message) - cap
-        # trimmable: verbatim model replies (full text or its [:2000] prefix) outside source spans.
-        # Provenance is substring identity (the engine gives no insertion boundaries). A reply whose
-        # 2000-char prefix occurs MORE THAN ONCE in the message is ambiguous (it may also sit in
-        # required evidence), so it is treated as required, never trimmed.
-        floor = 2 * P.MODEL_TEXT_KEEP + len(P.MODEL_TEXT_MARKER)
-        cand = []
-        for t in model_texts:
-            if not isinstance(t, str) or len(t) < floor:
-                continue
-            pre = t[:2000]
-            if message.count(pre) != 1:
-                continue
-            i = message.find(t)
-            a_, b_ = (i, i + len(t)) if i >= 0 else (message.find(pre), message.find(pre) + len(pre))
-            if any(a_ < sb and sa < b_ for sa, sb in src_spans) or any(a_ < cb and ca < b_ for ca, cb in cand):
-                continue
-            cand.append((a_, b_))
-        cand.sort()
-        M, K = len(P.MODEL_TEXT_MARKER), P.MODEL_TEXT_KEEP
-        slack = [(a, b, (b - a) - K - M) for a, b in cand if (b - a) - K - M > 0]
-        max_red = sum(x[2] for x in slack)
-        if max_red < cut:
-            return message, {**base, "status": "required_evidence_unfit", "needed_reduction": cut,
-                             "available_reduction": max_red}
-        # deterministic proportional allocation, then exact top-up
-        reds = [min(sl, -(-cut * sl // max_red)) for _, _, sl in slack]
-        short = cut - sum(reds)
-        for i in sorted(range(len(slack)), key=lambda j: -(slack[j][2] - reds[j])):
-            if short <= 0:
-                break
-            add = min(short, slack[i][2] - reds[i])
-            reds[i] += add
-            short -= add
-        pieces, pos = [], 0
-        for (a, b, _), red in zip(slack, reds):
-            if red <= 0:
-                continue
-            pieces.append(message[pos:a])
-            keep = (b - a) - red - M          # chars of the model text retained
-            head = int(keep * 0.6)
-            pieces.append(message[a:a + head] + P.MODEL_TEXT_MARKER + message[b - (keep - head):b])
-            pos = b
-        pieces.append(message[pos:])
-        new_msg = "".join(pieces)
-        if len(new_msg) > cap or not all(message[a:b] in new_msg for a, b in src_spans):
-            return message, {**base, "status": "required_evidence_unfit", "needed_reduction": cut,
-                             "available_reduction": max_red}
-        return new_msg, {**base, "status": "preserved_other_text_trimmed",
-                         "removed_chars": len(message) - len(new_msg), "final_chars": len(new_msg),
-                         "trimmed_kind": "model_written_text_only"}
+        head, tail = P.ENGINE_KEEP_HEAD, P.ENGINE_KEEP_TAIL
+        kept = all(b <= head or a >= len(message) - tail for a, b in spans)
+        return message, {**base, "status": "over_cap_request_cut",
+                         "source_chars": sum(b - a for a, b in spans),
+                         "source_in_retained_region": kept}
 
     def _install_selector_source_binding(self):
         # Analysis-input root cause #2 (2026-11-05, verified): canonical traces
@@ -1325,10 +1267,10 @@ class PipelineRuntime:
             def checked_send(agent, *args, _original=original, **kwargs):
                 self.assert_healthy()
                 if args and isinstance(args[0], str):
-                    _msg, _ev = self._preserve_bound_sources(args[0], self.bound_source_texts, self.model_texts, self.PROMPT_CAP)
+                    _msg, _ev = self._check_outbound_source_fit(args[0], self.bound_source_texts, self.PROMPT_CAP)
                     args = (_msg,) + tuple(args[1:])
                 elif isinstance(kwargs.get("user_message"), str):
-                    _msg, _ev = self._preserve_bound_sources(kwargs["user_message"], self.bound_source_texts, self.model_texts, self.PROMPT_CAP)
+                    _msg, _ev = self._check_outbound_source_fit(kwargs["user_message"], self.bound_source_texts, self.PROMPT_CAP)
                     kwargs = {**kwargs, "user_message": _msg}
                 else:
                     _ev = None
@@ -1340,9 +1282,6 @@ class PipelineRuntime:
                     self.assert_healthy()
                     raise
                 self.assert_healthy()  # Upstream may have swallowed an APIStatusError.
-                if isinstance(result, str) and len(result) >= 450:
-                    self.model_texts.append(result)
-                    del self.model_texts[:-200]
                 return result
             self.replace(agent_class, "_send_message", checked_send)
 
@@ -1904,22 +1843,18 @@ class PipelineRuntime:
                     "An iteration-ceiling exit is the fork's completion rule, not substantive verification of that function's analysis.")
         if self.source_retention_events:
             _ev = self.source_retention_events
-            _bad = [e for e in _ev if e.get("status") in ("source_oversized_unpreserved", "required_evidence_unfit", "bound_source_unverified_outbound")]
-            _trim = [e for e in _ev if e.get("status") == "preserved_other_text_trimmed"]
+            _bad = [e for e in _ev if e.get("status") in ("over_cap_request_cut", "bound_source_unverified_outbound")]
             result["source_retention"] = {
-                "prompt_cap": self.PROMPT_CAP, "preserved_with_other_text_trimmed": len(_trim),
-                "source_unpreserved": len(_bad), "events": deepcopy(_ev[:20])}
+                "prompt_cap": self.PROMPT_CAP, "requests_not_fit": len(_bad),
+                "events": deepcopy(_ev[:20])}
             if _bad:
                 result["analysis_status"] = "partial"
                 result["stage_completed"] = "function-analysis-partial"
-                result["sections"] = {**(result.get("sections") or {}), "function_analysis": "partial_bound_source_unpreserved", "scoring": "not_validated"}
+                result["sections"] = {**(result.get("sections") or {}), "function_analysis": "partial_request_exceeded_cap", "scoring": "not_validated"}
                 result.setdefault("limitations", []).append(
-                    f"{len(_bad)} model request(s) could not keep the bound source and required evidence intact within the {self.PROMPT_CAP}-character request cap "
-                    "(source too large, required evidence did not fit, or the bound source could not be verified in the outbound request); "
-                    "the engine cut the request. Those analyses are incomplete and the run is not fully analyzed.")
-            if _trim:
-                result.setdefault("limitations", []).append(
-                    f"{len(_trim)} model request(s) exceeded the {self.PROMPT_CAP}-character cap; only earlier model-written text was shortened (marked inline) to keep the bound source and all evidence intact.")
+                    f"{len(_bad)} model request(s) with source-bearing content exceeded the {self.PROMPT_CAP}-character request cap (or the bound source could not be verified in the outbound request). "
+                    "The engine cut those requests (head 8000 + tail 2000), so bound source and/or other required evidence may be missing. "
+                    "Nothing was trimmed or rewritten by FaultSeeker. Those analyses are incomplete and the run is not fully analyzed.")
         return result
 
     def failure_report(self, error=None):
