@@ -1047,3 +1047,39 @@ def test_uncited_unknown_suspect_claims_no_citation():
     assert "were cited during the analysis of" not in note
     source = (ROOT / "app/web/assets/console.js").read_text()
     assert "provenance undetermined (not recorded as analyzed or cited)" in source
+
+
+def test_hedgey_provenance_replay_fixture_is_faithful():
+    # The demo:hedgey-provenance saved-replay fixture must remain a faithful
+    # re-annotation of stored run d51c66f4483b: every finding carries the
+    # repaired provenance shape, score provenance labels the deterministic
+    # rule confidence, and the events stream is valid JSONL with no model work.
+    import json as _json
+    import app.server as server
+    entry = server.DEMO_REPLAYS.get("demo:hedgey-provenance")
+    assert entry is not None, "demo preset missing"
+    assert entry["label"].startswith("SAVED REPLAY")
+    result = _json.load(open(entry["result"], encoding="utf-8"))
+    prov = result["score_provenance"]["component_sources"]["exploitability"]
+    assert prov["source"] == "deterministic_rule_confidence"
+    assert prov["matched_rule"] == "closed_source_access_control"
+    assert result["priority"]["exploitability"] == 0.85  # original numbers untouched
+    assert result["analysis_status"] == "completed"
+    pvf = result["potentially_vulnerable_functions"]
+    analyzed = set(result["finding_provenance"]["analyzed_units"])
+    assert analyzed == {"0xefd86b62_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511",
+                        "0xf412e4c7_0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511"}
+    for key, record in pvf.items():
+        ctx = record["analysis_context"]
+        assert ctx["analysis_role"] == "unknown_suspect"  # never promoted
+        assert ctx["citations"], key
+        for cit in ctx["citations"]:
+            assert cit["unit"] in analyzed
+            assert cit["trace_relation"] in ("direct_child", "transitive_descendant", "referenced")
+    for coll in ("scored_functions", "evidence_cards"):
+        for record in result[coll]:
+            assert record.get("analysis_context", {}).get("analysis_role") == "unknown_suspect"
+    events = [l for l in open(entry["events"], encoding="utf-8").read().splitlines() if l.strip()]
+    parsed = [_json.loads(l) for l in events]
+    assert all(set(e) >= {"t", "ev", "data"} for e in parsed)
+    assert not any(e["ev"] in ("done", "end") for e in parsed)  # replay harness appends these
