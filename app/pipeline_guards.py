@@ -4,6 +4,7 @@ Hooks are installed per worker before main() is entered, and removed on exit.
 The upstream checkout is not edited. This keeps local and Docker execution on
 the same transport/identity policy while retaining the pinned source revision.
 """
+import itertools
 import hashlib
 import inspect
 import json
@@ -1575,9 +1576,9 @@ class PipelineRuntime:
         adapted request. Exact-substring observation only (all escape forms the
         outbound guard uses). NOT proof that the source the analyzed function
         needs is present: bound sources are run-wide, not per analyzed bucket."""
-        sources = list(self.bound_source_texts)
+        sources = self.bound_source_texts
         listed = []
-        for src in sources[:20]:
+        for src in list(itertools.islice(sources, 20)):
             if len(src) > 200_000:
                 listed.append({"chars": len(src), "sha256_16": None,
                                "status": "unknown_source_too_large"})
@@ -1609,18 +1610,23 @@ class PipelineRuntime:
             # enforce the mode explicitly before any content is written.
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
             try:
-                os.fchmod(fd, 0o600)
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                try:
+                    os.fchmod(fd, 0o600)
+                    f = os.fdopen(fd, "w", encoding="utf-8")
+                except Exception:
+                    os.close(fd)
+                    raise
+                with f:
                     json.dump(snap, f)
+                if os.path.islink(path):
+                    os.unlink(path)
+                os.replace(tmp, path)
             except Exception:
                 try:
                     os.unlink(tmp)
                 except OSError:
                     pass
                 raise
-            if os.path.islink(path):
-                os.unlink(path)
-            os.replace(tmp, path)
             return path
         except Exception:
             return None

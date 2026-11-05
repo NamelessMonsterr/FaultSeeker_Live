@@ -7,7 +7,12 @@ from app.pipeline_guards import PipelineRuntime
 def test_default_capture_off(monkeypatch):
     from app import model_endpoint as me
     monkeypatch.delenv("FAULTSEEKER_CALL_EVIDENCE", raising=False)
-    assert me._evidence_enabled() is False if hasattr(me, "_evidence_enabled") else True
+    assert me._evidence_enabled() is False
+    for v in ("", "maybe", "0"):
+        monkeypatch.setenv("FAULTSEEKER_CALL_EVIDENCE", v)
+        assert me._evidence_enabled() is False
+    monkeypatch.setenv("FAULTSEEKER_CALL_EVIDENCE", "1")
+    assert me._evidence_enabled() is True
 
 
 def test_structured_content_is_scanned_and_unexamined_marks_incomplete():
@@ -41,3 +46,37 @@ def test_private_write_ignores_preexisting_permissive_files_and_symlinks(tmp_pat
     p = rt.write_private_evidence(str(tmp_path), "r1")
     assert stat.S_IMODE(os.stat(p).st_mode) == 0o600 and json.load(open(p)) == {"a": 1}
     assert not [f for f in os.listdir(tmp_path) if f.endswith(".tmp")]
+
+
+def test_hash_bound_covers_non_text_fields():
+    big = [{"role": "user", "content": "x", "tool_calls": ["y" * 2_000_000]}]
+    assert ce.sha16(big) == "skipped_oversize"
+    assert ce.sha16([{"role": "user", "content": "x"}]) not in ("skipped_oversize", "unserializable")
+
+
+def test_unexamined_content_never_yields_not_found():
+    rt = PipelineRuntime.__new__(PipelineRuntime)
+    rt.bound_source_texts = ["SECRET_SRC_BODY"]
+    feats, full, complete = ce._features([{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "u"}}]}])
+    out = rt._probe_bound_sources(full, complete)
+    assert out["listed"][0]["status"] == "unknown_scan_truncated"
+    out = rt._probe_bound_sources("has SECRET_SRC_BODY here", True)
+    assert out["listed"][0]["status"] == "included_exact"
+    rt.bound_source_texts = ["z" * 300_000]
+    assert rt._probe_bound_sources("a", True)["listed"][0]["status"] == "unknown_source_too_large"
+
+
+def test_replace_failure_cleans_tmp_and_fchmod_failure_closes_fd(tmp_path, monkeypatch):
+    rt = PipelineRuntime.__new__(PipelineRuntime)
+    rt._call_evidence_snapshot = lambda: {"a": 1}
+    def boom(*a, **k): raise OSError("x")
+    monkeypatch.setattr(os, "replace", boom)
+    assert rt.write_private_evidence(str(tmp_path), "r2") is None
+    assert not os.listdir(tmp_path)
+    monkeypatch.undo()
+    closed = []
+    real_close = os.close
+    monkeypatch.setattr(os, "fchmod", boom)
+    monkeypatch.setattr(os, "close", lambda fd: (closed.append(fd), real_close(fd)))
+    assert rt.write_private_evidence(str(tmp_path), "r3") is None
+    assert closed and not os.listdir(tmp_path)

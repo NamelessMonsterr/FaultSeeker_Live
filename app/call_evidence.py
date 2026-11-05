@@ -72,18 +72,19 @@ MAX_HASH_CHARS = 1_500_000
 
 
 def sha16(value):
-    """Digest of the canonical JSON of the WHOLE value (same semantics as the
-    pre-existing abstention call log). O(n) time; transient memory is about one
-    extra copy of a payload that already exists in memory and is itself bounded
-    by the engine's prompt cap. Identity only, not a wire hash."""
-    return hashlib.sha256(
-        json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()[:16]
+    """Digest of the canonical JSON of the WHOLE value, bounded: the serialized
+    form is measured first and hashing is skipped (explicit marker) above
+    MAX_HASH_CHARS. Identity only, not a wire hash."""
+    try:
+        raw = json.dumps(value, sort_keys=True, default=str)
+    except Exception:
+        return "unserializable"
+    if len(raw) > MAX_HASH_CHARS:
+        return "skipped_oversize"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
 def bounded_sha16(value, total_chars):
-    """sha16 only when the text size is within MAX_HASH_CHARS; otherwise an
-    explicit skip marker (non-text content is not counted, so it is also capped
-    by message count upstream)."""
     if total_chars > MAX_HASH_CHARS:
         return "skipped_oversize"
     return sha16(value)
