@@ -25,14 +25,16 @@ def adapt_request(model, kwargs):
     if str(model).startswith(MERCURY_PREFIX):
         adapted = dict(kwargs)
         extra = dict(adapted.get("extra_body") or {})
-        extra["reasoning_effort"] = os.getenv("FAULTSEEKER_MERCURY_REASONING_EFFORT",
-                                              MERCURY_DEFAULT_REASONING_EFFORT)
-        adapted["extra_body"] = extra
         # Mercury spends reasoning tokens before any visible answer; the
-        # transport's tiny preflight cap (8) starves it into an empty reply,
-        # which the transport correctly treats as an invalid response.
+        # transport's tiny preflight cap (8) starves a reasoning reply into an
+        # empty answer, which the transport correctly treats as invalid. Tiny
+        # probes get a small floor and no reasoning instead.
         cap = adapted.get("max_tokens")
-        if isinstance(cap, int) and cap < 64:
+        tiny = isinstance(cap, int) and cap < 64
+        extra["reasoning_effort"] = ("instant" if tiny else os.getenv(
+            "FAULTSEEKER_MERCURY_REASONING_EFFORT", MERCURY_DEFAULT_REASONING_EFFORT))
+        adapted["extra_body"] = extra
+        if tiny:
             adapted["max_tokens"] = 64
         return adapted
     if not str(model).startswith(ITERA_PREFIX):

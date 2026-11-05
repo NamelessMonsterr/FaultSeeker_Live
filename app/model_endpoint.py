@@ -56,6 +56,10 @@ def classify(error, phase):
     if isinstance(status, int) and 400 <= status <= 499:
         return ModelEndpointFailure("invalid_request", status, phase), False
     if isinstance(error, ModelEndpointFailure):
+        if error.kind == "invalid_response" and phase == "preflight":
+            # A cold or briefly-empty endpoint can answer a preflight probe with
+            # an empty completion; retry within the preflight deadline.
+            return error, True
         return error, False
     return ModelEndpointFailure("endpoint_error", phase=phase), False
 

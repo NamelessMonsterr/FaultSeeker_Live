@@ -44,7 +44,7 @@ def test_mercury_endpoint_override_is_operator_env_only_and_validated(monkeypatc
 def test_adapt_request_adds_reasoning_effort_only_for_mercury(monkeypatch):
     m = routes()
     monkeypatch.delenv("FAULTSEEKER_MERCURY_REASONING_EFFORT", raising=False)
-    base = {"model": MERCURY, "messages": [{"role": "user", "content": "x"}], "max_tokens": 5}
+    base = {"model": MERCURY, "messages": [{"role": "user", "content": "x"}], "max_tokens": 500}
     out = m.adapt_request(MERCURY, base)
     assert out["model"] == MERCURY  # exact model id is preserved
     assert out["extra_body"] == {"reasoning_effort": "medium"}
@@ -54,6 +54,11 @@ def test_adapt_request_adds_reasoning_effort_only_for_mercury(monkeypatch):
     assert out["extra_body"] == {"reasoning_effort": "low"}
     keep = m.adapt_request(MERCURY, {**base, "extra_body": {"x": 1}})
     assert keep["extra_body"] == {"x": 1, "reasoning_effort": "low"}
+    # Tiny probes (the transport's preflight cap) skip reasoning and get a floor:
+    # reasoning would spend the whole cap before any visible answer.
+    tiny = m.adapt_request(MERCURY, {**base, "max_tokens": 8})
+    assert tiny["max_tokens"] == 64
+    assert tiny["extra_body"] == {"reasoning_effort": "instant"}
     other = {"model": "qwen/qwen3.8-27b", "messages": []}
     assert m.adapt_request("qwen/qwen3.8-27b", other) is other
 
@@ -88,7 +93,7 @@ def test_request_payload_credential_and_token_accounting(monkeypatch):
     monkeypatch.delenv("FAULTSEEKER_MERCURY_REASONING_EFFORT", raising=False)
     seen = []
     _m, s, factory = session([ok('["token"]')], seen)
-    s.call(factory, {"model": MERCURY, "messages": [{"role": "user", "content": "x"}], "max_tokens": 50}, MERCURY)
+    s.call(factory, {"model": MERCURY, "messages": [{"role": "user", "content": "x"}], "max_tokens": 500}, MERCURY)
     assert len(seen) == 1
     assert seen[0]["host"] == "api.inceptionlabs.ai"
     assert seen[0]["auth"] == "Bearer inception-key-1"  # only the Inception key, never the SDK default
