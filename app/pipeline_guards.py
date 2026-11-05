@@ -394,6 +394,28 @@ class PipelineRuntime:
                 additions["mercury-"] = (MERCURY_DEFAULT_BASE_URL, "INCEPTION_API_KEY")
             if additions:
                 self.replace(agent_module, "PROVIDER_CONFIG", {**config, **additions})
+            # Prompt-family boundary (parent directive 2026-11-05 18:00): the
+            # engine picks prompt complexity via is_local_model() over its
+            # static CLOUD_PREFIXES, which predates the fork's routes - so
+            # mercury-3 and itera/qwen3.8-27b were silently classed "local"
+            # and analyzed with the simplified weak-model prompt family
+            # (root cause of the abstention contract never firing in
+            # production: it targets the cloud template, which these runs
+            # never sent). The "local" family is a capability tier for weak
+            # on-box models, not a hosting label; both fork routes are
+            # capable hosted models. Register them as cloud at this same
+            # authorized hook boundary. Every other model's classification
+            # is unchanged; the pinned engine checkout is never edited.
+            try:
+                from faultseeker.prompts import local_model_prompts as _lmp
+            except ImportError:
+                _lmp = None
+            if _lmp is not None and isinstance(getattr(_lmp, "CLOUD_PREFIXES", None), tuple):
+                _add = tuple(pfx for pfx in ("mercury-", "itera/")
+                             if not any(pfx.startswith(c) or c.startswith(pfx)
+                                        for c in _lmp.CLOUD_PREFIXES))
+                if _add:
+                    self.replace(_lmp, "CLOUD_PREFIXES", tuple(_lmp.CLOUD_PREFIXES) + _add)
         for agent_class in {agent_module.GPTAgent, agent_module.UniversalAgent}:
             original = agent_class._send_message
             def checked_send(agent, *args, _original=original, **kwargs):
