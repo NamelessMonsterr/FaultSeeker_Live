@@ -80,6 +80,29 @@ def test_preflight_rate_limited_fails_fast_with_retry_after():
                if e.get("state") == "model_endpoint_failed")
 
 
+@pytest.mark.parametrize("status,kind", [(400, "invalid_request"), (401, "authentication"), (403, "authentication"), (404, "model_unavailable")])
+def test_cold_start_policy_never_retries_non_transients(monkeypatch, status, kind):
+    # NR1-F1: even with the cold-start policy ON, non-transient failures
+    # (4xx) must fail on the first attempt - the opt-in widens only
+    # timeout/connection/5xx, never retryability itself.
+    monkeypatch.setenv("FAULTSEEKER_PREFLIGHT_COLD_START_RETRIES", "1")
+    m, session, factory, calls, _, _ = setup([httpx.Response(status, json={"error": {"message": "x"}})] * 4)
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.preflight(factory, MODEL, timeout=20)
+    assert failure.value.kind == kind
+    assert len(calls) == 1
+
+
+def test_cold_start_policy_still_fails_429_immediately(monkeypatch):
+    # NR1-F1 companion: 429 is never a cold-start shape, policy on or off.
+    monkeypatch.setenv("FAULTSEEKER_PREFLIGHT_COLD_START_RETRIES", "1")
+    m, session, factory, calls, _, _ = setup([httpx.Response(429, json={"error": {"message": "x"}})] * 4)
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.preflight(factory, MODEL, timeout=20)
+    assert failure.value.kind == "rate_limited"
+    assert len(calls) == 1
+
+
 def test_preflight_cold_start_transients_retry_only_under_explicit_policy(monkeypatch):
     # The no-retry default must not remove cold-start tolerance when the
     # operator explicitly opts in: 5xx then retries within the window.
