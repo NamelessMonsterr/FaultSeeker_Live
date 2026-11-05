@@ -201,6 +201,17 @@ def _error_detail(exc):
     return detail
 
 
+CODEX_ROUTE_PREFIXES = ("gpt-6.1-sol-",)
+
+
+def is_codex_model(model):
+    """Codex proxy route policy (2026-11-05 test policy): calls to these models
+    (when the session switch codex_zero_retry is on) never retry, sleep-and-retry or rotate credentials, whatever the env says
+    (shared allowance or preflight cold-start opt-in). Enforced per dispatched
+    model, so other models in the same session keep their behavior."""
+    return str(model or "").startswith(CODEX_ROUTE_PREFIXES)
+
+
 def _preflight_cold_start_retries_enabled():
     """Explicit operator opt-in for cold-start preflight retries.
 
@@ -257,8 +268,12 @@ class ModelEndpointSession:
     """
     def __init__(self, emit=lambda event: None, retry_limit=3, time_budget=600,
                  call_timeout=60, clock=time.monotonic, sleep=time.sleep,
-                 output_budget_per_min=90000):
+                 output_budget_per_min=90000, codex_zero_retry=False):
         self.emit = emit
+        # Production switch (set by make_runtime): when on, dispatches to Codex
+        # proxy models never retry or rotate. Off by default so the generic
+        # transport machinery stays testable and other models are unaffected.
+        self.codex_zero_retry = bool(codex_zero_retry)
         self.retries_left = max(0, int(retry_limit))
         self.time_budget = max(0.1, float(time_budget))
         self.call_timeout = max(0.1, float(call_timeout))
@@ -412,6 +427,7 @@ class ModelEndpointSession:
                 pool = None
                 error = None
                 blank_retry = False
+                codex_route = self.codex_zero_retry and is_codex_model(model)
                 try:
                     if model not in self.model_routes and self.route_policy is not None:
                         route, keys = self.route_policy(model)
@@ -436,12 +452,20 @@ class ModelEndpointSession:
                     self.emit({"state": "waiting_on_model_endpoint", "phase": phase,
                                "attempt": self.attempts, "model": model,
                                "retry_in_seconds": 0})
+                    adapted = adapt_request(model, kwargs)
+                    # Policy binds to what is actually dispatched too: a Codex
+                    # model in the adapted request restricts this call even if
+                    # the requested name did not match (never the reverse).
+                    if self.codex_zero_retry and is_codex_model(adapted.get("model")):
+                        codex_route = True
+                    if pending_blank_reask and codex_route:
+                        # A pending Mercury re-ask must never reach a Codex dispatch.
+                        self._fail(ModelEndpointFailure("blank_completion", phase=phase))
                     if pending_blank_reask:
                         # Ledger the re-ask only when it is actually dispatched;
                         # a grant that never reaches the wire is not a spent retry.
                         self.blank_answer_retries += 1
                         pending_blank_reask = False
-                    adapted = adapt_request(model, kwargs)
                     if phase == "analysis":
                         # Observability capture. Fail-safe by contract: a
                         # capture failure must NEVER prevent dispatch or alter
@@ -559,7 +583,7 @@ class ModelEndpointSession:
                     # call; every other failure kind and model keeps zero retries.
                     # The grant applies only while Mercury testing is authorized:
                     # FAULTSEEKER_MERCURY_BLANK_REASK=1 enables it, default OFF.
-                    blank_retry = (not retryable and not blank_retried
+                    blank_retry = (not codex_route and not retryable and not blank_retried
                                    and _mercury_blank_reask_enabled()
                                    and str(model).startswith("mercury-")
                                    and getattr(error, "kind", None) == "blank_completion")
@@ -594,7 +618,8 @@ class ModelEndpointSession:
                     self._fail(self._out_of_time(phase, deadline, last_error))
                 next_key = None
                 if (phase != "preflight" and pool and len(pool["keys"]) > 1
-                        and error.kind == "authentication"):
+                        and error.kind == "authentication"
+                        and not codex_route):
                     pool["rejected"].add(pool["active"])
                     next_key = next((key for key in pool["keys"] if key not in pool["rejected"]), None)
                     if next_key is None:
@@ -621,20 +646,20 @@ class ModelEndpointSession:
                     # analysis phase only, bounded by the shared configured
                     # allowance. Keep the provider's Retry-After hint on the
                     # record.
-                    if (error.kind == "rate_limited"
+                    if (error.kind == "rate_limited" or codex_route
                             or not _preflight_cold_start_retries_enabled()):
                         if retry_hint and error.kind == "rate_limited":
                             error.detail = {**(error.detail or {}),
                                             "retry_after_header": retry_hint}
                         self._fail(error)
-                if not retryable:
+                if not retryable or codex_route:
                     self._fail(error)
                 if phase != "preflight" and not blank_retry:
                     # Only analysis retries consume the shared allowance.
                     # Preflight retries are off by default and gated above.
                     # The granted blank-answer re-ask has its own per-call budget
                     # and never touches the shared allowance.
-                    if self.retries_left <= 0:
+                    if self.retries_left <= 0 or codex_route:
                         self._fail(error)
                     self.retries_left -= 1
                 if next_key is not None:

@@ -1968,6 +1968,7 @@ def model_time_budget(models=()):
 
 def make_runtime(tx_hash, chain, use_model, emit, models=()):
     session = ModelEndpointSession(emit=emit,
+        codex_zero_retry=True,
         retry_limit=int(os.getenv("FAULTSEEKER_MODEL_RETRY_LIMIT", "3")),
         time_budget=model_time_budget(models),
         call_timeout=float(os.getenv("FAULTSEEKER_MODEL_CALL_TIMEOUT_SECS", os.getenv("FAULTSEEKER_LLM_TIMEOUT_SECS", "60")))) if use_model else None
