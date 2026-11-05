@@ -794,3 +794,18 @@ def test_worker_restores_environment_and_ends_when_cleanup_fails(server, monkeyp
 @pytest.mark.parametrize("field", ["api_keys", "providerApiKeys", "model_keys", "rpc_keys", "secrets", "passwords", "secretKey", "secret_token", "authorization_header", "private_keys", "access_tokens", "refresh_tokens"])
 def test_redaction_masks_credential_collections_and_common_forms(server, field):
     assert server._redact({field: ["unknown-dummy-credential"]}) == {field: "***"}
+
+
+def test_adapter_matched_rule_comes_from_deterministic_observation_not_cards(server):
+    # The first evidence card is not a matched rule; only a deterministic
+    # forensics observation may name one.
+    cards = [{"function_signature": {"function": "0xa9059cbb", "address": "0xabc", "call_depth": 3}}]
+    value = server._adapt_result_for_view({"transaction_hash": TX, "analysis_status": "completed",
+                                           "evidence_cards": cards})
+    assert value["classification"]["matched_rule"] == "none"
+    value = server._adapt_result_for_view({"transaction_hash": TX, "analysis_status": "completed",
+                                           "evidence_cards": cards,
+                                           "deterministic_rule_observation": {"rule_verdict": "EXPLOIT",
+                                                                              "matched_rule": "approval_abuse"}})
+    assert value["classification"]["matched_rule"] == "approval_abuse"
+    assert value["deterministic_rule_observation"]["rule_verdict"] == "EXPLOIT"

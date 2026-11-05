@@ -264,6 +264,12 @@ class PipelineRuntime:
         result["analysis_integrity"] = {"function_identity": "calldata_selector", "abi_verified": False,
                                         "ranked_targets": self.ranked_targets, "unverified_targets": unsupported}
         result["trace_provenance"] = deepcopy((self.sequence or {}).get("trace_provenance", {}))
+        # Carry the deterministic forensics observation into completed results
+        # the same way failure_report does for partial ones: it is a
+        # pre-analysis rule observation, not a verified vulnerability verdict.
+        obs = (self.partial or {}).get("classification") if isinstance(self.partial, dict) else None
+        if isinstance(obs, dict) and obs.get("rule_verdict"):
+            result["deterministic_rule_observation"] = deepcopy(obs)
         result.setdefault("limitations", []).append("Function identities use observed calldata selectors. Human-readable names require verified ABI/source at the execution context; selector-database labels are not proof.")
         if unsupported:
             result["analysis_status"] = "partial"

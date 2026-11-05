@@ -569,3 +569,28 @@ def test_model_supplied_selector_outside_trace_is_not_trusted():
     assert report["analysis_integrity"]["unverified_targets"]
     assert report["scored_functions"][0]["name_verification"] == "unverified_model_label"
     assert not any("Name/selector contradiction" in l for l in report["limitations"])
+
+
+def test_completed_result_carries_deterministic_observation_not_verdict():
+    # The deterministic forensics observation must survive into completed
+    # results (previously only failure reports kept it), clearly labeled as an
+    # observation - it never becomes the run's verdict.
+    m = importlib.import_module("app.pipeline_guards")
+    identity = importlib.import_module("app.trace_identity")
+    seq = identity.sequence_from_parity(FIXTURE["responses"]["trace_transaction"], TX, "eth")
+    runtime = m.PipelineRuntime(TX, "eth")
+    runtime.sequence = seq
+    runtime.partial = {"classification": {"rule_verdict": "EXPLOIT", "rule_confidence": 0.85,
+                                          "matched_rule": "approval_abuse"}}
+    root = seq["trace"]
+    report = runtime.annotate_result({"transaction_hash": TX, "chain": "eth", "analysis_status": "completed",
+                                      "scored_functions": [{"address": root["address"], "function": root["function"]}]})
+    assert report["deterministic_rule_observation"] == {"rule_verdict": "EXPLOIT", "rule_confidence": 0.85,
+                                                        "matched_rule": "approval_abuse"}
+    assert report["analysis_status"] == "completed"
+    # absent observation: key stays absent, nothing invented
+    runtime2 = m.PipelineRuntime(TX, "eth")
+    runtime2.sequence = seq
+    report2 = runtime2.annotate_result({"transaction_hash": TX, "chain": "eth", "analysis_status": "completed",
+                                        "scored_functions": [{"address": root["address"], "function": root["function"]}]})
+    assert "deterministic_rule_observation" not in report2
