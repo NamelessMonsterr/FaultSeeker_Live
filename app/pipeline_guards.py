@@ -414,16 +414,27 @@ class PipelineRuntime:
             # production runs one analysis per child process (server.worker),
             # and install happens before dispatch and restore after completion.
             from faultseeker.prompts import local_model_prompts as _lmp
-            if not isinstance(getattr(_lmp, "CLOUD_PREFIXES", None), tuple):
+            _prefixes = getattr(_lmp, "CLOUD_PREFIXES", None)
+            if (not isinstance(_prefixes, tuple)
+                    or not all(isinstance(pfx, str) and pfx for pfx in _prefixes)):
                 raise RuntimeError(
                     "pinned engine prompt boundary unexpected: "
-                    "local_model_prompts.CLOUD_PREFIXES is not a tuple - "
-                    "refusing to install model hooks against an unverified boundary")
+                    "local_model_prompts.CLOUD_PREFIXES is not a tuple of "
+                    "non-empty strings - refusing to install model hooks "
+                    "against an unverified boundary")
             _add = tuple(pfx for pfx in ("mercury-", "itera/")
                          if not any(pfx.startswith(c) or c.startswith(pfx)
-                                    for c in _lmp.CLOUD_PREFIXES))
+                                    for c in _prefixes))
             if _add:
                 self.replace(_lmp, "CLOUD_PREFIXES", tuple(_lmp.CLOUD_PREFIXES) + _add)
+            # Post-condition (R28): registration must be EFFECTIVE, not merely
+            # attempted - an unmatched boundary (e.g. a shadowing prefix)
+            # would otherwise leave both routes silently local.
+            for _route in ("mercury-3", "itera/qwen3.8-27b"):
+                if _lmp.is_local_model(_route):
+                    raise RuntimeError(
+                        f"prompt-family registration ineffective: {_route} "
+                        "still classified local after CLOUD_PREFIXES extension")
         for agent_class in {agent_module.GPTAgent, agent_module.UniversalAgent}:
             original = agent_class._send_message
             def checked_send(agent, *args, _original=original, **kwargs):

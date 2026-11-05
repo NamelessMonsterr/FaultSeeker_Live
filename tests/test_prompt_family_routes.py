@@ -211,12 +211,16 @@ def test_hooks_fail_closed_when_prompt_boundary_unavailable(engine_modules):
     with provider routing installed but the prompt-family correction skipped."""
     lmp = importlib.import_module("faultseeker.prompts.local_model_prompts")
     original = lmp.CLOUD_PREFIXES
-    lmp.CLOUD_PREFIXES = ["gpt-"]  # wrong type: boundary no longer matches contract
-    try:
-        session = me.ModelEndpointSession(retry_limit=0, time_budget=60, call_timeout=10)
-        runtime = pg.PipelineRuntime(TX, "eth", session=session)
-        agent_module = importlib.import_module("faultseeker.utils.agent")
-        with pytest.raises(RuntimeError, match="prompt boundary"):
-            runtime.install_model_hooks(agent_module)
-    finally:
-        lmp.CLOUD_PREFIXES = original
+    agent_module = importlib.import_module("faultseeker.utils.agent")
+    for bad in (["gpt-"],           # wrong container type
+                ("gpt-", ""),       # empty entry: would make every addition
+                                    # look redundant (R28 fail-open hole)
+                ("gpt-", 3)):       # non-string entry
+        lmp.CLOUD_PREFIXES = bad
+        try:
+            session = me.ModelEndpointSession(retry_limit=0, time_budget=60, call_timeout=10)
+            runtime = pg.PipelineRuntime(TX, "eth", session=session)
+            with pytest.raises(RuntimeError, match="prompt boundary"):
+                runtime.install_model_hooks(agent_module)
+        finally:
+            lmp.CLOUD_PREFIXES = original
