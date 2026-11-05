@@ -166,8 +166,8 @@ def annotate_standard_selector_names(result):
                 # the serializer passes them through verbatim.
                 for c in (entry.get("calls") or [])[:3]:
                     if isinstance(c, dict):
-                        c.setdefault("possible_signature", hint)
-                        c.setdefault("implementation_unverified", True)
+                        c["possible_signature"] = hint
+                        c["implementation_unverified"] = True
             _annotate(entry.get("calls"))
         elif isinstance(entry, list):
             _annotate(entry)
@@ -235,15 +235,27 @@ def restore_custom_selector_recall(forensics_result, trace_root):
     here changes mechanism classification."""
     existing = set()
     for calls in (forensics_result.functions_to_be_inspected or {}).values():
+        if not isinstance(calls, list):
+            continue
         for c in calls or []:
             if isinstance(c, dict) and c.get("function") and c.get("address"):
                 existing.add(f"{c['function']}_{c['address']}".lower())
     added = []
-    def _visit(node, depth):
+    # GPT round 10: fail-closed call-type boundary + inherited static context.
+    # Only an explicit allowlist of state-capable EVM ops counts; unknown or
+    # missing call types are NOT treated as ordinary calls. A staticcall makes
+    # its ENTIRE subtree read-only (EVM-enforced), so the static context is
+    # propagated to descendants: a CALL nested under a STATICCALL cannot modify
+    # state and must not be admitted as state-capable.
+    STATE_CAPABLE = ("call", "delegatecall", "callcode")
+    def _visit(node, depth, static_context=False):
+        if not isinstance(node, dict):
+            return
         fn = node.get("function")
         addr = node.get("address")
         ct = str(node.get("call_type") or "").lower()
-        if (fn and addr and ct != "staticcall"
+        static_here = static_context or ct == "staticcall"
+        if (fn and addr and not static_here and ct in STATE_CAPABLE
                 and fn.lower() not in SEL_TOKEN_SURFACE):
             key = f"{fn}_{addr}".lower()
             if key not in existing:
@@ -253,10 +265,12 @@ def restore_custom_selector_recall(forensics_result, trace_root):
                     "gas": node.get("gas"),
                     "params": node.get("input") or node.get("params") or "0x",
                     "depth": str(node.get("depth") or depth),
-                    "call_type": ct or "call",
+                    "call_type": ct,
                 })
-        for child in node.get("children") or []:
-            _visit(child, depth + 1)
+        children = node.get("children") or []
+        if isinstance(children, list):
+            for child in children:
+                _visit(child, depth + 1, static_here)
     _visit(trace_root, 0)
     if added:
         bucket = forensics_result.functions_to_be_inspected

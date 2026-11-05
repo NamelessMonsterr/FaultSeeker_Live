@@ -213,9 +213,6 @@ def test_e2e_bsc_uranium_production_path(pinned, monkeypatch):
     # is not demoted below token reads.
     m = importlib.import_module("app.pipeline_guards")
     swap_pos = r["ranked_keys"].index(swap_key)
-    token_positions = [i for i, k in enumerate(r["ranked_keys"])
-                       if k.rsplit("_", 1)[0] in m.SEL_TOKEN_SURFACE]
-    assert not token_positions or swap_pos < max(token_positions) or True  # informational
     assert swap_pos <= 5, f"exploit-site swap ranked too low: position {swap_pos}"
     assert "0x022c0d9f" in r["prompt"] and BSC_PAIR in r["prompt"]
     assert "possible signature" in r["prompt"].lower() or "possible_signature" in r["prompt"]

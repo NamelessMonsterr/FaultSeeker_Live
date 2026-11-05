@@ -332,3 +332,41 @@ def test_selector_recall_repair_real_run3_input(pinned, monkeypatch):
                 ("0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "0x43506849d7c04f9138d1a2050bbf3a0c054402dd")]
     vuln_pos = [i for i, k in enumerate(keys) if k.rsplit("_", 1)[1] == vuln]
     assert min(vuln_pos) < max(usdc_pos)
+
+
+def test_recall_repair_static_context_and_calltype_boundary():
+    """GPT round 10 MEDIUM findings: (1) a CALL nested under a STATICCALL runs
+    in the inherited static (read-only) context and must NOT be admitted as
+    state-capable; (2) unknown/missing call types must fail closed, not be
+    admitted as ordinary calls."""
+    from types import SimpleNamespace
+    m = importlib.import_module("app.pipeline_guards")
+    vuln = "0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511"
+    forensics = SimpleNamespace(functions_to_be_inspected={})
+    trace = {"function": "0xaaaaaaaa", "address": "0x" + "1" * 40, "call_type": "call",
+             "children": [
+                 # custom selector under a normal CALL: admitted
+                 {"function": "0xefd86b62", "address": vuln, "call_type": "call", "children": []},
+                 # STATICCALL subtree: custom-selector CALL child inherits static context
+                 {"function": "0xbbbbbbbb", "address": "0x" + "2" * 40, "call_type": "staticcall",
+                  "children": [
+                      {"function": "0xf412e4c7", "address": vuln, "call_type": "call", "children": []},
+                      {"function": "0xcccccccc", "address": "0x" + "3" * 40, "call_type": "delegatecall", "children": []},
+                  ]},
+                 # unknown call type: fail closed
+                 {"function": "0xdddddddd", "address": "0x" + "4" * 40, "call_type": "mystery", "children": []},
+                 # missing call type: fail closed
+                 {"function": "0xeeeeeeee", "address": "0x" + "5" * 40, "children": []},
+                 # delegatecall at top level: state-capable, admitted
+                 {"function": "0xffffffff", "address": "0x" + "6" * 40, "call_type": "delegatecall", "children": []},
+             ]}
+    added = m.restore_custom_selector_recall(forensics, trace)
+    admitted = {c["function"] for c in forensics.functions_to_be_inspected.get("selector_recall", [])}
+    assert "0xefd86b62" in admitted  # normal custom call
+    assert "0xffffffff" in admitted  # top-level delegatecall
+    assert "0xf412e4c7" not in admitted  # CALL under STATICCALL: inherited static context
+    assert "0xcccccccc" not in admitted  # delegatecall under STATICCALL: still read-only
+    assert "0xbbbbbbbb" not in admitted  # the staticcall itself
+    assert "0xdddddddd" not in admitted  # unknown type fails closed
+    assert "0xeeeeeeee" not in admitted  # missing type fails closed
+    assert added == len(admitted) == 3  # root 0xaaaaaaaa + efd86b62 + ffffffff
