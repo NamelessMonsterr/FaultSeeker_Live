@@ -505,3 +505,29 @@ def test_second_blank_completion_usage_is_ledgered_too():
     assert session.blank_answer_retries == 1
     assert session.tokens["prompt"] == 22
     assert session.tokens["completion"] == 14
+
+
+def test_attempt_log_records_finish_reason_and_usage_at_receipt():
+    # 6c0b77b71868 failure analysis: aggregate token totals cannot distinguish
+    # a length-capped reasoning blowout from a malformed provider response.
+    # Per-attempt finish_reason + usage must be recorded at receipt, before
+    # validation raises, and survive into the session summary.
+    blowout = {"id": "m", "object": "chat.completion", "created": 0, "model": MERCURY,
+               "choices": [{"index": 0, "message": {"role": "assistant", "content": ""},
+                            "finish_reason": "length"}],
+               "usage": {"prompt_tokens": 500, "completion_tokens": 16384,
+                         "completion_tokens_details": {"reasoning_tokens": 16300}}}
+    m, session, factory, calls, _, _ = setup([httpx.Response(200, json=OK_U),
+                                              httpx.Response(200, json=blowout)],
+                                             retry_limit=0)
+    session.call(factory, {"model": MERCURY, "messages": []}, MERCURY)
+    with pytest.raises(m.ModelEndpointFailure) as failure:
+        session.call(factory, {"model": MERCURY, "messages": []}, MERCURY)
+    assert failure.value.kind == "invalid_response"
+    detail = session.summary()["attempts_detail"]
+    assert len(detail) == 2
+    assert detail[0]["finish_reason"] == "stop" and detail[0]["content_chars"] > 0
+    assert detail[0]["prompt_tokens"] == 11 and detail[0]["completion_tokens"] == 5
+    blow = detail[1]
+    assert blow["finish_reason"] == "length" and blow["content_chars"] == 0
+    assert blow["completion_tokens"] == 16384 and blow["reasoning_tokens"] == 16300

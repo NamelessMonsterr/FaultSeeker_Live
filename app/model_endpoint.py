@@ -253,6 +253,12 @@ class ModelEndpointSession:
         # wire - aggregate counters alone cannot show either.
         self.call_seq = 0
         self.abstention_call_log = []
+        # Per-attempt outcome observability (6c0b77b71868 failure analysis):
+        # finish_reason + usage per provider response, recorded at receipt
+        # before validation raises - aggregate token totals alone cannot
+        # distinguish a length-capped reasoning blowout from a malformed
+        # provider response, and that distinction chooses the remediation.
+        self.attempt_log = []
         self.failure = None
         self.lock = threading.RLock()
         self.blank_answer_retries = 0  # ledgered: user-granted blank-answer re-asks
@@ -459,6 +465,28 @@ class ModelEndpointSession:
                     # raise: blank completions and refusals still consumed tokens, and
                     # their usage belongs in the ledger and the rolling output window.
                     self._count_tokens(completion)
+                    try:
+                        _c = getattr(completion, "choices", None)
+                        _u = getattr(completion, "usage", None)
+                        _det = getattr(_u, "completion_tokens_details", None)
+                        _msg = getattr(_c[0], "message", None) if _c else None
+                        _content = getattr(_msg, "content", None)
+                        self.attempt_log.append({
+                            "phase": phase, "model": str(model),
+                            "has_choices": bool(_c),
+                            "finish_reason": (getattr(_c[0], "finish_reason", None)
+                                              if _c else None),
+                            "content_chars": (len(_content)
+                                              if isinstance(_content, str) else 0),
+                            "prompt_tokens": (int(getattr(_u, "prompt_tokens", 0) or 0)
+                                              if _u is not None else None),
+                            "completion_tokens": (int(getattr(_u, "completion_tokens", 0) or 0)
+                                                  if _u is not None else None),
+                            "reasoning_tokens": (int(getattr(_det, "reasoning_tokens", 0) or 0)
+                                                 if _det is not None else 0),
+                        })
+                    except Exception:
+                        pass
                     choices = getattr(completion, "choices", None)
                     content = getattr(choices[0].message, "content", None) if choices else None
                     finish = getattr(choices[0], "finish_reason", None) if choices else None
@@ -594,4 +622,5 @@ class ModelEndpointSession:
                 "abstention_augmented_calls": self.abstention_augmented_calls,
                 "abstention_targeting_mismatches": self.abstention_targeting_mismatches,
                 "abstention_calls": list(self.abstention_call_log),
+                "attempts_detail": list(self.attempt_log),
                 "failure": self.failure.as_dict() if self.failure else None}
