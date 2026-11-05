@@ -119,3 +119,29 @@ def test_request_payload_credential_and_token_accounting(monkeypatch):
 def test_mercury_model_is_listed_with_its_own_credential_env():
     server_src = open("app/server.py", encoding="utf-8").read()
     assert '"id": "mercury-3"' in server_src and '"keyEnv": "INCEPTION_API_KEY"' in server_src
+
+
+def test_dispatched_config_recorded_at_send_boundary(monkeypatch):
+    """R13: the recorder sits at the actual provider send boundary, so the
+    artifact carries the EFFECTIVE adapted request (post temperature clamp,
+    reasoning-effort resolution, max_tokens cap), not environment guesses."""
+    monkeypatch.delenv("FAULTSEEKER_MERCURY_REASONING_EFFORT", raising=False)
+    seen = []
+    _m, s, factory = session([ok('["token"]')], seen)
+    s.call(factory, {"model": MERCURY, "messages": [{"role": "user", "content": "x"}],
+                     "max_tokens": 500, "temperature": 0}, MERCURY)
+    assert s.dispatched_configs == [
+        {"model": "mercury-3", "temperature": 1.0, "reasoning_effort": "medium",
+         "max_tokens": 500, "phase": "analysis"}]
+    # The recorded config matches what actually hit the wire.
+    assert seen[0]["body"]["temperature"] == 1.0
+    assert seen[0]["body"]["reasoning_effort"] == "medium"
+
+    monkeypatch.setenv("FAULTSEEKER_MERCURY_REASONING_EFFORT", "low")
+    seen2 = []
+    _m2, s2, factory2 = session([ok('["token"]')], seen2)
+    s2.call(factory2, {"model": MERCURY, "messages": [{"role": "user", "content": "x"}],
+                       "max_tokens": 99999}, MERCURY)
+    assert s2.dispatched_configs[0]["reasoning_effort"] == "low"
+    assert s2.dispatched_configs[0]["max_tokens"] == 16384  # cap applied
+    assert seen2[0]["body"]["reasoning_effort"] == "low"

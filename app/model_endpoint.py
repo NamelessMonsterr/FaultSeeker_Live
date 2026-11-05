@@ -121,6 +121,10 @@ class ModelEndpointSession:
         self.model_routes = {}
         self.route_policy = None
         self.tokens = {"prompt": 0, "completion": 0, "reasoning": 0}
+        # Effective request configs recorded at the provider send boundary,
+        # deduped. Reaching the recorder proves the request was constructed and
+        # dispatched; outcomes are ledgered separately (tokens, failure kind).
+        self.dispatched_configs = []
         # Rolling one-minute output budget (completion tokens incl. reasoning),
         # paced conservatively below provider per-minute limits.
         self.output_budget_per_min = int(output_budget_per_min)
@@ -252,7 +256,9 @@ class ModelEndpointSession:
                         # a grant that never reaches the wire is not a spent retry.
                         self.blank_answer_retries += 1
                         pending_blank_reask = False
-                    completion = bounded.chat.completions.create(**adapt_request(model, kwargs))
+                    adapted = adapt_request(model, kwargs)
+                    self._record_dispatched(model, adapted, phase)
+                    completion = bounded.chat.completions.create(**adapted)
                     # Token accounting happens at receipt, before any validation can
                     # raise: blank completions and refusals still consumed tokens, and
                     # their usage belongs in the ledger and the rolling output window.
@@ -361,6 +367,16 @@ class ModelEndpointSession:
                 before = self.clock()
                 self.sleep(delay)
                 self.spent += max(0.0, self.clock() - before)
+
+    def _record_dispatched(self, model, adapted, phase):
+        extra = adapted.get("extra_body") or {}
+        rec = {"model": str(adapted.get("model", model)),
+               "temperature": adapted.get("temperature"),
+               "reasoning_effort": extra.get("reasoning_effort"),
+               "max_tokens": adapted.get("max_tokens"),
+               "phase": phase}
+        if rec not in self.dispatched_configs:
+            self.dispatched_configs.append(rec)
 
     def _count_tokens(self, completion):
         usage = getattr(completion, "usage", None)
