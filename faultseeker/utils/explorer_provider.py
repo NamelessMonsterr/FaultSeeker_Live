@@ -120,6 +120,16 @@ class _ExplorerEndpoint:
         return 'YourApiKeyToken'
 
     @property
+    def has_configured_key(self) -> bool:
+        """True when this endpoint needs no key or its key env var is set.
+
+        A keyed endpoint without its key configured is skipped entirely:
+        sending the 'YourApiKeyToken' placeholder only produces guaranteed
+        auth failures and burns rate budget on every address in a run.
+        """
+        return not self.api_key_env or bool(os.getenv(self.api_key_env, '').strip())
+
+    @property
     def is_circuit_open(self) -> bool:
         if self._cb_until == 0:
             return False
@@ -331,7 +341,7 @@ class _ServerError(Exception):
 
 
 def _classify_http(code: int) -> type:
-    if code in (401, 403):
+    if code in (401, 402, 403):
         return _AuthError
     if code == 429:
         return _RateLimitError
@@ -369,6 +379,9 @@ def explorer_call(chain: str, params: dict, timeout: int = 20) -> dict | None:
         return None
 
     for ep in endpoints:
+        if not ep.has_configured_key:
+            log.debug(f'[explorer SKIP] {_endpoint_label(ep.base_url)}: {ep.api_key_env} not configured')
+            continue
         if ep.is_circuit_open:
             log.debug(f'[explorer circuit SKIP] {_endpoint_label(ep.base_url)}')
             continue
@@ -418,7 +431,10 @@ def explorer_call(chain: str, params: dict, timeout: int = 20) -> dict | None:
             ep.penalize(ms, _ExplorerEndpoint.PENALTY_5XX)
             log.warning(f'[explorer FAIL] {_endpoint_label(ep.base_url)}: {type(exc).__name__} ({ms:.0f}ms)')
 
-    log.error(f'All explorer endpoints failed for {chain}:{params.get("action","")}')
+    if all(not ep.has_configured_key for ep in endpoints):
+        log.error(f'All explorer endpoints for {chain} lack configured API keys')
+    else:
+        log.error(f'All explorer endpoints failed for {chain}:{params.get("action","")}')
     return None
 
 
