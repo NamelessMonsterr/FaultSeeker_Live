@@ -325,7 +325,7 @@ DEMO_REPLAY_MAX_GAP = float(os.environ.get("DEMO_REPLAY_MAX_GAP", "1.2"))  # sec
 
 MODELS = [
     {"id": "gpt-6.1-sol-low", "label": "GPT-6.1 Sol low (Codex)", "keyEnv": "OPENAI_API_KEY"},
-    {"id": "mercury-2", "label": "Mercury 2 (Inception Labs)", "keyEnv": "MERCURY_API_KEY"},
+    {"id": "mercury-3", "label": "Mercury 3 (Inception Labs)", "keyEnv": "MERCURY_API_KEY"},
     {"id": "gpt-6.1-sol-medium", "label": "GPT-6.1 Sol medium (Codex)", "keyEnv": "OPENAI_API_KEY"},
     {"id": "gpt-6.1-sol-high", "label": "GPT-6.1 Sol high (Codex)", "keyEnv": "OPENAI_API_KEY"},
     {"id": "z-ai/glm-5.3-flash", "label": "GLM 5.3 Flash (NVIDIA NIM)", "keyEnv": "NVIDIA_API_KEY"},
