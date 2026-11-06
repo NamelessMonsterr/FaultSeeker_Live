@@ -1,0 +1,16 @@
+.git
+.venv
+.env
+.env.*
+**/__pycache__
+**/*.pyc
+.pytest_cache
+console/app/runs
+console/tests
+console/docs
+tests
+docs
+benchmark
+full_paper
+logs
+data/cache

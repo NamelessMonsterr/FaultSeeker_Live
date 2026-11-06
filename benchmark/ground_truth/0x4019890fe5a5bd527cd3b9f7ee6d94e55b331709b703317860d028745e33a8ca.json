@@ -1,0 +1,21 @@
+{
+  "name": "BBT",
+  "cause": "business logic flaw",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x4019890fe5a5bd527cd3b9f7ee6d94e55b331709b703317860d028745e33a8ca"
+  ],
+  "complexity_level": "Complex",
+  "time": "2024-03-12 08:31:59 UTC",
+  "lost": "~5.06 ETH",
+  "location": {
+    "0x74463ed91bfa45bca06d59e8b383a89709842f69#BBTOKENv2.sol#52:2": [
+      "0x74463ed91bfa45bca06d59e8b383a89709842f69#BBTOKENv2#setRegistry",
+      "0x74463ed91bfa45bca06d59e8b383a89709842f69#BBTOKENv2#52:2"
+    ]
+  },
+  "disclosure": {
+    "time": "2024-03-12 08:37:00 UTC",
+    "link": "['https://x.com/8olidity/status/1767470002566058088']"
+  }
+}

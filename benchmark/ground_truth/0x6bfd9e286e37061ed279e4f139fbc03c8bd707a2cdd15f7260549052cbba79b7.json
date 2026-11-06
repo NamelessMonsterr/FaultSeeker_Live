@@ -1,0 +1,25 @@
+{
+  "name": "DFXFinance",
+  "cause": "Reentrancy",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x6bfd9e286e37061ed279e4f139fbc03c8bd707a2cdd15f7260549052cbba79b7"
+  ],
+  "complexity_level": "Complex",
+  "time": "2022-11-10 19:27:59 UTC",
+  "lost": "$4M",
+  "location": {
+    "0x46161158b1947d9149e066d6d31af1283b2d377c#Curve.sol#634:35": [
+      "0x46161158b1947d9149e066d6d31af1283b2d377c#Curve#flash",
+      "0x46161158b1947d9149e066d6d31af1283b2d377c#Curve#634:35"
+    ],
+    "0x46161158b1947d9149e066d6d31af1283b2d377c#Curve.sol#531:13": [
+      "0x46161158b1947d9149e066d6d31af1283b2d377c#Curve#deposit",
+      "0x46161158b1947d9149e066d6d31af1283b2d377c#Curve#531:13"
+    ]
+  },
+  "detection": {
+    "time": "2022-11-11 06:51:00 UTC",
+    "link": "['https://x.com/BlockSecTeam/status/1590960299246780417']"
+  }
+}

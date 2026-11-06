@@ -1,0 +1,537 @@
+import os
+import copy
+import importlib
+import json
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+et = importlib.import_module("app.explorer_trace")
+ti = importlib.import_module("app.trace_identity")
+HEDGEY = json.loads((ROOT / "tests/fixtures/hedgey_verified_trace.json").read_text())
+BS_ETH = json.loads((ROOT / "tests/fixtures/blockscout_eth_hedgey_raw_trace.json").read_text())
+OP = json.loads((ROOT / "tests/fixtures/blockscout_optimism_raw_trace.json").read_text())
+TX = HEDGEY["provenance"]["transaction_hash"]
+ETH_TX = HEDGEY["responses"]["eth_getTransactionByHash"]
+ETH_TX = ETH_TX.get("result", ETH_TX)
+OP_HASH = OP["tx"]["hash"]
+
+
+def test_eth_explorer_trace_equals_recorded_trace_and_binds_block_identity():
+    rows = et.rows_from_parity(copy.deepcopy(BS_ETH), ETH_TX, TX, chain_id=1)
+    got = ti.sequence_from_parity(rows, TX, "eth")
+    want = ti.sequence_from_parity(HEDGEY["responses"]["trace_transaction"], TX, "eth")
+    assert got["canonical_trace"] == want["canonical_trace"]
+    assert got["trace_provenance"]["block_hash"] == want["trace_provenance"]["block_hash"]
+    assert got["trace_provenance"]["block_number"] == 19687890 and rows[0]["transactionPosition"] == 27
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda raw, tx: raw[0]["action"].__setitem__("input", "0xdeadbeef"),
+    lambda raw, tx: raw[0]["action"].__setitem__("to", "0x" + "11" * 20),
+    lambda raw, tx: raw[0]["action"].__setitem__("from", "0x" + "22" * 20),
+    lambda raw, tx: raw.pop(0),                                # root missing
+    lambda raw, tx: raw[1].__setitem__("type", "create"),
+    lambda raw, tx: raw.append(copy.deepcopy(raw[1])),         # duplicate location
+    lambda raw, tx: tx.__setitem__("hash", "0x" + "33" * 32),
+    lambda raw, tx: tx.pop("blockHash"),
+    lambda raw, tx: tx.__setitem__("chainId", "0x2"),
+])
+def test_eth_adapter_refuses_any_identity_gap(mutate):
+    raw, tx = copy.deepcopy(BS_ETH), copy.deepcopy(ETH_TX)
+    mutate(raw, tx)
+    with pytest.raises(ti.TraceIdentityError):
+        et.rows_from_parity(raw, tx, TX, chain_id=1)
+
+
+def test_eth_adapter_refuses_non_list_and_empty():
+    for bad in ({}, [], None, {"calls": []}):
+        with pytest.raises(ti.TraceIdentityError):
+            et.rows_from_parity(bad, ETH_TX, TX)
+
+
+@pytest.mark.parametrize("field", ["transactionHash", "blockHash"])
+@pytest.mark.parametrize("frame", [0, 1])
+def test_explorer_cannot_overwrite_conflicting_frame_provenance(field, frame):
+    raw = copy.deepcopy(BS_ETH)
+    raw[frame][field] = "0x" + "ab" * 32
+    with pytest.raises(ti.TraceIdentityError, match="provenance"):
+        et.rows_from_parity(raw, ETH_TX, TX, chain_id=1)
+
+
+def test_explorer_accepts_matching_explicit_frame_provenance():
+    raw = copy.deepcopy(BS_ETH)
+    for row in raw:
+        row.update(transactionHash=TX.upper(), blockHash=ETH_TX["blockHash"].upper())
+    rows = et.rows_from_parity(raw, ETH_TX, TX, chain_id=1)
+    assert all(row["transactionHash"] == TX and row["blockHash"] == ETH_TX["blockHash"] for row in rows)
+
+
+def test_optimism_calltracer_tree_becomes_verified_parity_rows():
+    rows = et.rows_from_calltracer(copy.deepcopy(OP["raw_trace"]), OP["tx"], OP_HASH, chain_id=10)
+    assert len(rows) == 66 and rows[0]["traceAddress"] == []
+    assert all(r["blockNumber"] == 158747826 and r["transactionPosition"] == 35 for r in rows)
+    seq = ti.sequence_from_parity(rows, OP_HASH, "optimism", verified_chain="optimism")
+    assert seq["trace_provenance"]["frame_count"] == 66
+    root = seq["canonical_trace"]
+    assert root["callee"].lower() == OP["tx"]["to"].lower() and len(root["children"]) == rows[0]["subtraces"]
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda t, tx: t.__setitem__("input", "0x00"),
+    lambda t, tx: t.__setitem__("to", "0x" + "44" * 20),
+    lambda t, tx: t["calls"][0].__setitem__("type", "CREATE"),
+    lambda t, tx: tx.__setitem__("chainId", "0x1"),
+    lambda t, tx: tx.pop("transactionIndex"),
+])
+def test_optimism_adapter_refuses_identity_gap(mutate):
+    t, tx = copy.deepcopy(OP["raw_trace"]), copy.deepcopy(OP["tx"])
+    mutate(t, tx)
+    with pytest.raises(ti.TraceIdentityError):
+        et.rows_from_calltracer(t, tx, OP_HASH, chain_id=10)
+
+
+def test_reverted_internal_call_is_kept_and_labelled_not_dropped():
+    rows = et.rows_from_calltracer(copy.deepcopy(OP["raw_trace"]), OP["tx"], OP_HASH, chain_id=10)
+    reverted = [r for r in rows if r.get("error")]
+    assert reverted and all(r["error"] == "execution reverted" for r in reverted)
+
+
+# ---- fetch + pipeline payload --------------------------------------------------------------
+
+class _Resp:
+    def __init__(self, data, url):
+        self._d, self._u = data, url
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+    def geturl(self): return self._u
+    def read(self, n=-1): return self._d if n < 0 else self._d[:n]
+
+
+def test_fetch_uses_one_verified_url_and_refuses_redirect_oversize_and_bad_input():
+    seen = []
+    def ok(request, timeout):
+        seen.append((request.full_url, timeout))
+        return _Resp(json.dumps(BS_ETH).encode(), request.full_url)
+    assert et.fetch_raw_trace("eth", TX, opener=ok) == BS_ETH
+    assert seen == [(f"https://eth.blockscout.com/api/v2/transactions/{TX}/raw-trace", 20)]
+    with pytest.raises(ti.TraceIdentityError):
+        et.fetch_raw_trace("eth", TX, opener=lambda r, timeout: _Resp(b"[]", "https://evil.example/x"))
+    with pytest.raises(ti.TraceIdentityError):
+        et.fetch_raw_trace("eth", TX, opener=lambda r, timeout: _Resp(b"x" * 3_000_000, r.full_url))
+    with pytest.raises(ti.TraceIdentityError):
+        et.fetch_raw_trace("eth", TX, opener=lambda r, timeout: _Resp(b"<html>", r.full_url))
+    for chain, h in (("bsc", TX), ("eth", "0x12"), ("eth", TX + "/../x")):
+        with pytest.raises(ti.TraceIdentityError):
+            et.fetch_raw_trace(chain, h, opener=ok)
+
+
+def test_payload_shapes_and_unknown_shape_refused():
+    p = et.payload_from_explorer("eth", TX, ETH_TX, 1, fetch=lambda c, h: copy.deepcopy(BS_ETH))
+    assert p["trace"]["callee"].lower() == ETH_TX["to"].lower() and p["trace_provenance"]["source"] == "explorer_raw_trace"
+    q = et.payload_from_explorer("optimism", OP_HASH, OP["tx"], 10, fetch=lambda c, h: copy.deepcopy(OP["raw_trace"]))
+    assert q["trace_provenance"]["frame_count"] == 66 and q["trace_provenance"]["frame_errors"] >= 1
+    for bad in ("x", {"foo": 1}, 5):
+        with pytest.raises(ti.TraceIdentityError):
+            et.payload_from_explorer("eth", TX, ETH_TX, 1, fetch=lambda c, h, b=bad: b)
+    with pytest.raises(ti.TraceIdentityError):
+        et.payload_from_explorer("polygon", TX, ETH_TX, 137, fetch=lambda c, h: BS_ETH)
+
+
+def _install(monkeypatch, tmp_path, tx, chain_id_hex, raise_trace=True):
+    import os, sys
+    repo = os.environ.get("FAULTSEEKER_TEST_PIPELINE_REPO")
+    if not repo:
+        pytest.skip("pinned pipeline checkout required")
+    monkeypatch.syspath_prepend(repo)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "true")
+    rp = importlib.import_module("faultseeker.utils.rpc_provider")
+    rep = importlib.import_module("faultseeker.data_collection.txn_replayer")
+    calls = []
+    def fake_rpc(chain, method, params, timeout=None):
+        calls.append(method)
+        return {"eth_getTransactionByHash": tx, "eth_chainId": chain_id_hex}[method]
+    monkeypatch.setattr(rp, "rpc_call", fake_rpc)
+    def no_trace(self, tx_hash, chain):
+        raise RuntimeError("no rpc trace")
+    monkeypatch.setattr(rep.TransactionReplayer, "get_structured_trace", no_trace)
+    m = importlib.import_module("app.pipeline_guards")
+    runtime = m.PipelineRuntime(TX, "eth")
+    return m, runtime, rep, calls
+
+
+def test_runtime_uses_explorer_trace_only_when_opted_in_and_chain_id_matches(monkeypatch, tmp_path):
+    m, runtime, rep, calls = _install(monkeypatch, tmp_path, copy.deepcopy(ETH_TX), "0x1")
+    monkeypatch.setattr(et, "fetch_raw_trace", lambda c, h, opener=None: copy.deepcopy(BS_ETH))
+    monkeypatch.setattr(m, "payload_from_explorer", lambda c, h, tx, cid: et.payload_from_explorer(c, h, tx, cid, fetch=lambda *a: copy.deepcopy(BS_ETH)))
+    runtime.install()
+    try:
+        monkeypatch.delenv("FAULTSEEKER_EXPLORER_TRACE", raising=False)
+        with pytest.raises(RuntimeError):                       # default off: unchanged behaviour
+            rep.TransactionReplayer.get_structured_trace(object(), TX, "eth")
+        monkeypatch.setenv("FAULTSEEKER_EXPLORER_TRACE", "1")
+        payload = rep.TransactionReplayer.get_structured_trace(object(), TX, "eth")
+        assert payload["trace_provenance"]["source"] == "explorer_raw_trace"
+        assert payload["trace_provenance"]["block_number"] == ETH_TX["blockNumber"]
+        assert "eth_chainId" in calls and "eth_getTransactionByHash" in calls
+    finally:
+        runtime.close()
+
+
+def test_runtime_refuses_explorer_trace_when_rpc_chain_id_differs(monkeypatch, tmp_path):
+    m, runtime, rep, calls = _install(monkeypatch, tmp_path, copy.deepcopy(ETH_TX), "0xa")
+    monkeypatch.setattr(m, "payload_from_explorer", lambda c, h, tx, cid: et.payload_from_explorer(c, h, tx, cid, fetch=lambda *a: copy.deepcopy(BS_ETH)))
+    monkeypatch.setenv("FAULTSEEKER_EXPLORER_TRACE", "1")
+    runtime.install()
+    try:
+        with pytest.raises(ti.TraceIdentityError):
+            rep.TransactionReplayer.get_structured_trace(object(), TX, "eth")
+    finally:
+        runtime.close()
+
+
+def test_runtime_refuses_explorer_trace_with_tampered_root(monkeypatch, tmp_path):
+    m, runtime, rep, calls = _install(monkeypatch, tmp_path, copy.deepcopy(ETH_TX), "0x1")
+    bad = copy.deepcopy(BS_ETH); bad[0]["action"]["input"] = "0xdeadbeef"
+    monkeypatch.setattr(m, "payload_from_explorer", lambda c, h, tx, cid: et.payload_from_explorer(c, h, tx, cid, fetch=lambda *a: bad))
+    monkeypatch.setenv("FAULTSEEKER_EXPLORER_TRACE", "1")
+    runtime.install()
+    try:
+        with pytest.raises(ti.TraceIdentityError):
+            rep.TransactionReplayer.get_structured_trace(object(), TX, "eth")
+    finally:
+        runtime.close()
+
+
+def _gap(mutate):
+    raw = copy.deepcopy(BS_ETH)
+    mutate(raw)
+    return raw
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda raw: raw.pop(2),                                              # a middle child removed: non-contiguous or count mismatch
+    lambda raw: raw.__delitem__(len(raw) - 1),                           # last frame removed: parent subtraces too high
+    lambda raw: raw[1].__setitem__("traceAddress", [0, 0]),              # orphan (parent [0] missing after move)
+    lambda raw: raw[0].__setitem__("subtraces", 99),
+    lambda raw: raw[1].__setitem__("traceAddress", [-1]),
+])
+def test_parity_truncated_or_orphan_trees_are_refused(mutate):
+    with pytest.raises(ti.TraceIdentityError):
+        et.rows_from_parity(_gap(mutate), ETH_TX, TX, 1)
+
+
+def test_parity_per_frame_error_is_preserved_on_the_canonical_tree():
+    raw = copy.deepcopy(BS_ETH)
+    raw[1]["error"] = "Reverted"
+    p = et.payload_from_explorer("eth", TX, ETH_TX, 1, fetch=lambda c, h: raw)
+    loc = raw[1]["traceAddress"]
+    node = p["trace"]
+    for i in loc:
+        node = node["children"][i]
+    assert node["error"] == "Reverted" and p["trace_provenance"]["frame_error_locations"] == [loc]
+
+
+def test_calltracer_revert_with_missing_output_is_kept_not_normalised_away():
+    rows = et.rows_from_calltracer(copy.deepcopy(OP["raw_trace"]), OP["tx"], OP_HASH, 10)
+    reverted = [r for r in rows if r.get("error")]
+    assert reverted and all(r["result"]["output"] in (None, "0x") or isinstance(r["result"]["output"], str) for r in reverted)
+    assert all("error" in r for r in reverted)
+
+
+def test_provenance_states_completeness_boundary():
+    p = et.payload_from_explorer("optimism", OP_HASH, OP["tx"], 10, fetch=lambda c, h: copy.deepcopy(OP["raw_trace"]))
+    assert p["trace_provenance"]["completeness_proven"] is False
+    assert "omitted sub-calls cannot be detected" in p["trace_provenance"]["completeness"]
+    e = et.payload_from_explorer("eth", TX, ETH_TX, 1, fetch=lambda c, h: copy.deepcopy(BS_ETH))
+    assert e["trace_provenance"]["completeness_proven"] is False and "verified consistent" in e["trace_provenance"]["completeness"]
+
+
+@pytest.mark.parametrize("rpc_chain_id", [None, 10, "0x1", True, 0])
+def test_rpc_chain_id_is_mandatory_and_must_equal_instance_chain(rpc_chain_id):
+    with pytest.raises(ti.TraceIdentityError):
+        et.payload_from_explorer("eth", TX, ETH_TX, rpc_chain_id, fetch=lambda c, h: copy.deepcopy(BS_ETH))
+
+
+@pytest.mark.parametrize("field,value", [("blockHash", "0x12"), ("blockNumber", "19687890"), ("transactionIndex", "x")])
+def test_malformed_rpc_block_identity_refused(field, value):
+    tx = copy.deepcopy(ETH_TX); tx[field] = value
+    with pytest.raises(ti.TraceIdentityError):
+        et.rows_from_parity(copy.deepcopy(BS_ETH), tx, TX, 1)
+
+
+def test_direct_mode_never_calls_the_rpc_trace_path(monkeypatch, tmp_path):
+    m, runtime, rep, calls = _install(monkeypatch, tmp_path, copy.deepcopy(ETH_TX), "0x1")
+    traced = []
+    original = rep.TransactionReplayer.get_structured_trace
+    def spy(self, tx_hash, chain):
+        traced.append(chain)
+        raise RuntimeError("would hit a trace RPC")
+    monkeypatch.setattr(rep.TransactionReplayer, "get_structured_trace", spy)
+    monkeypatch.setattr(m, "payload_from_explorer", lambda c, h, tx, cid: et.payload_from_explorer(c, h, tx, cid, fetch=lambda *a: copy.deepcopy(BS_ETH)))
+    monkeypatch.setenv("FAULTSEEKER_EXPLORER_TRACE", "direct")
+    runtime.install()
+    try:
+        payload = rep.TransactionReplayer.get_structured_trace(object(), TX, "eth")
+        assert payload["trace_provenance"]["source"] == "explorer_raw_trace"
+        assert traced == []                                   # the trace RPC was never asked
+        assert set(calls) == {"eth_getTransactionByHash", "eth_chainId"}   # identity reads only
+    finally:
+        runtime.close()
+
+
+def test_wired_provenance_retains_all_explorer_fields(monkeypatch, tmp_path):
+    m, runtime, rep, calls = _install(monkeypatch, tmp_path, copy.deepcopy(ETH_TX), "0x1")
+    monkeypatch.setattr(m, "payload_from_explorer", lambda c, h, tx, cid: et.payload_from_explorer(c, h, tx, cid, fetch=lambda *a: copy.deepcopy(BS_ETH)))
+    monkeypatch.setenv("FAULTSEEKER_EXPLORER_TRACE", "direct")
+    runtime.install()
+    try:
+        prov = rep.TransactionReplayer.get_structured_trace(object(), TX, "eth")["trace_provenance"]
+        raw = et.payload_from_explorer("eth", TX, copy.deepcopy(ETH_TX), 1, fetch=lambda *a: copy.deepcopy(BS_ETH))["trace_provenance"]
+        for key in ("completeness", "completeness_proven", "frame_errors", "frame_error_locations", "explorer"):
+            assert key in raw, key
+            assert prov[key] == raw[key], key
+        assert prov["completeness_proven"] is False
+        assert prov["identity_cross_check"] == "eth_getTransactionByHash + eth_chainId"
+        assert prov["block_number"] == ETH_TX["blockNumber"]
+    finally:
+        runtime.close()
+
+
+def test_direct_mode_preserves_the_real_explorer_error(monkeypatch, tmp_path):
+    m, runtime, rep, calls = _install(monkeypatch, tmp_path, copy.deepcopy(ETH_TX), "0x1")
+    def boom(c, h, tx, cid):
+        raise ConnectionError("blockscout unreachable")
+    monkeypatch.setattr(m, "payload_from_explorer", boom)
+    monkeypatch.setenv("FAULTSEEKER_EXPLORER_TRACE", "direct")
+    runtime.install()
+    try:
+        with pytest.raises(ConnectionError, match="blockscout unreachable"):
+            rep.TransactionReplayer.get_structured_trace(object(), TX, "eth")
+    finally:
+        runtime.close()
+
+
+def test_direct_mode_on_unsupported_chain_fails_closed_without_any_rpc(monkeypatch, tmp_path):
+    m, runtime, rep, calls = _install(monkeypatch, tmp_path, copy.deepcopy(ETH_TX), "0x1")
+    traced = []
+    def spy(self, tx_hash, chain):
+        traced.append(chain)
+        return {}
+    monkeypatch.setattr(rep.TransactionReplayer, "get_structured_trace", spy)
+    monkeypatch.setenv("FAULTSEEKER_EXPLORER_TRACE", "direct")
+    runtime.install()
+    try:
+        with pytest.raises(ti.TraceIdentityError):
+            rep.TransactionReplayer.get_structured_trace(object(), TX, "bsc")
+        assert traced == [] and calls == []
+    finally:
+        runtime.close()
+
+
+PRO = json.load(open(os.path.join(os.path.dirname(__file__), "fixtures", "blockscout_pro_trace_samples.json")))
+
+
+@pytest.mark.parametrize("chain", ["gnosis", "scroll", "celo", "aurora"])
+def test_pro_chain_real_samples_become_verified_rows(chain):
+    s = PRO[chain]
+    p = et.payload_from_explorer(chain, s["hash"], s["tx"], s["chain_id"], fetch=lambda c, h: copy.deepcopy(s["raw_trace"]))
+    assert p["trace_provenance"]["block_number"] == int(s["tx"]["blockNumber"], 16)
+    assert p["trace_provenance"]["block_hash"].lower() == s["tx"]["blockHash"].lower()
+    assert p["trace_provenance"]["completeness_proven"] is False
+
+
+@pytest.mark.parametrize("chain", ["gnosis", "scroll", "celo", "aurora"])
+def test_pro_chain_refuses_wrong_chain_id_and_tampered_root(chain):
+    s = PRO[chain]
+    with pytest.raises(ti.TraceIdentityError):
+        et.payload_from_explorer(chain, s["hash"], s["tx"], 1, fetch=lambda c, h: copy.deepcopy(s["raw_trace"]))
+    bad = copy.deepcopy(s["raw_trace"])
+    root = bad[0]["action"] if isinstance(bad, list) else bad
+    key = "input"
+    root[key] = "0xdeadbeef"
+    with pytest.raises(ti.TraceIdentityError):
+        et.payload_from_explorer(chain, s["hash"], s["tx"], s["chain_id"], fetch=lambda c, h: bad)
+
+
+def test_pro_plan_gated_and_unsupported_chains_are_not_listed():
+    for chain in ("base", "polygon", "zksync", "arbitrum", "bsc"):
+        assert chain not in et.EXPLORER_TRACE_INSTANCES
+
+
+class _Resp:
+    def __init__(self, body, url): self._b, self._u = body, url
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+    def geturl(self): return self._u
+    def read(self, n=-1): return self._b
+
+
+def test_pro_fetch_needs_key_and_sends_bearer_only_to_pro_host(monkeypatch):
+    s = PRO["gnosis"]
+    monkeypatch.delenv("BLOCKSCOUT_PRO_API_KEY", raising=False)
+    with pytest.raises(ti.TraceIdentityError):
+        et.fetch_raw_trace("gnosis", s["hash"], opener=lambda r, timeout=None: _Resp(b"[]", r.full_url))
+    monkeypatch.setenv("BLOCKSCOUT_PRO_API_KEY", "proapi_" + "a" * 20)
+    seen = []
+    def opener(req, timeout=None):
+        seen.append(req)
+        return _Resp(json.dumps(s["raw_trace"]).encode(), req.full_url)
+    assert et.fetch_raw_trace("gnosis", s["hash"], opener=opener) == s["raw_trace"]
+    assert seen[0].full_url.startswith("https://api.blockscout.com/100/api/v2/transactions/")
+    assert seen[0].get_header("Authorization") == "Bearer proapi_" + "a" * 20
+    # keyless instances never get a Bearer header
+    monkeypatch.setattr(et, "_urlreq", type("U", (), {"Request": et._urlreq.Request, "urlopen": None}))
+    seen.clear()
+    et.fetch_raw_trace("eth", TX, opener=lambda r, timeout=None: (seen.append(r), _Resp(b"[]", r.full_url))[1])
+    assert seen[0].get_header("Authorization") is None
+
+
+def test_pro_rpc_allows_only_identity_methods_and_refuses_redirect_and_errors(monkeypatch):
+    monkeypatch.setenv("BLOCKSCOUT_PRO_API_KEY", "proapi_" + "b" * 20)
+    with pytest.raises(ti.TraceIdentityError):
+        et.pro_rpc("gnosis", "debug_traceTransaction", [], opener=lambda r, timeout=None: _Resp(b"{}", r.full_url))
+    with pytest.raises(ti.TraceIdentityError):
+        et.pro_rpc("eth", "eth_chainId", [], opener=lambda r, timeout=None: _Resp(b"{}", r.full_url))
+    with pytest.raises(ti.TraceIdentityError):
+        et.pro_rpc("gnosis", "eth_chainId", [], opener=lambda r, timeout=None: _Resp(b'{"result":"0x64"}', "https://evil.example/x"))
+    with pytest.raises(ti.TraceIdentityError):
+        et.pro_rpc("gnosis", "eth_chainId", [], opener=lambda r, timeout=None: _Resp(b'{"error":{"code":-1}}', r.full_url))
+    assert et.pro_rpc("gnosis", "eth_chainId", [], opener=lambda r, timeout=None: _Resp(b'{"result":"0x64"}', r.full_url)) == "0x64"
+
+
+def test_wired_direct_mode_on_pro_chain_reads_identity_through_the_pro_gateway(monkeypatch, tmp_path):
+    s = PRO["gnosis"]
+    m, runtime, rep, calls = _install(monkeypatch, tmp_path, None, None)
+    pro_calls = []
+    def fake_pro(chain, method, params, opener=None):
+        pro_calls.append((chain, method))
+        return {"eth_getTransactionByHash": s["tx"], "eth_chainId": hex(s["chain_id"])}[method]
+    monkeypatch.setattr(m, "pro_rpc", fake_pro)
+    monkeypatch.setattr(m, "payload_from_explorer", lambda c, h, tx, cid: et.payload_from_explorer(c, h, tx, cid, fetch=lambda *a: copy.deepcopy(s["raw_trace"])))
+    monkeypatch.setenv("FAULTSEEKER_EXPLORER_TRACE", "direct")
+    runtime.install()
+    try:
+        payload = rep.TransactionReplayer.get_structured_trace(object(), s["hash"], "gnosis")
+        assert payload["trace_provenance"]["source"] == "explorer_raw_trace"
+        assert payload["trace_provenance"]["completeness_proven"] is False
+        assert calls == []                                       # the console RPC registry was never used
+        assert sorted(m_ for _, m_ in pro_calls) == ["eth_chainId", "eth_getTransactionByHash"]
+    finally:
+        runtime.close()
+
+
+def test_aurora_is_keyless_and_never_sends_a_bearer_header(monkeypatch):
+    s = PRO["aurora"]
+    monkeypatch.delenv("BLOCKSCOUT_PRO_API_KEY", raising=False)
+    seen = []
+    def opener(req, timeout=None):
+        seen.append(req)
+        return _Resp(json.dumps(s["raw_trace"]).encode(), req.full_url)
+    assert et.fetch_raw_trace("aurora", s["hash"], opener=opener) == s["raw_trace"]
+    assert seen[0].full_url.startswith("https://explorer.aurora.dev/api/v2/transactions/")
+    assert seen[0].get_header("Authorization") is None
+    assert "aurora" not in et.PRO_CHAINS
+
+
+def test_flag_off_or_normal_trace_never_uses_the_pro_gateway_for_identity(monkeypatch, tmp_path):
+    s = PRO["gnosis"]
+    m, runtime, rep, calls = _install(monkeypatch, tmp_path, copy.deepcopy(s["tx"]), hex(s["chain_id"]))
+    pro_calls = []
+    monkeypatch.setattr(m, "pro_rpc", lambda *a, **k: pro_calls.append(a) or (_ for _ in ()).throw(AssertionError("PRO gateway used")))
+    runtime.install()
+    try:
+        monkeypatch.delenv("FAULTSEEKER_EXPLORER_TRACE", raising=False)
+        with pytest.raises(RuntimeError, match="no rpc trace"):      # flag off: unchanged behaviour, original error
+            rep.TransactionReplayer.get_structured_trace(object(), s["hash"], "gnosis")
+        assert pro_calls == [] and calls == []
+    finally:
+        runtime.close()
+    # flag "1" with a normal RPC trace that works: identity comes from the console registry, labelled as such
+    m, runtime, rep, calls = _install(monkeypatch, tmp_path, copy.deepcopy(s["tx"]), hex(s["chain_id"]))
+    good = et.payload_from_explorer("gnosis", s["hash"], copy.deepcopy(s["tx"]), s["chain_id"], fetch=lambda *a: copy.deepcopy(s["raw_trace"]))
+    def working(self, tx_hash, chain):
+        return copy.deepcopy(good)
+    monkeypatch.setattr(rep.TransactionReplayer, "get_structured_trace", working)
+    monkeypatch.setattr(m, "pro_rpc", lambda *a, **k: (_ for _ in ()).throw(AssertionError("PRO gateway used")))
+    monkeypatch.setenv("FAULTSEEKER_EXPLORER_TRACE", "1")
+    runtime.install()
+    try:
+        payload = rep.TransactionReplayer.get_structured_trace(object(), s["hash"], "gnosis")
+        assert sorted(calls) == ["eth_chainId", "eth_getTransactionByHash"]
+        assert payload["trace_provenance"]["identity_source"] == "console_rpc_registry"
+    finally:
+        runtime.close()
+
+
+def test_pro_identity_is_labelled_as_same_provider_and_registry_identity_as_unestablished(monkeypatch, tmp_path):
+    s = PRO["gnosis"]
+    m, runtime, rep, calls = _install(monkeypatch, tmp_path, None, None)
+    monkeypatch.setattr(m, "pro_rpc", lambda chain, method, params, opener=None: {"eth_getTransactionByHash": s["tx"], "eth_chainId": hex(s["chain_id"])}[method])
+    monkeypatch.setattr(m, "payload_from_explorer", lambda c, h, tx, cid: et.payload_from_explorer(c, h, tx, cid, fetch=lambda *a: copy.deepcopy(s["raw_trace"])))
+    monkeypatch.setenv("FAULTSEEKER_EXPLORER_TRACE", "direct")
+    runtime.install()
+    try:
+        prov = rep.TransactionReplayer.get_structured_trace(object(), s["hash"], "gnosis")["trace_provenance"]
+        assert prov["identity_source"] == "blockscout_pro_json_rpc"
+        assert prov["identity_independent_of_trace_source"] is False
+        assert prov["trace_provider"] == "blockscout_pro_api"
+    finally:
+        runtime.close()
+    m, runtime, rep, calls = _install(monkeypatch, tmp_path, copy.deepcopy(ETH_TX), "0x1")
+    monkeypatch.setattr(m, "payload_from_explorer", lambda c, h, tx, cid: et.payload_from_explorer(c, h, tx, cid, fetch=lambda *a: copy.deepcopy(BS_ETH)))
+    monkeypatch.setenv("FAULTSEEKER_EXPLORER_TRACE", "direct")
+    runtime.install()
+    try:
+        prov = rep.TransactionReplayer.get_structured_trace(object(), TX, "eth")["trace_provenance"]
+        assert prov["identity_source"] == "console_rpc_registry"
+        assert prov["identity_independent_of_trace_source"] is None     # registry provider independence is not established
+        assert prov["trace_provider"] == "blockscout_instance_keyless"
+    finally:
+        runtime.close()
+
+
+def test_pro_opener_refuses_a_real_redirect_response_before_replaying_the_request():
+    """Real urllib redirect machinery with an in-process 302 (no sockets, so it runs under the offline runner)."""
+    import io, urllib.request, urllib.response, email.message
+    opened = []
+    class Fake(urllib.request.BaseHandler):
+        handler_order = 100
+        def http_open(self, req):
+            opened.append((req.full_url, req.get_header("Authorization")))
+            headers = email.message.Message()
+            headers["Location"] = "http://other.example/x"
+            resp = urllib.response.addinfourl(io.BytesIO(b""), headers, req.full_url, 302)
+            resp.msg = "Found"
+            return resp
+    opener = et._build_pro_opener(Fake)
+    req = urllib.request.Request("http://pro.example/x", headers={"Authorization": "Bearer proapi_" + "c" * 20})
+    with pytest.raises(ti.TraceIdentityError):
+        opener.open(req, timeout=5)
+    assert opened == [("http://pro.example/x", "Bearer proapi_" + "c" * 20)]     # never followed to the second URL
+    # the module-level opener PRO requests use is built by the same function and has the refusing handler
+    assert any(isinstance(h, et._NoRedirect) for h in et._pro_open.__self__.handlers)
+    assert not any(type(h) is urllib.request.HTTPRedirectHandler for h in et._pro_open.__self__.handlers)
+
+
+def test_calltracer_1024_frames_at_default_recursion_limit():
+    import sys
+    root = {k: v for k, v in OP["raw_trace"].items() if k != "calls"}
+    current = root
+    for index in range(1023):
+        child = {"type": "DELEGATECALL", "from": root["to"], "to": root["to"], "input": "0x12345678", "output": "0x", "error": "reverted"}
+        current["calls"] = [child]
+        current = child
+    previous = sys.getrecursionlimit()
+    try:
+        sys.setrecursionlimit(1000)
+        rows = et.rows_from_calltracer(root, OP["tx"], OP_HASH, 10)
+    finally:
+        sys.setrecursionlimit(previous)
+    assert len(rows) == 1024
+    assert rows[-1]["traceAddress"] == [0] * 1023
+    assert rows[-1]["action"]["callType"] == "delegatecall"
+    assert rows[-1]["error"] == "reverted"
+    assert rows[-1]["subtraces"] == 0

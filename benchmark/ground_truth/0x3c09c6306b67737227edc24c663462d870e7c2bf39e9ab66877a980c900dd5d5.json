@@ -1,0 +1,25 @@
+{
+  "name": "Audius",
+  "cause": "Storage Collision & Malicious Proposal",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x3c09c6306b67737227edc24c663462d870e7c2bf39e9ab66877a980c900dd5d5"
+  ],
+  "complexity_level": "Complex",
+  "time": "2022-07-23 23:12:03 UTC",
+  "lost": "704 ETH (~1.08M US$)",
+  "location": {
+    "0x35dd16dfa4ea1522c29ddd087e8f076cad0ae5e8##5584:58": [
+      "0x35dd16dfa4ea1522c29ddd087e8f076cad0ae5e8#Governance#submitVote",
+      "0x35dd16dfa4ea1522c29ddd087e8f076cad0ae5e8#Governance#5584:58"
+    ]
+  },
+  "detection": {
+    "time": "2022-07-24 01:44:00 UTC",
+    "link": "['https://x.com/CertiKAlert/status/1551020421532770305']"
+  },
+  "disclosure": {
+    "time": "2022-07-24 05:26:00 UTC",
+    "link": "['https://x.com/1nf0s3cpt/status/1551076424970563585']"
+  }
+}

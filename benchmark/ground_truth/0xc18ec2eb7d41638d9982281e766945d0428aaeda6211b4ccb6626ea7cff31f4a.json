@@ -1,0 +1,21 @@
+{
+  "name": "Xave Finance",
+  "cause": "Malicious Proposal Mint & Transfer Ownership",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0xc18ec2eb7d41638d9982281e766945d0428aaeda6211b4ccb6626ea7cff31f4a"
+  ],
+  "complexity_level": "Complex",
+  "time": "2022-10-08 17:04:11 UTC",
+  "lost": "100,000,000,000,000 RNBW",
+  "location": {
+    "0x8f9036732b9aa9b82d8f35e54b71faeb2f573e2f#DaoModule.sol#246:29": [
+      "0x8f9036732b9aa9b82d8f35e54b71faeb2f573e2f#DaoModule#executeProposalWithIndex",
+      "0x8f9036732b9aa9b82d8f35e54b71faeb2f573e2f#DaoModule#246:29"
+    ]
+  },
+  "disclosure": {
+    "time": "2022-10-09 11:24:00 UTC",
+    "link": "['https://x.com/BeosinAlert/status/1579040051853303808']"
+  }
+}

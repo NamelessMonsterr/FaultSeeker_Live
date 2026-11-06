@@ -1,0 +1,25 @@
+{
+  "name": "DAppSocial",
+  "cause": "Business Logic Flaw",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0xbd72bccec6dd824f8cac5d9a3a2364794c9272d7f7348d074b580e3c6e44312e"
+  ],
+  "complexity_level": "Complex",
+  "time": "2023-09-02 12:58:59 UTC",
+  "lost": "~$16K",
+  "location": {
+    "0x319ec3ad98cf8b12a8be5719fec6e0a9bb1ad0d1##:": [
+      "0x319ec3ad98cf8b12a8be5719fec6e0a9bb1ad0d1##LockTokens",
+      "0x319ec3ad98cf8b12a8be5719fec6e0a9bb1ad0d1##:"
+    ]
+  },
+  "detection": {
+    "time": "2023-09-02 16:52:00 UTC",
+    "link": "['https://x.com/dAppSocial/status/1698016176994189396']"
+  },
+  "disclosure": {
+    "time": "2023-09-02 20:05:00 UTC",
+    "link": "['https://twitter.com/DecurityHQ/status/1698064511230464310']"
+  }
+}

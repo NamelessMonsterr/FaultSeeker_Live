@@ -1,0 +1,25 @@
+{
+  "name": "RevertFinance",
+  "cause": "Arbitrary External Call Vulnerability",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0xdaccbc437cb07427394704fbcc8366589ffccf974ec6524f3483844b043f31d5"
+  ],
+  "complexity_level": "Complex",
+  "time": "2023-02-18 05:16:23 UTC",
+  "lost": "~$30k",
+  "location": {
+    "0x531110418d8591c92e9cbbfc722db8ffb604fafd#V3Utils.sol#239:17": [
+      "0x531110418d8591c92e9cbbfc722db8ffb604fafd#V3Utils#swap",
+      "0x531110418d8591c92e9cbbfc722db8ffb604fafd#V3Utils#239:17"
+    ]
+  },
+  "detection": {
+    "time": "2023-02-18 13:39:00 UTC",
+    "link": "['https://x.com/revertfinance/status/1626939407126376448']"
+  },
+  "disclosure": {
+    "time": "2023-02-20 02:07:00 UTC",
+    "link": "['https://x.com/revertfinance/status/1627490043026890752']"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "Paraswap",
+  "cause": "Incorrect Access Control",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x35a73969f582872c25c96c48d8bb31c23eab8a49c19282c67509b96186734e60"
+  ],
+  "complexity_level": "Complex",
+  "time": "2024-03-19 18:25:35 UTC",
+  "lost": "~24K",
+  "location": {
+    "0x6a7eff1e2c355ad6eb91bebb5ded49257f3fed98##140:14": [
+      "0x6a7eff1e2c355ad6eb91bebb5ded49257f3fed98#ERC20#transferfrom",
+      "0x6a7eff1e2c355ad6eb91bebb5ded49257f3fed98#ERC20#140:14"
+    ]
+  },
+  "disclosure": {
+    "time": "2024-03-22",
+    "link": "['https://medium.com/neptune-mutual/analysis-of-the-paraswap-exploit-1f97c604b4fe']"
+  }
+}

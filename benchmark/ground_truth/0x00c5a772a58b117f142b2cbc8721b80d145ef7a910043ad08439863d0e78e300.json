@@ -1,0 +1,21 @@
+{
+  "name": "LPMine",
+  "cause": "Incorrect reward calculation ",
+  "platform": "BNBChain",
+  "transaction_hash": [
+    "0x00c5a772a58b117f142b2cbc8721b80d145ef7a910043ad08439863d0e78e300"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2025-01-08 12:43:50 UTC",
+  "lost": "~24k USDT",
+  "location": {
+    "0x6BBeF6DF8db12667aE88519090984e4F871e5feb##418:16": [
+      "0x6BBeF6DF8db12667aE88519090984e4F871e5feb#LPMine#extractReward",
+      "0x6BBeF6DF8db12667aE88519090984e4F871e5feb#LPMine#418:16"
+    ]
+  },
+  "disclosure": {
+    "time": "2025-01-08 16:31:00 UTC",
+    "link": "['https://x.com/TenArmorAlert/status/1877030261067571234']"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "Zenterest",
+  "cause": "Price Out Of Date",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0xfe8bc757d87e97a5471378c90d390df47e1b29bb9fca918b94acd8ecfaadc598"
+  ],
+  "complexity_level": "Complex",
+  "time": "2024-08-16 13:58:23 UTC",
+  "lost": "~21000 USD",
+  "location": {
+    "0xe3334e66634acf17b2b97ab560ec92d6861b25fa#CToken.sol#384:82": [
+      "0xe3334e66634acf17b2b97ab560ec92d6861b25fa#CToken#accrueInterest",
+      "0xe3334e66634acf17b2b97ab560ec92d6861b25fa#CToken#384:82"
+    ]
+  },
+  "disclosure": {
+    "time": "2024-08-21 08:29:00 UTC",
+    "link": "['https://share.foresightnews.pro/article/detail/66811']"
+  }
+}

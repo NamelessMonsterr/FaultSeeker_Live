@@ -1,0 +1,15 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt setup.py pyproject.toml ./
+COPY faultseeker ./faultseeker
+COPY benchmark ./benchmark
+COPY tests ./tests
+COPY THREAT_MODEL.md EVALUATION_PROTOCOL.md TDSC_ROADMAP.md README.md LICENSE ./
+
+RUN pip install --no-cache-dir -r requirements.txt
+
+ENV PYTHONDONTWRITEBYTECODE=1
+
+CMD ["python", "-m", "pytest", "tests", "-q", "-p", "no:cacheprovider"]

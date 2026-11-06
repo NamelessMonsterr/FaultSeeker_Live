@@ -1,0 +1,25 @@
+{
+  "name": "BTC20",
+  "cause": "Price Manipulation",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0xcdd93e37ba2991ce02d8ca07bf6563bf5cd5ae801cbbce3dd0babb22e30b2dbe"
+  ],
+  "complexity_level": "Complex",
+  "time": "2023-08-19 13:48:11 UTC",
+  "lost": "~$18ETH",
+  "location": {
+    "0xdb0618e0b850cab3f756d030398be22929226d5c#PresaleV4.sol#316:13": [
+      "0xdb0618e0b850cab3f756d030398be22929226d5c#PresaleV4#buyWithEthDynamic",
+      "0xdb0618e0b850cab3f756d030398be22929226d5c#PresaleV4#316:13"
+    ],
+    "0xdb0618e0b850cab3f756d030398be22929226d5c#PresaleV4.sol#358:6": [
+      "0xdb0618e0b850cab3f756d030398be22929226d5c#PresaleV4#fetchPrice",
+      "0xdb0618e0b850cab3f756d030398be22929226d5c#PresaleV4#358:6"
+    ]
+  },
+  "disclosure": {
+    "time": "2023-08-19 15:39:00 UTC",
+    "link": "['https://twitter.com/DecurityHQ/status/1692924369662513472']"
+  }
+}

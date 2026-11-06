@@ -1,0 +1,25 @@
+{
+  "name": "DAO_SoulMate",
+  "cause": "Incorrect Access Control",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x1ea0a2e88efceccb2dd93e6e5cb89e5421666caeefb1e6fc41b68168373da342"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2024-01-22 17:14:35 UTC",
+  "lost": "~319K",
+  "location": {
+    "0x82c063afefb226859abd427ae40167cb77174b68:##": [
+      "0x82c063afefb226859abd427ae40167cb77174b68##redeem",
+      "0x82c063afefb226859abd427ae40167cb77174b68##:"
+    ]
+  },
+  "detection": {
+    "time": "2024-01-22 18:11:00 UTC",
+    "link": "['https://x.com/Phalcon_xyz/status/1749494924662223349']"
+  },
+  "disclosure": {
+    "time": "2024-01-23 10:37:00 UTC",
+    "link": "['https://twitter.com/MetaSec_xyz/status/1749743245599617282']"
+  }
+}

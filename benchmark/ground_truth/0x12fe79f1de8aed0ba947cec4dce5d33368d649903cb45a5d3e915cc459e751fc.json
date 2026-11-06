@@ -1,0 +1,25 @@
+{
+  "name": "GFOX",
+  "cause": "lack of access control",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x12fe79f1de8aed0ba947cec4dce5d33368d649903cb45a5d3e915cc459e751fc"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2024-05-10 00:00:35 UTC",
+  "lost": "330K USD",
+  "location": {
+    "0x11a4a5733237082a6c08772927ce0a2b5f8a86b6##:": [
+      "0x11a4a5733237082a6c08772927ce0a2b5f8a86b6##setMerkleRoot",
+      "0x11a4a5733237082a6c08772927ce0a2b5f8a86b6##:"
+    ]
+  },
+  "detection": {
+    "time": "2024-05-10 02:01:00 UTC",
+    "link": "['https://x.com/CertiKAlert/status/1788751142144401886']"
+  },
+  "disclosure": {
+    "time": "2025-05-11",
+    "link": "['https://neptunemutual.com/blog/how-was-galaxy-fox-token-exploited/']"
+  }
+}

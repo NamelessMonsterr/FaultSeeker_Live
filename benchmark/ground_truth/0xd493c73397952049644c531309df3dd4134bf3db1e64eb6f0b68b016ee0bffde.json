@@ -1,0 +1,17 @@
+{
+  "name": "CurveBurner",
+  "cause": "Lack Slippage Protection",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0xd493c73397952049644c531309df3dd4134bf3db1e64eb6f0b68b016ee0bffde"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2023-08-01 23:49:47 UTC",
+  "lost": "~$36K",
+  "location": {
+    "0x786b374b5eef874279f4b7b4de16940e57301a58##169:19": [
+      "0x786b374b5eef874279f4b7b4de16940e57301a58##execute",
+      "0x786b374b5eef874279f4b7b4de16940e57301a58##169:19"
+    ]
+  }
+}

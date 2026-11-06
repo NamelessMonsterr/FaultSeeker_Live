@@ -1,0 +1,25 @@
+{
+  "name": "ChaingeFinance",
+  "cause": "Arbitrary External Call ",
+  "platform": "BNBChain",
+  "transaction_hash": [
+    "0x21d8b164f0cb8beb1ed27d164ed986c3fc26b33655ce18226b05b9cfcf6cd93c"
+  ],
+  "complexity_level": "Complex",
+  "time": "2024-04-15 12:33:59 UTC",
+  "lost": "~560K",
+  "location": {
+    "0x80a0d7a6fd2a22982ce282933b384568e5c852bf#MinterProxyV2.sol#683:65": [
+      "0x80a0d7a6fd2a22982ce282933b384568e5c852bf#MinterProxyV2#swap",
+      "0x80a0d7a6fd2a22982ce282933b384568e5c852bf#MinterProxyV2#683:65"
+    ]
+  },
+  "detection": {
+    "time": "2024-04-15 13:26:00 UTC",
+    "link": "['https://x.com/CertiKAlert/status/1779863821122691519']"
+  },
+  "disclosure": {
+    "time": "2024-04-16 02:42:00 UTC",
+    "link": "['https://x.com/ChainAegis/status/1780064080512143429']"
+  }
+}

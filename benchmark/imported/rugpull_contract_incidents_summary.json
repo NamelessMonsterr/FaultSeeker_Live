@@ -1,0 +1,29 @@
+{
+  "source": "github:dianxiang-sun/rug_pull_dataset",
+  "rows": 2360,
+  "chain_counts": {
+    "eth": 2290,
+    "bsc": 70
+  },
+  "type_counts": {
+    "Transaction Limitation": 2083,
+    "Fee": 157,
+    "Token Generation": 41,
+    "Destroy Token": 23,
+    "Combination": 15,
+    "Token Distribution": 13,
+    "Funds Manipulation": 11,
+    "External Call": 7,
+    "LP Drain": 5,
+    "Vulnerability": 2,
+    "Fake LP Lock": 1,
+    "Proxy": 1,
+    "Unverified contract": 1
+  },
+  "rows_with_contract_addresses": 2360,
+  "rows_with_transaction_hashes": 0,
+  "validation_status_counts": {
+    "contract_incident_verified_tx_unresolved": 2360
+  },
+  "merge_guidance": "Use as incident/contract evidence and manual resolution queue. Rows are not transaction-level exploit ground truth until tx hashes are resolved."
+}

@@ -1,0 +1,28 @@
+{
+  "name": "Punk Protocol",
+  "cause": "incorrect function modifier",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x597d11c05563611cb4ad4ed4c57ca53bbe3b7d3fefc37d1ef0724ad58904742b"
+  ],
+  "complexity_level": "Complex",
+  "time": "2021/8/10 06:54",
+  "location": {
+    "0x3bc6aa2d25313ad794b2d67f83f21d341cc3f5fb#/Users/jacob/Developer/DeFiWorkspace/punk.protocol/contracts/models/CompoundModel.sol#689:422": [
+      "0x3bc6aa2d25313ad794b2d67f83f21d341cc3f5fb#CompoundModel#initialize",
+      "0x3bc6aa2d25313ad794b2d67f83f21d341cc3f5fb#CompoundModel#23:15"
+    ],
+    "0x1f3b04c8c96a31c7920372ffa95371c80a4bfb0d#/Users/jacob/Developer/DeFiWorkspace/punk.protocol/contracts/models/CompoundModel.sol#689:422": [
+      "0x1f3b04c8c96a31c7920372ffa95371c80a4bfb0d#CompoundModel#initialize",
+      "0x1f3b04c8c96a31c7920372ffa95371c80a4bfb0d#CompoundModel#23:15"
+    ]
+  },
+  "detection": {
+    "time": "2021/8/10 22:11",
+    "link": "https://twitter.com/PunkProtocol/status/1425218390965198849"
+  },
+  "disclosure": {
+    "time": "2021/8/10 22:21",
+    "link": "https://twitter.com/PunkProtocol/status/1425220676382724098"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "ADC",
+  "cause": "incorrect-access-control",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0xcf834aff4de9992f5da9c443600dad9c6277a8a00de5007842fece51564992db"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2024-02-02 05:28:47 UTC",
+  "lost": "~20 eth",
+  "location": {
+    "0xde46fcf6ab7559e4355b8ee3d7fba0f2730cddd8#MainPool.sol#243:73": [
+      "0xde46fcf6ab7559e4355b8ee3d7fba0f2730cddd8#MainPool#withdraw",
+      "0xde46fcf6ab7559e4355b8ee3d7fba0f2730cddd8#MainPool#243:73"
+    ]
+  },
+  "detection": {
+    "time": "2024-02-02 05:50:00 UTC",
+    "link": "['https://x.com/EXVULSEC/status/1753294675971313790']"
+  }
+}

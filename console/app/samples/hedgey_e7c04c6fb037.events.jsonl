@@ -1,0 +1,109 @@
+{"t": 1792694374.0, "ev": "log", "data": "mode: full pipeline Stage 1-3 with gpt-6.1-sol-low (cost tracking on)"}
+{"t": 1792694374.0, "ev": "log", "data": "============================================================"}
+{"t": 1792694374.0, "ev": "log", "data": "FaultSeeker - Blockchain Transaction Analyzer"}
+{"t": 1792694374.0, "ev": "log", "data": "============================================================"}
+{"t": 1792694374.0, "ev": "log", "data": "Transaction Information:"}
+{"t": 1792694374.0, "ev": "log", "data": "* Hash: 0x2606d459a50ca4920722a111745c2eeced1d8a01ff25ee762e22d5d4b1595739"}
+{"t": 1792694374.0, "ev": "log", "data": "* Chain: ETH"}
+{"t": 1792694374.3, "ev": "log", "data": "Configuration:"}
+{"t": 1792694374.3, "ev": "log", "data": "* Forensics Model: gpt-6.1-sol-low"}
+{"t": 1792694374.3, "ev": "log", "data": "* Function Analysis Model: gpt-6.1-sol-low"}
+{"t": 1792694374.3, "ev": "log", "data": "* Cost Tracking: enabled"}
+{"t": 1792694374.3, "ev": "log", "data": "* Cache Directory: ./data/cache"}
+{"t": 1792694374.3, "ev": "log", "data": "* Output Directory: /srv/app/runs"}
+{"t": 1792694374.3, "ev": "log", "data": "* Output File: /srv/app/runs/e7c04c6fb037.json"}
+{"t": 1792694374.3, "ev": "log", "data": "Initializing analysis pipeline..."}
+{"t": 1792694374.3, "ev": "log", "data": "Pipeline initialized successfully"}
+{"t": 1792694374.3, "ev": "log", "data": "[+] Initializing forensics orchestrator..."}
+{"t": 1792694384.3, "ev": "log", "data": "[+] Initializing function ranker..."}
+{"t": 1792694384.3, "ev": "log", "data": "[+] Initializing function analyzer..."}
+{"t": 1792694384.3, "ev": "log", "data": "[Stage 1] Transaction-Level Forensics"}
+{"t": 1792694384.3, "ev": "stage", "data": {"index": 0}}
+{"t": 1792694384.3, "ev": "log", "data": "[+] Fetching transaction data from blockchain..."}
+{"t": 1792694384.3, "ev": "stage", "data": {"index": 0}}
+{"t": 1792694384.3, "ev": "log", "data": "[+] Collecting transaction sequence..."}
+{"t": 1792694384.6, "ev": "log", "data": "skipping opcode structLogs trace (FAULTSEEKER_SKIP_STRUCTLOGS=1)"}
+{"t": 1792694385.2, "ev": "log", "data": "cast run --quick 0x2606d459a50ca4920722a111745c2eeced1d8a01ff25ee762e22d5d4b1595739 --rpc-url https://proud-aged-layer.ethereum-mainnet.quiknode.pro/\u2022\u2022\u2022"}
+{"t": 1792694390.4, "ev": "stage", "data": {"index": 0}}
+{"t": 1792694390.4, "ev": "log", "data": "[+] Collecting transaction info..."}
+{"t": 1792694391.1, "ev": "stage", "data": {"index": 1}}
+{"t": 1792694391.1, "ev": "log", "data": "[+] Analyzing execution trace..."}
+{"t": 1792694391.1, "ev": "stage", "data": {"index": 2}}
+{"t": 1792694391.1, "ev": "log", "data": "[+] Extracting deterministic signals..."}
+{"t": 1792694391.1, "ev": "stage", "data": {"index": 3}}
+{"t": 1792694391.1, "ev": "log", "data": "[+] Rule verdict: [EXPLOIT] confidence=80%  rule='access_control_bypass'  type='Access Control'"}
+{"t": 1792694391.1, "ev": "stage", "data": {"index": 4}}
+{"t": 1792694391.1, "ev": "log", "data": "[+] Classifying addresses..."}
+{"t": 1792694392.2, "ev": "log", "data": "[!] LLM call to gpt-6.1-sol-low failed (InternalServerError 502, attempt 1); retrying in 7s..."}
+{"t": 1792694400.3, "ev": "log", "data": "[!] LLM call to gpt-6.1-sol-low failed (InternalServerError 502, attempt 2); retrying in 16s..."}
+{"t": 1792694417.2, "ev": "log", "data": "[!] LLM call to gpt-6.1-sol-low failed (InternalServerError 502, attempt 3); retrying in 46s..."}
+{"t": 1792694463.4, "ev": "log", "data": "[!] LLM call to gpt-6.1-sol-low failed (InternalServerError 502, attempt 4); retrying in 92s..."}
+{"t": 1792694558.7, "ev": "log", "data": "[dbg] LLM raw reply (gpt-6.1-sol-low): '[\"0xbc452fdc8f851d7c5b72e1fe74dfb63bb793d511\"]'"}
+{"t": 1792694562.5, "ev": "log", "data": "[dbg] LLM raw reply (gpt-6.1-sol-low): '[\"token\"]'"}
+{"t": 1792694562.5, "ev": "stage", "data": {"index": 4}}
+{"t": 1792694562.5, "ev": "log", "data": "[+] Identifying vulnerable functions..."}
+{"t": 1792694562.5, "ev": "log", "data": "[+] Adaptive fallback added 4 inspection candidates"}
+{"t": 1792694562.5, "ev": "stage", "data": {"index": 2}}
+{"t": 1792694562.5, "ev": "log", "data": "[OK] Forensics analysis completed"}
+{"t": 1792694562.5, "ev": "log", "data": "[i] trace visualization skipped (FAULTSEEKER_SKIP_VIZ=1)"}
+{"t": 1792694562.5, "ev": "stage", "data": {"index": 4}}
+{"t": 1792694562.5, "ev": "log", "data": "[Stage 2] Task-Driven Function Analysis"}
+{"t": 1792694562.5, "ev": "stage", "data": {"index": 4}}
+{"t": 1792694562.5, "ev": "log", "data": "[+] Ranking suspicious functions..."}
+{"t": 1792694562.5, "ev": "log", "data": "[OK] Ranking completed - 1 addresses to analyze"}
+{"t": 1792694562.5, "ev": "stage", "data": {"index": 4}}
+{"t": 1792694562.5, "ev": "log", "data": "[+] Analyzing vulnerable functions..."}
+{"t": 1792694562.5, "ev": "log", "data": "[+] Downloading contract source code..."}
+{"t": 1792694562.8, "ev": "log", "data": "[+] Reviewing function calls..."}
+{"t": 1792694562.8, "ev": "log", "data": "[i] FAULTSEEKER_MAX_FUNCTIONS=5: analyzing 1 of the selected functions"}
+{"t": 1792694562.8, "ev": "log", "data": "repeated patterns to be analyzed:"}
+{"t": 1792694562.8, "ev": "log", "data": "[]"}
+{"t": 1792694562.8, "ev": "log", "data": "functions with created contract in params to be analyzed:"}
+{"t": 1792694562.8, "ev": "log", "data": "[]"}
+{"t": 1792694562.8, "ev": "log", "data": "functions to be analyzed:"}
+{"t": 1792694562.8, "ev": "log", "data": "{'updateGhoBorrowRate_0xC793113F1548B97E37c409f39244EE44241bF2b3': 1}"}
+{"t": 1792694562.8, "ev": "log", "data": "[1/1] Analyzing updateGhoBorrowRate..."}
+{"t": 1792694562.8, "ev": "log", "data": "[i] gathering related info for updateGhoBorrowRate @ 0xC793113F..."}
+{"t": 1792694562.8, "ev": "log", "data": "[i] retrieving source for updateGhoBorrowRate @ 0xc793113f..."}
+{"t": 1792694581.2, "ev": "log", "data": "[Info] Iteration 1/3  (0s elapsed)"}
+{"t": 1792694589.4, "ev": "log", "data": "[dbg] LLM raw reply (gpt-6.1-sol-low): '{\\n  \"task_selected\": \"2.1\",\\n  \"task_description\": \"Obtain the deployed bytecode and verified source for the target at the transaction block. Determine whether the address is a pr"}
+{"t": 1792694591.8, "ev": "log", "data": "[dbg] LLM raw reply (gpt-6.1-sol-low): '{\\n  \"source_code\": [\\n    [\"0xC793113F1548B97E37c409f39244EE44241bF2b3\", \"updateGhoBorrowRate\"]\\n  ]\\n}'"}
+{"t": 1792694591.8, "ev": "log", "data": "[i] retrieving source for updateGhoBorrowRate @ 0xC793113F..."}
+{"t": 1792694640.8, "ev": "log", "data": "[dbg] LLM raw reply (gpt-6.1-sol-low): '{\\n  \"updateGhoBorrowRate_0xC793113F1548B97E37c409f39244EE44241bF2b3\": {\\n    \"evidence\": \"The supplied rule-classifier confirmation localizes an access-control bypass to updateGho"}
+{"t": 1792694640.8, "ev": "log", "data": "[Info] Iteration 2/3  (59s elapsed)"}
+{"t": 1792694648.5, "ev": "log", "data": "[dbg] LLM raw reply (gpt-6.1-sol-low): '{\\n  \"task_selected\": \"1.2\",\\n  \"task_description\": \"Obtain the chain identifier, transaction hash, and execution block from the original malicious-transaction report or trace prov"}
+{"t": 1792694650.6, "ev": "log", "data": "[dbg] LLM raw reply (gpt-6.1-sol-low): '{\"function_call\":[[\"0xC793113F1548B97E37c409f39244EE44241bF2b3\",\"updateGhoBorrowRate\"]]}'"}
+{"t": 1792694692.1, "ev": "log", "data": "[dbg] LLM raw reply (gpt-6.1-sol-low): '{\"updateGhoBorrowRate_0xC793113F1548B97E37c409f39244EE44241bF2b3\":{\"evidence\":\"The supplied rule-classifier confirmation localizes a potential access-control bypass to updateGhoBor"}
+{"t": 1792694693.8, "ev": "log", "data": "[Info] Iteration 3/3  (112s elapsed)"}
+{"t": 1792694701.1, "ev": "log", "data": "[dbg] LLM raw reply (gpt-6.1-sol-low): '{\\n  \"task_selected\": \"1.2.2\",\\n  \"task_description\": \"Obtain the original malicious-transaction report or trace-provider link from the reporting analyst or data provider. Require "}
+{"t": 1792694703.8, "ev": "log", "data": "[dbg] LLM raw reply (gpt-6.1-sol-low): '{\\n  \"function_call\": [\\n    [\"0xC793113F1548B97E37c409f39244EE44241bF2b3\", \"updateGhoBorrowRate\"]\\n  ]\\n}'"}
+{"t": 1792694745.0, "ev": "log", "data": "[dbg] LLM raw reply (gpt-6.1-sol-low): '{\"updateGhoBorrowRate_0xC793113F1548B97E37c409f39244EE44241bF2b3\":{\"evidence\":\"The supplied rule-classifier confirmation identifies updateGhoBorrowRate at this address as an access"}
+{"t": 1792694745.0, "ev": "log", "data": "[done] updateGhoBorrowRate in 182s"}
+{"t": 1792694745.0, "ev": "log", "data": "[+] merged 1 per-function vuln candidate(s) into scoring set"}
+{"t": 1792694747.3, "ev": "log", "data": "[dbg] LLM raw reply (gpt-6.1-sol-low): '[\"updateGhoBorrowRate_0xC793113F1548B97E37c409f39244EE44241bF2b3\"]'"}
+{"t": 1792694747.3, "ev": "log", "data": "[OK] Function analysis completed"}
+{"t": 1792694747.3, "ev": "stage", "data": {"index": 4}}
+{"t": 1792694747.3, "ev": "log", "data": "[Stage 3] Confidence Scoring"}
+{"t": 1792694747.3, "ev": "log", "data": "[OK] Logistic calibrator loaded from /srv/FaultSeeker-/data/models/calibrator.json"}
+{"t": 1792694747.3, "ev": "stage", "data": {"index": 4}}
+{"t": 1792694747.3, "ev": "log", "data": "[OK] Calibrated 1 functions (logistic calibrator, paper \u00a75.3)"}
+{"t": 1792694747.3, "ev": "log", "data": "Saving analysis results..."}
+{"t": 1792694747.3, "ev": "log", "data": "Results saved to: /srv/app/runs/e7c04c6fb037.json"}
+{"t": 1792694747.3, "ev": "log", "data": "\ud83d\udcca RPC Provider stats \u2014 ETH"}
+{"t": 1792694747.3, "ev": "log", "data": "URL                                            Score  Weight    OK  Fail   EMA ms   Rate  State"}
+{"t": 1792694747.3, "ev": "log", "data": "------------------------------------------------------------------------------------------------"}
+{"t": 1792694747.3, "ev": "log", "data": "https://proud-aged-layer.ethereum-mainnet.quik/\u2022\u2022\u2022   100   0.961     3     0      394   100%  \u2705 OK"}
+{"t": 1792694747.3, "ev": "log", "data": "https://ethereum.blockpi.network/\u2022\u2022\u2022    94   0.620     0     0      500    N/A  \u2705 OK"}
+{"t": 1792694747.3, "ev": "log", "data": "https://eth.llamarpc.com/\u2022\u2022\u2022                          76   0.530     0     0      500    N/A  \u2705 OK"}
+{"t": 1792694747.3, "ev": "log", "data": "https://rpc.ankr.com/\u2022\u2022\u2022                          75   0.525     0     0      500    N/A  \u2705 OK"}
+{"t": 1792694747.3, "ev": "log", "data": "https://ethereum.publicnode.com/\u2022\u2022\u2022                   70   0.500     0     0      500    N/A  \u2705 OK"}
+{"t": 1792694747.3, "ev": "log", "data": "https://cloudflare-eth.com/\u2022\u2022\u2022                        63   0.465     0     0      500    N/A  \u2705 OK"}
+{"t": 1792694747.3, "ev": "log", "data": "\ud83d\udd0d Explorer stats \u2014 ETH"}
+{"t": 1792694747.3, "ev": "log", "data": "URL                                                Score  Weight    OK  Fail   EMA ms   Rate  State"}
+{"t": 1792694747.4, "ev": "log", "data": "----------------------------------------------------------------------------------------------------"}
+{"t": 1792694747.4, "ev": "log", "data": "https://api.etherscan.io/\u2022\u2022\u2022                          98   0.964     1     0      692   100%  \u2705 OK"}
+{"t": 1792694747.4, "ev": "log", "data": "https://api.etherscan.io/\u2022\u2022\u2022                          71   0.523     0     0      800    N/A  \u2705 OK"}
+{"t": 1792694747.4, "ev": "log", "data": "Analysis completed successfully!"}
+{"t": 1792694747.4, "ev": "log", "data": "============================================================"}
+{"t": 1792694747.4, "ev": "done", "data": {"ok": true}}
+{"t": 1792694747.4, "ev": "end", "data": "None"}

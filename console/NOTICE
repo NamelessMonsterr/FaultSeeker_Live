@@ -1,0 +1,10 @@
+FaultSeeker // Forensic Console - third-party notices
+
+- Front-end skin: nerv-ui, MIT License.
+- The console now lives inside the unified FaultSeeker repository and drives the
+  pipeline package at the repository root (no separate clone).
+- The bundled capture (api/capture) is a saved Stage-1 analysis of a public
+  Ethereum transaction (Zunami UZD exploit, 0x0788ba22...e8cceb). All data in
+  it is public on-chain trace data.
+- FaultSeeker (original research): Kairan Sun et al., "FaultSeeker", ASE 2025.
+  https://github.com/kairanskrr/FaultSeeker

@@ -1,0 +1,25 @@
+{
+  "name": "EFVault",
+  "cause": "Storage Collision",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x1fe5a53405d00ce2f3e15b214c7486c69cbc5bf165cf9596e86f797f62e81914"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2023-02-24 05:50:11 UTC",
+  "lost": "~$5.1M",
+  "location": {
+    "0x80cb73074a6965f60df59bf8fa3ce398ffa2702c#Vault.sol#145:17": [
+      "0x80cb73074a6965f60df59bf8fa3ce398ffa2702c#Vault#redeem",
+      "0x80cb73074a6965f60df59bf8fa3ce398ffa2702c#Vault#145:17"
+    ],
+    "0xbdb515028a6fa6cd1634b5a9651184494abfd336#Vault.sol#145:17": [
+      "0xbdb515028a6fa6cd1634b5a9651184494abfd336#Vault#redeem",
+      "0xbdb515028a6fa6cd1634b5a9651184494abfd336#Vault#145:17"
+    ]
+  },
+  "disclosure": {
+    "time": "2023-02-28 08:49:00 UTC",
+    "link": "['https://twitter.com/peckshield/status/1630490333716029440']"
+  }
+}

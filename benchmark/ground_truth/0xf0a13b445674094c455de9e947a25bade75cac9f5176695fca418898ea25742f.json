@@ -1,0 +1,29 @@
+{
+  "name": "DEPUSDT_LEVUSDC",
+  "cause": "Incorrect access control",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0xf0a13b445674094c455de9e947a25bade75cac9f5176695fca418898ea25742f"
+  ],
+  "complexity_level": "Complex",
+  "time": "2023-06-15 08:42:23 UTC",
+  "lost": "~$105k",
+  "location": {
+    "0x94290106d2a32bc89be9f1c3a3f3394f64578aa6#CurveSwap.sol#60:3": [
+      "0x94290106d2a32bc89be9f1c3a3f3394f64578aa6#CurveSwap#approveToken",
+      "0x94290106d2a32bc89be9f1c3a3f3394f64578aa6#CurveSwap#60:3"
+    ],
+    "0x7b190a928aa76eece5cb3e0f6b3bdb24fcdd9b4f##:": [
+      "0x7b190a928aa76eece5cb3e0f6b3bdb24fcdd9b4f##approveToken",
+      "0x7b190a928aa76eece5cb3e0f6b3bdb24fcdd9b4f##"
+    ]
+  },
+  "detection": {
+    "time": "2023-06-15 09:33:00 UTC",
+    "link": "['https://x.com/NumenAlert/status/1669277328416051201']"
+  },
+  "disclosure": {
+    "time": "2023-06-15 09:40:00 UTC",
+    "link": "['https://twitter.com/numencyber/status/1669278694744150016?cxt=HHwWgMDS9Z2IvKouAAAA']"
+  }
+}

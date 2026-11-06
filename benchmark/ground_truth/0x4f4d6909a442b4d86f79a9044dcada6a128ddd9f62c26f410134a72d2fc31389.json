@@ -1,0 +1,29 @@
+{
+  "name": "MaestroRouter2",
+  "cause": "Arbitrary External Call",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x4f4d6909a442b4d86f79a9044dcada6a128ddd9f62c26f410134a72d2fc31389"
+  ],
+  "complexity_level": "Complex",
+  "time": "2023-10-24 23:30:59 UTC",
+  "lost": "~$280ETH",
+  "location": {
+    "0x80a64c6d7f12c47b7c66c5b4e20e72bc1fcd5d9e##:": [
+      "0x80a64c6d7f12c47b7c66c5b4e20e72bc1fcd5d9e##withdraw",
+      "0x80a64c6d7f12c47b7c66c5b4e20e72bc1fcd5d9e##:"
+    ],
+    "0x8eae9827b45bcc6570c4e82b9e4fe76692b2ff7a##:": [
+      "0x8eae9827b45bcc6570c4e82b9e4fe76692b2ff7a##withdraw",
+      "0x8eae9827b45bcc6570c4e82b9e4fe76692b2ff7a##:"
+    ]
+  },
+  "detection": {
+    "time": "2023-10-25 01:50:00 UTC",
+    "link": "['https://x.com/MaestroBots/status/1716995712498426061']"
+  },
+  "disclosure": {
+    "time": "2023-10-25 03:03:00 UTC",
+    "link": "['https://x.com/BeosinAlert/status/1717013965203804457']"
+  }
+}

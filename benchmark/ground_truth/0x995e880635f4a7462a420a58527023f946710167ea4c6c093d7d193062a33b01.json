@@ -1,0 +1,21 @@
+{
+  "name": "BarleyFinance",
+  "cause": "Reentrancy",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x995e880635f4a7462a420a58527023f946710167ea4c6c093d7d193062a33b01"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2024-01-28 17:48:35 UTC",
+  "lost": "~130K",
+  "location": {
+    "0x04c80bb477890f3021f03b068238836ee20aa0b8#WeightedIndex.sol#118:24": [
+      "0x04c80bb477890f3021f03b068238836ee20aa0b8#WeightedIndex#bond",
+      "0x04c80bb477890f3021f03b068238836ee20aa0b8#WeightedIndex#118:24"
+    ]
+  },
+  "detection": {
+    "time": "2024-01-29 02:04:00 UTC",
+    "link": "['https://x.com/Phalcon_xyz/status/1751788389139992824']"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "Pandora",
+  "cause": "interger underflow",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x7c5a909b45014e35ddb89697f6be38d08eff30e7c3d3d553033a6efc3b444fdd"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2024-02-08 16:17:35 UTC",
+  "lost": "~17K USD",
+  "location": {
+    "0xddadf1bf44363d07e750c20219c2347ed7d826b9#ERC404.sol#206:53": [
+      "0xddadf1bf44363d07e750c20219c2347ed7d826b9#ERC404#transferFrom",
+      "0xddadf1bf44363d07e750c20219c2347ed7d826b9#ERC404#206:53"
+    ]
+  },
+  "disclosure": {
+    "time": "2024-03-03 12:59:00 UTC",
+    "link": "['https://learnblockchain.cn/article/11981']"
+  }
+}

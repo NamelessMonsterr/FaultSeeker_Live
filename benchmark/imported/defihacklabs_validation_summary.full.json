@@ -1,0 +1,29 @@
+{
+  "rows": 241,
+  "status_counts": {
+    "already_in_verified_benchmark": 62,
+    "blocked_missing_transaction_hash": 26,
+    "candidate_manual_review": 153
+  },
+  "candidate_unique_transaction_hashes": 293,
+  "top_chains": {
+    "Ethereum": 201,
+    "Arbitrum One": 24,
+    "Polygon": 12,
+    "Blast": 2,
+    "Gnosis": 1,
+    "Mantle": 1
+  },
+  "top_vulnerability_types": {
+    "Reentrancy": 60,
+    "Logic Error": 31,
+    "Flash Loan Attack": 22,
+    "Price Manipulation": 18,
+    "Access Control": 16,
+    "Integer Overflow/Underflow": 11,
+    "Arbitrary Call": 9,
+    "Integer Overflow": 5,
+    "Improper Access Control": 4,
+    "Improper Input Validation": 4
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "GoodCompound",
+  "cause": "Price Manipulation",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x1106418384414ed56cd7cbb9fedc66a02d39b663d580abc618f2d387348354ab"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2023-12-11 00:59:11 UTC",
+  "lost": "~$13K (~250 COMP Token)",
+  "location": {
+    "0xbafe01ff935c7305907c33bf824352ee5979b526#Comptroller.sol#1328:4": [
+      "0xbafe01ff935c7305907c33bf824352ee5979b526#Comptroller#claimComp",
+      "0xbafe01ff935c7305907c33bf824352ee5979b526#Comptroller#1328:4"
+    ]
+  }
+}

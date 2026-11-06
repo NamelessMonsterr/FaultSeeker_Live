@@ -1,0 +1,21 @@
+{
+  "name": "UniBotRouter",
+  "cause": "Arbitrary External Call",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0xcbe521aea28911fe9983030748028e12541e347b8b6b974d026fa5065c22f0cf"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2023-10-31 04:43:59 UTC",
+  "lost": "~$83,944 USD$",
+  "location": {
+    "0xf819d9cb1c2a819fd991781a822de3ca8607c3c9#unibot_v2.sol#359:14": [
+      "0xf819d9cb1c2a819fd991781a822de3ca8607c3c9#ERC20#transferFrom",
+      "0xf819d9cb1c2a819fd991781a822de3ca8607c3c9#ERC20#359:14"
+    ]
+  },
+  "detection": {
+    "time": "2023-10-31 07:14:00 UTC",
+    "link": "['https://twitter.com/PeckShieldAlert/status/1719251390319796477']"
+  }
+}

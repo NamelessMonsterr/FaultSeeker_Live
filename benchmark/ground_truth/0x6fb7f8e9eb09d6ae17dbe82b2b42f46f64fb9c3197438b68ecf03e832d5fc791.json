@@ -1,0 +1,21 @@
+{
+  "name": "HoppyFrogERC",
+  "cause": "business logic flaw",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x6fb7f8e9eb09d6ae17dbe82b2b42f46f64fb9c3197438b68ecf03e832d5fc791"
+  ],
+  "complexity_level": "Complex",
+  "time": "2024-04-02 21:21:11 UTC",
+  "lost": "~0.3 ETH",
+  "location": {
+    "0xe5c6f5fef89b64f36bfccb063962820136bac42f##210:4": [
+      "0xe5c6f5fef89b64f36bfccb063962820136bac42f#Hoppy#transferFrom",
+      "0xe5c6f5fef89b64f36bfccb063962820136bac42f#Hoppy#210:4"
+    ]
+  },
+  "detection": {
+    "time": "2024-04-03 02:35:00 UTC",
+    "link": "['https://x.com/ChainAegis/status/1775351437410918420']"
+  }
+}

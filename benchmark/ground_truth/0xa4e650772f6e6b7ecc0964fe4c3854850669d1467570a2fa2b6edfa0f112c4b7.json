@@ -1,0 +1,17 @@
+{
+  "name": "Circle",
+  "cause": "Price Manipulation",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0xa4e650772f6e6b7ecc0964fe4c3854850669d1467570a2fa2b6edfa0f112c4b7"
+  ],
+  "complexity_level": "Complex",
+  "time": "2022-08-13 03:27:08 UTC",
+  "lost": "~$50.5K",
+  "location": {
+    "0xae461ca67b15dc8dc81ce7615e0320da1a9ab8d5##433:22": [
+      "0xae461ca67b15dc8dc81ce7615e0320da1a9ab8d5#UniswapV2Pair#burn",
+      "0xae461ca67b15dc8dc81ce7615e0320da1a9ab8d5#UniswapV2Pair#433:22"
+    ]
+  }
+}
