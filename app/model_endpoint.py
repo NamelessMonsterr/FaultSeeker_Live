@@ -214,13 +214,12 @@ class ModelEndpointSession:
                     retryable = True
                 if not retryable:
                     self._fail(error)
-                if phase != "preflight":
-                    # Only analysis retries consume the shared allowance. Preflight
-                    # retries are bounded by the preflight deadline instead, so a
-                    # cold-starting endpoint gets the whole window to wake up.
-                    if self.retries_left <= 0:
-                        self._fail(error)
-                    self.retries_left -= 1
+                # Zero-retry configuration must cover preflight too: when the
+                # retry allowance is exhausted, fail on the first error instead
+                # of looping transient failures until the preflight deadline.
+                if self.retries_left <= 0:
+                    self._fail(error)
+                self.retries_left -= 1
                 if next_key is not None:
                     pool["active"] = next_key
                     self.emit({"state": "waiting_on_model_endpoint", **error.as_dict(),
