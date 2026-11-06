@@ -37,6 +37,11 @@ def resolve_route(model, provider_url=None, provider_env="OPENAI_API_KEY"):
         endpoint = os.getenv("CODEX_PROXY_BASE_URL") or os.getenv("OPENAI_BASE_URL")
         key_env = "OPENAI_API_KEY"
         setting = "CODEX_PROXY_BASE_URL"
+    elif model.startswith("mercury"):
+        # Operator-set endpoint only; default is the public Inception Labs API.
+        endpoint = os.getenv("MERCURY_BASE_URL") or "https://api.inceptionlabs.ai/v1"
+        key_env = "MERCURY_API_KEY"
+        setting = "MERCURY_BASE_URL"
     elif provider_env == "OPENAI_API_KEY" or model.startswith("gpt-"):
         endpoint = os.getenv("OPENAI_DIRECT_BASE_URL")
         key_env = "OPENAI_DIRECT_API_KEY"
