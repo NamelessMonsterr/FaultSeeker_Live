@@ -63,6 +63,24 @@ _ACCESS_FNS = {
 # hex-encoded 4-byte selector pattern allowing trailing args: 0xa9059cbb or 0xa9059cbb()
 _HASH_FN_RE = re.compile(r'^0x[0-9a-fA-F]{8}(?:$|\()')
 
+# Canonical 4-byte selector -> lowercase name hint. 4-byte selectors are not
+# unique across contracts (collisions exist), so these aliases are UNVERIFIED
+# naming hints only: they let the name-based detectors below look at
+# selector-only calls instead of going blind, and at worst a collision adds
+# analysis scrutiny. Aliases never filter, rank, or drop any call, and the
+# raw undecoded-selector evidence path (_check_hashed_functions) is unchanged.
+_SELECTOR_ALIASES = {
+    '0x0902f1ac': 'getreserves',   # UniswapV2Pair.getReserves
+    '0x3850c7bd': 'slot0',         # UniswapV3Pool.slot0
+    '0xa9059cbb': 'transfer',      # ERC20.transfer
+    '0x23b872dd': 'transferfrom',  # ERC20.transferFrom
+    '0x095ea7b3': 'approve',       # ERC20.approve
+    '0x022c0d9f': 'swap',          # UniswapV2Pair.swap
+    '0x6a627842': 'mint',          # UniswapV2Pair.mint
+    '0x89afcb44': 'burn',          # UniswapV2Pair.burn
+    '0x70a08231': 'balanceof',     # ERC20.balanceOf
+}
+
 
 # ── Output dataclass ───────────────────────────────────────────────────────────
 @dataclass
@@ -113,6 +131,9 @@ class SignalBundle:
 
     # Multi-transaction context flags
     single_transfer_only: bool = False  # ONLY a bare transfer() — likely donation step in multi-tx exploit
+
+    # Selector alias hints applied while extracting (unverified canonical guesses)
+    selector_alias_hints_applied: int = 0
 
     # Convenience
     top_vuln_hints: list = field(default_factory=list)   # ordered list of suspected types
@@ -186,12 +207,27 @@ class SignalExtractor:
         self.balance_change: dict = {}
         # Absolute path to the cast replay cache for this transaction
         self._cast_cache_path = os.path.join(_REPLAY_CACHE_DIR, f'{txn_hash.lower()}.txt')
+        self._alias_selectors: set = set()
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
     @staticmethod
     def _fn(call: dict) -> str:
         return (call.get('function') or '').lower()
+
+    def _fn_hint(self, call: dict) -> str:
+        """Raw function name, or an explicitly-unverified canonical alias when
+        the name is a bare 4-byte selector present in _SELECTOR_ALIASES. The
+        raw 'function' value is never mutated, so undecoded-selector evidence
+        (hashed-fn checks) is preserved."""
+        name = self._fn(call)
+        match = _HASH_FN_RE.match(name)
+        if match:
+            alias = _SELECTOR_ALIASES.get(name[:10])
+            if alias:
+                self._alias_selectors.add(name[:10])
+                return alias
+        return name
 
     @staticmethod
     def _addr(call: dict) -> str:
@@ -664,12 +700,12 @@ class SignalExtractor:
         last_price_read_idx = -1
 
         for idx, item in enumerate(self.flat):
-            fn = self._fn(item)
+            fn = self._fn_hint(item)
             if fn in _PRICE_READ:
                 if last_price_read_idx >= 0:
                     # Check if there was a state write between then and now
                     between = self.flat[last_price_read_idx + 1:idx]
-                    has_write = any(self._fn(b) in _STATE_WRITE for b in between)
+                    has_write = any(self._fn_hint(b) in _STATE_WRITE for b in between)
                     if has_write:
                         sequences += 1
                 last_price_read_idx = idx
@@ -702,7 +738,7 @@ class SignalExtractor:
                 hashed_calls.append({'fn': fn, 'addr': self._addr(item)})
                 # Check if a transfer follows within next 5 calls
                 for j in range(i + 1, min(i + 6, len(self.flat))):
-                    next_fn = self._fn(self.flat[j])
+                    next_fn = self._fn_hint(self.flat[j])
                     if next_fn in _STATE_WRITE:
                         has_transfer_after = True
                         break
@@ -767,7 +803,7 @@ class SignalExtractor:
                 caller_contracts.add(addr)
 
             # Track multi-contract state writes from repeated caller
-            if fn in _STATE_WRITE and call_type not in ('staticcall', ''):
+            if self._fn_hint(item) in _STATE_WRITE and call_type not in ('staticcall', ''):
                 caller_contracts.add(addr)
 
         # Multi-contract calls are useful review context, also common in routers.
@@ -970,6 +1006,7 @@ class SignalExtractor:
         self._check_profit_extraction()
         self._collate_hints()
         self.signals.reentrancy_confidence_tier = self._reentrancy_confidence_tier()
+        self.signals.selector_alias_hints_applied = len(self._alias_selectors)
 
         # Build compact raw evidence dict for LLM context
         _dbg = getattr(self, '_reentrancy_debug_components', {})
@@ -1006,6 +1043,7 @@ class SignalExtractor:
             'flash_callback_detected':      self.signals.flash_callback_detected,
             'flash_profit_eth':             (round(self.signals.flash_profit_eth, 4) if self.signals.flash_profit_eth is not None else None),
             'price_read_write_sequences':   self.signals.price_read_write_sequences,
+            'selector_alias_hints_applied': self.signals.selector_alias_hints_applied,
             'price_delta_ratio':            (round(self.signals.price_delta_ratio, 4) if self.signals.price_delta_ratio is not None else None),
             'price_manipulation_detected': False,
             'price_read_write_pattern_observed': self.signals.price_read_before_write,

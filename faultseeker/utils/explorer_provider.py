@@ -100,7 +100,9 @@ class _ExplorerEndpoint:
     CB_PAUSE_SECS = 90     # explorers throttle for longer, so pause longer
     CB_PROBES    = 2
 
-    def __init__(self, base_url: str, api_key_env: str = '', initial_score: int = 80):
+    def __init__(self, base_url: str, api_key_env: str = '', initial_score: int = 80,
+                 extra_params: dict | None = None):
+        self.extra_params = dict(extra_params or {})
         self.base_url     = base_url
         self.api_key_env  = api_key_env
         self.score        = float(max(0, min(100, initial_score + random.randint(-4, 4))))
@@ -170,6 +172,8 @@ class _ExplorerEndpoint:
 
     def build_url(self, params: dict) -> str:
         p = dict(params)
+        for key, value in self.extra_params.items():
+            p.setdefault(key, value)
         p.setdefault('apikey', self.api_key)
         return f'{self.base_url}?{urllib.parse.urlencode(p)}'
 
@@ -190,6 +194,10 @@ _CHAIN_EXPLORERS: dict[str, list[tuple[str, str, int]]] = {
     'eth': [
         ('https://api.etherscan.io/api',            'ETHERSCAN_API_KEY',          90),
         ('https://api.etherscan.io/api',            'ETHERSCAN_API_KEY_2',         70),  # second key
+        # Keyed Blockscout API (Etherscan-V2-compatible, multichain via chain_id).
+        # Documented programmatic path; public eth.blockscout.com is bot-limited.
+        ('https://api.blockscout.com/v2/api',       'BLOCKSCOUT_API_KEY',          65,
+         {'chain_id': '1'}),
     ],
     # ── BNB Smart Chain ───────────────────────────────────────────────────────
     'bsc': [
@@ -291,8 +299,8 @@ class _ExplorerRegistry:
             if chain not in self._chains:
                 specs = _CHAIN_EXPLORERS.get(chain, [])
                 self._chains[chain] = [
-                    _ExplorerEndpoint(url, env, score)
-                    for url, env, score in specs
+                    _ExplorerEndpoint(url, env, score, *(rest if rest else []))
+                    for url, env, score, *rest in specs
                 ]
             return self._chains[chain]
 

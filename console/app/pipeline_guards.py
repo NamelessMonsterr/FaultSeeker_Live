@@ -578,11 +578,20 @@ class PipelineRuntime:
                 created = list((orig_created or {}).items())
                 patterns = orig_patterns or []
                 batch_count = max(len(batches), (len(created)+4)//5, (len(patterns)+4)//5, 1)
+                # Run-wide progress framing: engine [current/total] lines below are
+                # per-batch; without this header a finished batch reads as a
+                # finished run.
+                print(f"         [review plan] {len(orig_funcs)} functions + {len(patterns)} repeated patterns + "
+                      f"{len(created)} created-contract groups across {batch_count} batches; "
+                      f"[current/total] lines are per batch", flush=True)
                 for index in range(batch_count):
                     self.assert_healthy()
                     analyzer.functions_to_be_inspected = batches[index] if index < len(batches) else {}
                     analyzer.address_calls_with_created_contract_in_params = dict(created[index*5:index*5+5])
                     analyzer.repeated_patterns = patterns[index*5:index*5+5]
+                    print(f"         [batch {index + 1}/{batch_count}] presenting {len(analyzer.functions_to_be_inspected)} functions, "
+                          f"{len(analyzer.repeated_patterns)} patterns, "
+                          f"{len(analyzer.address_calls_with_created_contract_in_params)} created-contract groups", flush=True)
                     evidence = self.selection_abi_context(analyzer.functions_to_be_inspected)
                     original_prompts = analyzer.function_prompts
                     if evidence:
@@ -614,6 +623,7 @@ class PipelineRuntime:
                     if self.checkpoint_sink is not None:
                         self.checkpoint_sink(self.failure_report())
                 coverage['status'] = 'completed'
+                print(f"         [review complete] all {batch_count}/{batch_count} batches finished", flush=True)
             finally:
                 analyzer.functions_to_be_inspected = orig_funcs
                 if orig_created is not None:
