@@ -182,9 +182,11 @@ class _ExplorerEndpoint:
 
     def build_url(self, params: dict) -> str:
         p = dict(params)
-        for key, value in self.extra_params.items():
-            p.setdefault(key, value)
-        p.setdefault('apikey', self.api_key)
+        # Registry-pinned endpoint params (chain id) and the endpoint's own key
+        # are not caller-overridable: a conflicting caller value would silently
+        # query the wrong chain or send a foreign key to this endpoint.
+        p.update(self.extra_params)
+        p['apikey'] = self.api_key
         return f'{self.base_url}?{urllib.parse.urlencode(p)}'
 
     def __repr__(self):

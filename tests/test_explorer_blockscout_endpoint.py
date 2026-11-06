@@ -23,11 +23,29 @@ def test_build_url_merges_extra_params_and_key(monkeypatch):
                    '&apikey=testkey123')
 
 
-def test_caller_params_win_over_extra_params(monkeypatch):
+def test_registry_pinned_chain_id_not_caller_overridable(monkeypatch):
     monkeypatch.setenv('BLOCKSCOUT_API_KEY', 'k')
     ep = _ExplorerEndpoint('https://api.blockscout.com/v2/api',
                            'BLOCKSCOUT_API_KEY', 65, {'chain_id': '1'})
-    assert 'chain_id=56' in ep.build_url({'module': 'x', 'chain_id': '56'})
+    url = ep.build_url({'module': 'x', 'chain_id': '56'})
+    assert 'chain_id=1' in url and 'chain_id=56' not in url
+
+
+def test_endpoint_owned_apikey_not_caller_overridable(monkeypatch):
+    monkeypatch.setenv('BLOCKSCOUT_API_KEY', 'realkey')
+    ep = _ExplorerEndpoint('https://api.blockscout.com/v2/api',
+                           'BLOCKSCOUT_API_KEY', 65, {'chain_id': '1'})
+    url = ep.build_url({'module': 'x', 'apikey': 'callerkey'})
+    assert 'apikey=realkey' in url and 'callerkey' not in url
+
+
+def test_legitimate_params_and_keyless_endpoint_preserved(monkeypatch):
+    monkeypatch.delenv('SOME_KEY', raising=False)
+    ep = _ExplorerEndpoint('https://example.invalid/api', '', 50)
+    url = ep.build_url({'module': 'contract', 'action': 'getabi',
+                        'address': '0xabc'})
+    assert url == ('https://example.invalid/api?module=contract&action=getabi'
+                   '&address=0xabc&apikey=YourApiKeyToken')
 
 
 def test_eth_registry_uses_v2_endpoints_with_chain_params():
