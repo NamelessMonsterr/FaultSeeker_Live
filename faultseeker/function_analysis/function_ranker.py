@@ -161,11 +161,28 @@ class FunctionRanker:
                 }
                 functions_to_be_inspected[function_call_key] = function_call_value
 
-        # Sort functions by count (descending)
+        # Non-dropping priority hint: present targets at addresses observed in
+        # value flow (token balance deltas, attacker/victim candidates) before
+        # raw call-count order. Every candidate is retained; only presentation
+        # order changes, so budget-limited runs reach the suspicious core first
+        # instead of exhausting the budget on high-frequency boilerplate.
+        flow_addresses = set()
+        balance_change = getattr(forensics_result, 'balance_change', None) or {}
+        if isinstance(balance_change, dict):
+            flow_addresses.update(str(a).lower() for a in balance_change.keys())
+        for addrs in (getattr(forensics_result, 'potential_attacker', None) or [],
+                      getattr(forensics_result, 'potential_victim', None) or []):
+            flow_addresses.update(str(a).lower() for a in addrs)
+
+        def _priority(item):
+            key, value = item
+            address = key.rsplit('_', 1)[-1].lower() if '_' in key else ''
+            return (0 if address in flow_addresses else 1, -value['count'])
+
+        # Sort functions by value-flow participation, then count (descending)
         functions_to_be_inspected = sorted(
             functions_to_be_inspected.items(),
-            key=lambda x: x[1]['count'],
-            reverse=True
+            key=_priority
         )
         functions_to_be_inspected = {
             k: {'count': v['count'], 'calls': v['calls']}
