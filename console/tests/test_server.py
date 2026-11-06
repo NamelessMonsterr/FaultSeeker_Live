@@ -230,6 +230,93 @@ def test_diagnostic_quota_is_enforced_without_provider_calls(client, server, mon
     monkeypatch.setattr(server, "_diag_by_ip", {"testclient": [server.time.time()] * 30})
     assert client.get("/api/llm-selftest").status_code == 429
     assert client.get("/api/rpc-selftest").status_code == 429
+    assert client.get("/api/source-selftest").status_code == 429
+
+
+class _FakeResp:
+    def __init__(self, payload):
+        self.payload = payload
+    def read(self):
+        return self.payload
+    def __enter__(self):
+        return self
+    def __exit__(self, *args):
+        return False
+
+
+class _FakeEndpoint:
+    def __init__(self, base_url, key_env, has_key, circuit=False):
+        self.base_url = base_url
+        self.api_key_env = key_env
+        self.has_configured_key = has_key
+        self.is_circuit_open = circuit
+        self.api_key = "dummy-secret" if has_key else ""
+    def build_url(self, params):
+        assert params["action"] == "getsourcecode"
+        return f"{self.base_url}?apikey={self.api_key}&chain_id=1"
+
+
+class _FakeRegistry:
+    def __init__(self, endpoints):
+        self._endpoints = endpoints
+    def sorted_endpoints(self, chain):
+        return self._endpoints
+
+
+def _fake_explorer(monkeypatch, endpoints):
+    parent = types.ModuleType("faultseeker")
+    utils = types.ModuleType("faultseeker.utils")
+    explorer = types.ModuleType("faultseeker.utils.explorer_provider")
+    explorer._canonical = lambda chain: chain
+    explorer._registry = _FakeRegistry(endpoints)
+    explorer._endpoint_label = lambda url: url.split("//", 1)[-1].split("/")[0]
+    parent.utils, utils.explorer_provider = utils, explorer
+    for name, module in [("faultseeker", parent), ("faultseeker.utils", utils),
+                         ("faultseeker.utils.explorer_provider", explorer)]:
+        monkeypatch.setitem(sys.modules, name, module)
+
+
+def test_source_selftest_reports_key_gating_and_never_leaks_secret(client, server, monkeypatch):
+    _fake_explorer(monkeypatch, [
+        _FakeEndpoint("https://unkeyed.invalid/v2/api", "ETHERSCAN_API_KEY", False),
+        _FakeEndpoint("https://keyed.invalid/v2/api", "BLOCKSCOUT_API_KEY", True),
+    ])
+    seen = {}
+    def fake_urlopen(req, timeout=None):
+        seen["url"] = req.full_url
+        return _FakeResp(json.dumps({"status": "1", "message": "OK",
+            "result": [{"SourceCode": "contract Dummy {}", "ContractName": "WETH9"}]}).encode())
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    response = client.get("/api/source-selftest")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["endpoints"][0]["key_configured"] is False
+    assert body["endpoints"][0]["skipped"] == "no key configured"
+    assert body["endpoints"][1]["ok"] is True
+    assert body["endpoints"][1]["source_bytes"] == len("contract Dummy {}")
+    assert body["endpoints"][1]["contract_name"] == "WETH9"
+    assert "dummy-secret" not in response.text
+    assert "apikey" not in response.text
+
+
+def test_source_selftest_surfaces_api_failure_without_source_body(client, server, monkeypatch):
+    _fake_explorer(monkeypatch, [
+        _FakeEndpoint("https://keyed.invalid/v2/api", "BLOCKSCOUT_API_KEY", True),
+    ])
+    def fake_urlopen(req, timeout=None):
+        return _FakeResp(json.dumps({"status": "0", "message": "NOTOK",
+            "result": "Max rate limit reached"}).encode())
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    response = client.get("/api/source-selftest")
+    body = response.json()
+    assert body["endpoints"][0]["ok"] is False
+    assert body["endpoints"][0]["api_status"] == "0"
+    assert body["endpoints"][0]["source_bytes"] == 0
+
+
+def test_source_selftest_rejects_non_account_address(client, server, monkeypatch):
+    _fake_explorer(monkeypatch, [_FakeEndpoint("https://keyed.invalid/v2/api", "K", True)])
+    assert client.get("/api/source-selftest?address=not-an-address").status_code == 400
 
 
 def test_container_builds_from_unified_repository_without_cloning():

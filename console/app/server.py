@@ -14,6 +14,7 @@ import uuid
 import asyncio
 from contextlib import asynccontextmanager
 from urllib.parse import urlsplit, quote
+import urllib.request
 
 try:
     from .model_routes import adapt_request, resolve_route, model_call_timeout, model_preflight_timeout
@@ -530,7 +531,7 @@ async def gate_and_limit(request: Request, call_next):
         return RedirectResponse(url="/gate", status_code=303)
     ip = request.client.host if request.client else "unknown"
     now = time.time()
-    if path in ("/api/llm-selftest", "/api/rpc-selftest"):
+    if path in ("/api/llm-selftest", "/api/rpc-selftest", "/api/source-selftest"):
         if not _consume_quota(_diag_by_ip, ip, now, [(3600, 30)]):
             return JSONResponse({"error": "diagnostic limit reached for this network, try later"}, status_code=429)
     if path == "/api/analyze" and request.method == "POST":
@@ -621,6 +622,57 @@ def rpc_selftest(chain: str = "eth", mode: str = "calltracer"):
             out.append({"host": host, "ok": False,
                          "err": _redact(f"{type(e).__name__}: {str(e)[:140]}")})
     return {"chain": chain, "mode": mode, "providers": out}
+
+
+@app.get("/api/source-selftest")
+def source_selftest(chain: str = "eth",
+                    address: str = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"):
+    """Gated diagnostic: can the deployed explorer path fetch verified source?
+
+    Probes each registered explorer endpoint for the chain with a real
+    getsourcecode request through the exact build_url pinning + key gating the
+    pipeline's address-download phase uses - no model involvement. Reports
+    hosts, key-gate state and outcome only; never URLs, keys or source bodies.
+    """
+    import faultseeker.utils.explorer_provider as ep_mod
+
+    if not re.fullmatch(r"0x[0-9a-fA-F]{40}", address or ""):
+        return JSONResponse({"error": "address must be a 0x-prefixed 40-hex account."},
+                            status_code=400)
+    canonical = ep_mod._canonical(chain)
+    params = {"module": "contract", "action": "getsourcecode", "address": address}
+    out = []
+    for ep in ep_mod._registry.sorted_endpoints(canonical):
+        entry = {"host": ep_mod._endpoint_label(ep.base_url),
+                 "key_env": ep.api_key_env or None,
+                 "key_configured": bool(ep.has_configured_key)}
+        if not ep.has_configured_key:
+            entry["skipped"] = "no key configured"
+            out.append(entry)
+            continue
+        if ep.is_circuit_open:
+            entry["skipped"] = "circuit open"
+            out.append(entry)
+            continue
+        url = ep.build_url(params)
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "FaultSeeker/1.0"})
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+            status = str(data.get("status", "")) if isinstance(data, dict) else ""
+            entry["ok"] = status == "1"
+            entry["api_status"] = status or None
+            result = data.get("result") if isinstance(data, dict) else None
+            first = result[0] if isinstance(result, list) and result else {}
+            first = first if isinstance(first, dict) else {}
+            src = first.get("SourceCode", "")
+            entry["source_bytes"] = len(src) if isinstance(src, str) else 0
+            entry["contract_name"] = first.get("ContractName") or None
+        except Exception as e:  # noqa: BLE001 - diagnostic reports every failure type
+            entry["ok"] = False
+            entry["err"] = _redact(f"{type(e).__name__}: {str(e)[:140]}")
+        out.append(entry)
+    return {"chain": canonical, "address": address, "endpoints": out}
 
 
 @app.get("/api/llm-selftest")
