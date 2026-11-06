@@ -192,8 +192,12 @@ class _ExplorerEndpoint:
 _CHAIN_EXPLORERS: dict[str, list[tuple[str, str, int]]] = {
     # ── Ethereum ──────────────────────────────────────────────────────────────
     'eth': [
-        ('https://api.etherscan.io/api',            'ETHERSCAN_API_KEY',          90),
-        ('https://api.etherscan.io/api',            'ETHERSCAN_API_KEY_2',         70),  # second key
+        # Etherscan V1 (api.etherscan.io/api) is deprecated and refuses all
+        # requests ("switch to Etherscan API V2"); V2 is multichain via chainid.
+        ('https://api.etherscan.io/v2/api',         'ETHERSCAN_API_KEY',          90,
+         {'chainid': '1'}),
+        ('https://api.etherscan.io/v2/api',         'ETHERSCAN_API_KEY_2',         70,  # second key
+         {'chainid': '1'}),
         # Keyed Blockscout API (Etherscan-V2-compatible, multichain via chain_id).
         # Documented programmatic path; public eth.blockscout.com is bot-limited.
         ('https://api.blockscout.com/v2/api',       'BLOCKSCOUT_API_KEY',          65,

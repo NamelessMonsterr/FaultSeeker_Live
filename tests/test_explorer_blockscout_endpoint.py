@@ -30,9 +30,13 @@ def test_caller_params_win_over_extra_params(monkeypatch):
     assert 'chain_id=56' in ep.build_url({'module': 'x', 'chain_id': '56'})
 
 
-def test_eth_registry_has_keyed_blockscout_fallback():
+def test_eth_registry_uses_v2_endpoints_with_chain_params():
     eps = _ExplorerRegistry()._endpoints('eth')
     assert len(eps) == 3
+    assert eps[0].base_url == 'https://api.etherscan.io/v2/api'
+    assert eps[0].extra_params == {'chainid': '1'}
+    assert eps[1].base_url == 'https://api.etherscan.io/v2/api'
+    assert eps[1].extra_params == {'chainid': '1'}
     blockscout = eps[-1]
     assert blockscout.base_url == 'https://api.blockscout.com/v2/api'
     assert blockscout.extra_params == {'chain_id': '1'}
