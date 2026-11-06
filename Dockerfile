@@ -8,6 +8,9 @@ ENV FAULTSEEKER_MAX_FUNCTIONS=5
 ENV CODEX_PROXY_BASE_URL=https://codex-proxy-render.onrender.com/v1
 ENV FAULTSEEKER_MODEL_CALL_TIMEOUT_SECS=300
 ENV FAULTSEEKER_MODEL_TIME_BUDGET_SECS=600
+# One attempt per model call, no key rotation: surface rate limits honestly
+# instead of retry barrages that burn provider windows.
+ENV FAULTSEEKER_MODEL_RETRY_LIMIT=0
 ENV FAULTSEEKER_SKIP_STRUCTLOGS=1
 ENV FAULTSEEKER_SKIP_VIZ=1
 WORKDIR /srv
