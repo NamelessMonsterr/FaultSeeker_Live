@@ -66,8 +66,8 @@ class ModelEndpointSession:
     All agent instances and function-analysis threads share this object. Successful
     calls never reset the retry allowance. SDK automatic retries are always disabled.
     Analysis/RPC/CPU time outside model transport is not charged to this budget.
-    Preflight retries are bounded by the preflight deadline, not the shared retry
-    allowance, so a cold-starting endpoint gets its whole window to wake up.
+    The shared retry allowance governs every phase, preflight included: with a
+    zero allowance the first error fails the run instead of a retry loop.
     """
     def __init__(self, emit=lambda event: None, retry_limit=3, time_budget=600,
                  call_timeout=60, clock=time.monotonic, sleep=time.sleep):
