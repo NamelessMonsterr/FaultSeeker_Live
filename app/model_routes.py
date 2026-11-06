@@ -10,21 +10,34 @@ ITERA_UPSTREAM_MODELS = {"itera/qwen3.8-27b": "qwen/qwen3.8-27b"}
 
 
 def adapt_request(model, kwargs):
-    """Rewrite a request for the operator-selected Itera route.
+    """Rewrite a request for routes that need parameter adaptation.
 
-    The console model id carries an ``itera/`` alias so it can never share a route
-    or credential with the Groq ``qwen/`` models. Itera's free Qwen is a reasoning
-    model: without ``reasoning_effort=none`` it spends the whole completion budget
-    on reasoning and returns an empty answer. Other models are returned unchanged.
+    Itera: the console model id carries an ``itera/`` alias so it can never share
+    a route or credential with the Groq ``qwen/`` models. Itera's free Qwen is a
+    reasoning model: without ``reasoning_effort=none`` it spends the whole
+    completion budget on reasoning and returns an empty answer.
+
+    Mercury (Inception): mercury-3 defaults to ``reasoning_effort=low`` and can
+    likewise consume the entire completion budget on encrypted reasoning
+    (content null, finish_reason length). ``instant`` is the documented lowest
+    deliberation level (docs.inceptionlabs.ai/capabilities/reasoning-efforts).
+
+    Other models are returned unchanged.
     """
-    if not str(model).startswith(ITERA_PREFIX):
-        return kwargs
-    adapted = dict(kwargs)
-    adapted["model"] = ITERA_UPSTREAM_MODELS.get(str(model), str(model)[len(ITERA_PREFIX):])
-    extra = dict(adapted.get("extra_body") or {})
-    extra["reasoning_effort"] = "none"
-    adapted["extra_body"] = extra
-    return adapted
+    if str(model).startswith(ITERA_PREFIX):
+        adapted = dict(kwargs)
+        adapted["model"] = ITERA_UPSTREAM_MODELS.get(str(model), str(model)[len(ITERA_PREFIX):])
+        extra = dict(adapted.get("extra_body") or {})
+        extra["reasoning_effort"] = "none"
+        adapted["extra_body"] = extra
+        return adapted
+    if str(model).startswith("mercury"):
+        adapted = dict(kwargs)
+        extra = dict(adapted.get("extra_body") or {})
+        extra["reasoning_effort"] = "instant"
+        adapted["extra_body"] = extra
+        return adapted
+    return kwargs
 
 
 def resolve_route(model, provider_url=None, provider_env="OPENAI_API_KEY"):
