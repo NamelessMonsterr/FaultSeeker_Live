@@ -1,0 +1,21 @@
+{
+  "name": "UnverifiedContr_0x452E25",
+  "cause": "lack-of-access-control",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x1194e1d6085885ce054a7ff8cd3cd0c3fa308ec87e4ccde8dd0549842fef4f1b"
+  ],
+  "complexity_level": "Complex",
+  "time": "2024-07-03 02:47:23 UTC",
+  "lost": "27 ETH",
+  "location": {
+    "0x452e253eeb3bb16e40337d647c01b6c910aa84b3##:": [
+      "0x452e253eeb3bb16e40337d647c01b6c910aa84b3##uniswapV3SwapCallback",
+      "0x452e253eeb3bb16e40337d647c01b6c910aa84b3##:"
+    ]
+  },
+  "detection": {
+    "time": "2024-07-03 03:00:00 UTC",
+    "link": "['https://x.com/SlowMist_Team/status/1808334870650970514']"
+  }
+}

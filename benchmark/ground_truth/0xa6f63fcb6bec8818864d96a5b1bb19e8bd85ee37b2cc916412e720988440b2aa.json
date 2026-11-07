@@ -1,0 +1,25 @@
+{
+  "name": "Orion Protocol",
+  "cause": "Reentrancy",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0xa6f63fcb6bec8818864d96a5b1bb19e8bd85ee37b2cc916412e720988440b2aa"
+  ],
+  "complexity_level": "Complex",
+  "time": "2023-02-02 15:40:20 UTC",
+  "lost": "$3M",
+  "location": {
+    "0x420a50a62b17c18b36c64478784536ba980feac8#PoolFunctionality.sol#78:55": [
+      "0x420a50a62b17c18b36c64478784536ba980feac8#PoolFunctionality#doSwapThroughOrionPool",
+      "0x420a50a62b17c18b36c64478784536ba980feac8#PoolFunctionality#78:55"
+    ]
+  },
+  "detection": {
+    "time": "2023-02-02 16:08:00 UTC",
+    "link": "['https://x.com/peckshield/status/1621178662396788736']"
+  },
+  "disclosure": {
+    "time": "2023-02-03 02:40:00 UTC",
+    "link": "['https://x.com/peckshield/status/1621178662396788736']"
+  }
+}

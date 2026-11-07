@@ -1,0 +1,21 @@
+{
+  "name": "MEVBOTa47b",
+  "cause": "MEVBOT a47b",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x35ecf595864400696853c53edf3e3d60096639b6071cadea6076c9c6ceb921c1"
+  ],
+  "complexity_level": "Complex",
+  "time": "2022-10-13 19:39:35 UTC",
+  "lost": "~187.75 WETH",
+  "location": {
+    "0x00000000000a47b1298f18cf67de547bbe0d723f##:": [
+      "0x00000000000a47b1298f18cf67de547bbe0d723f##receiveFlashLoan",
+      "0x00000000000a47b1298f18cf67de547bbe0d723f##:"
+    ]
+  },
+  "detection": {
+    "time": "2022-10-14 04:35:00 UTC",
+    "link": "['https://x.com/BlockSecTeam/status/1580779311862190080']"
+  }
+}

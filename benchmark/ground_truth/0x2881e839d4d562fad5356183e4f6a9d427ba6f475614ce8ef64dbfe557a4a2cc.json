@@ -1,0 +1,21 @@
+{
+  "name": "MahaLend",
+  "cause": "Donate Inflation ExchangeRate & Rounding Error",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x2881e839d4d562fad5356183e4f6a9d427ba6f475614ce8ef64dbfe557a4a2cc"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2023-11-10 22:43:59 UTC",
+  "lost": "~$20 K",
+  "location": {
+    "0xfd11aba71c06061f446ade4eec057179f19c23c4#Pool.sol#388:35": [
+      "0xfd11aba71c06061f446ade4eec057179f19c23c4#Pool#flashLoan",
+      "0xfd11aba71c06061f446ade4eec057179f19c23c4#Pool#388:35"
+    ]
+  },
+  "disclosure": {
+    "time": "2023-11-11 06:18:00 UTC",
+    "link": "['https://twitter.com/Phalcon_xyz/status/1723223766350832071']"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "Civfund",
+  "cause": "Lack of access control",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0xc42fc0e22a0f60cc299be80eb0c0ddce83c21c14a3dddd8430628011c3e20d6b"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2023-07-08 02:40:59 UTC",
+  "lost": "~$165k",
+  "location": {
+    "0x7caec5e4a3906d0919895d113f7ed9b3a0cbf826##:": [
+      "0x7caec5e4a3906d0919895d113f7ed9b3a0cbf826##uniswapV3MintCallback",
+      "0x7caec5e4a3906d0919895d113f7ed9b3a0cbf826##:"
+    ]
+  },
+  "detection": {
+    "time": "2023-07-08 04:06:00 UTC",
+    "link": "['https://x.com/HypernativeLabs/status/1677529544062803969']"
+  }
+}

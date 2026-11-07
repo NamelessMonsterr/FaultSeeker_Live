@@ -1,0 +1,21 @@
+{
+  "name": "USDTStakingContract28",
+  "cause": "Lack of access control",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0xfc872bf5ca8f04b18b82041ec563e4abf2e31e1fc27d1ea5dee39bc8a79d2d06"
+  ],
+  "complexity_level": "Moderate",
+  "time": "2023-07-15 04:54:59 UTC",
+  "lost": "~20999 USD",
+  "location": {
+    "0x800cfd4a2ba8ce93ea2cc814fce26c3635169017#BUSD staking.sol#149:6": [
+      "0x800cfd4a2ba8ce93ea2cc814fce26c3635169017#USDTStakingContract28#tokenAllowAll",
+      "0x800cfd4a2ba8ce93ea2cc814fce26c3635169017#USDTStakingContract28#149:6"
+    ]
+  },
+  "disclosure": {
+    "time": "2023-07-15 07:29:00 UTC",
+    "link": "['https://x.com/DecurityHQ/status/1680117291013267456']"
+  }
+}

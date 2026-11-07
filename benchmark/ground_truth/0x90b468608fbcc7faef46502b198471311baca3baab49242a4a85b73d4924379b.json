@@ -1,0 +1,21 @@
+{
+  "name": "CowSwap",
+  "cause": "Arbitrary External Call Vulnerability",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x90b468608fbcc7faef46502b198471311baca3baab49242a4a85b73d4924379b"
+  ],
+  "complexity_level": "Moderate",
+  "time": "2023-02-07 02:53:11 UTC",
+  "lost": "~$120k",
+  "location": {
+    "0xcd07a7695e3372acd2b2077557de93e667b92bd8#SwapGuard.sol#31:39": [
+      "0xcd07a7695e3372acd2b2077557de93e667b92bd8#SwapGuard#envelope",
+      "0xcd07a7695e3372acd2b2077557de93e667b92bd8#SwapGuard#31:39"
+    ]
+  },
+  "detection": {
+    "time": "2023-02-07 03:06:00 UTC",
+    "link": "['https://x.com/MevRefund/status/1622793836291407873']"
+  }
+}

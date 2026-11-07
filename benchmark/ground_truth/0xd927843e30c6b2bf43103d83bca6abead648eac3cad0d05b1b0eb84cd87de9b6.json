@@ -1,0 +1,17 @@
+{
+  "name": "OMPx Contract",
+  "cause": "FlashLoan",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0xd927843e30c6b2bf43103d83bca6abead648eac3cad0d05b1b0eb84cd87de9b6"
+  ],
+  "complexity_level": "Complex",
+  "time": "2024-08-06 09:58:11 UTC",
+  "lost": "4.37 ETH (~11527 USD)",
+  "location": {
+    "0x09a80172ed7335660327cd664876b5df6fe06108##426:13": [
+      "0x09a80172ed7335660327cd664876b5df6fe06108#OMPxContract#buyBack",
+      "0x09a80172ed7335660327cd664876b5df6fe06108#OMPxContract#426:13"
+    ]
+  }
+}

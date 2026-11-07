@@ -1,0 +1,21 @@
+{
+  "name": "Game",
+  "cause": "Reentrancy && Business Logic Flaw",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x0eb8f8d148508e752d9643ccf49ac4cb0c21cbad346b5bbcf2d06974d31bd5c4"
+  ],
+  "complexity_level": "Complex",
+  "time": "2024-02-12 19:11:47 UTC",
+  "lost": "~20 ETH",
+  "location": {
+    "0x52d69c67536f55efefe02941868e5e762538dbd6#Game.sol#232:10": [
+      "0x52d69c67536f55efefe02941868e5e762538dbd6#Game#makeBid",
+      "0x52d69c67536f55efefe02941868e5e762538dbd6#Game#232:10"
+    ]
+  },
+  "disclosure": {
+    "time": "",
+    "link": "['https://twitter.com/AnciliaInc/status/1757533144033739116']"
+  }
+}

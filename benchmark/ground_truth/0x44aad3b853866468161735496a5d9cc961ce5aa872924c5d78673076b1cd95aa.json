@@ -1,0 +1,24 @@
+{
+  "name": "Indexed Finance",
+  "cause": "FlashLoan",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x44aad3b853866468161735496a5d9cc961ce5aa872924c5d78673076b1cd95aa"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2021/10/14 18:37",
+  "location": {
+    "0x120c6956d292b800a835cb935c9dd326bdb4e011#temp-contracts/MarketCapSqrtController.sol#13062:597": [
+      "0x120c6956d292b800a835cb935c9dd326bdb4e011#MarketCapSqrtController#reindexPool",
+      "0x120c6956d292b800a835cb935c9dd326bdb4e011#MarketCapSqrtController#437:43"
+    ]
+  },
+  "detection": {
+    "time": "2021/10/14 19:11",
+    "link": "https://twitter.com/ndxfi/status/1448728249312423946"
+  },
+  "disclosure": {
+    "time": "2021/10/15 4:40",
+    "link": "https://twitter.com/ndxfi/status/1448856180697280514"
+  }
+}

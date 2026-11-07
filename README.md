@@ -1,81 +1,282 @@
-# FaultSeeker // Live Forensic Console
+# FaultSeeker: LLM-Empowered Fault Localization for Blockchain Transactions
 
-The live console includes a responsive transaction setup screen, real event-driven analysis progress, cancellation, reconnect/recovery, recent runs, and resilient evidence reports. Failed live analyses remain failed or inconclusive; they are never silently replaced with a saved capture.
+[![ASE 2025](https://img.shields.io/badge/ASE-2025-blue?style=flat-square)](https://conf.researchr.org/home/ase-2025)
+[![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 
-The editable frontend is `app/web/index.html` and `app/web/assets/console.{js,css}`. Root `index.html` and `assets/console.{js,css}` mirror it for static hosting. The original compiled bundles are retained but are no longer the entry point. Static hosting supports explicitly selected saved captures only.
+> **FaultSeeker** is an AI-powered framework that automatically analyzes malicious blockchain transactions and produces a **ranked list of vulnerable smart contract functions** with supporting evidence.
 
-Production verification and deployment notes: [docs/production-verification.md](docs/production-verification.md).
+---
 
-Live site: **https://namelessmonsterr.github.io/faultseeker-demo-console/**
+## 📑 Table of Contents
 
-A nerv-ui styled forensic console for FaultSeeker. This repo contains ONLY
-the website: the compiled front end, the small local console server, and a
-saved Stage-1 capture it replays. No FaultSeeker pipeline code is bundled.
+- [Overview](#-overview)
+- [Quick Start](#-quick-start)
+- [Usage Examples](#-usage-examples)
+- [Configuration](#-configuration)
+- [Benchmark & Results](#-benchmark--results)
+- [Architecture](#-architecture)
+- [Project Structure](#-project-structure)
+- [Citation](#-citation)
 
-The console drives **your own FaultSeeker fork**
-([NamelessMonsterr/FaultSeeker-](https://github.com/NamelessMonsterr/FaultSeeker-))
-for live runs - `run.bat` / `run.sh` clone it next to this repo automatically
-(and use its `console-demo-compat` branch until that PR is merged).
+---
 
-## Contents
+## 🔍 Overview
 
-- `index.html`, `assets/console.*` - editable, dependency-free console frontend
-- `app/server.py` - local FastAPI console server (serves the UI, runs Stage 1-3 through your fork, streams progress)
-- `api/capture` - saved Stage-1 capture (Zunami UZD exploit, ETH) used for the hosted replay and as the offline fallback
-- `api/config` - chain/model metadata for the Settings panel
-- `run.bat` / `run.sh` - one-command local run
-- `404.html`, `.nojekyll` - GitHub Pages plumbing (`gh-pages` branch)
+Blockchain attacks cause billions in losses annually, yet identifying the root cause vulnerabilities remains challenging. **FaultSeeker** addresses this by combining forensic analysis with large language models to automatically:
 
-## Hosted site (GitHub Pages)
+1. **Analyze transaction execution traces** to understand attack mechanics
+2. **Identify attackers and victims** through fund flow analysis
+3. **Rank vulnerable functions** using a two-stage approach
+4. **Generate evidence-backed reports** for security auditors
 
-Saved-capture viewing only: the user explicitly opens the Zunami UZD capture.
-There is no backend on static hosting, so live analysis is disabled. A recorded
-Stage-1 rule verdict is labeled as Stage 1 only, with its original limitations.
+**Paper**: *FaultSeeker: LLM-Empowered Framework for Blockchain Transaction Fault Localization*  
+**Published at**: 40th IEEE/ACM International Conference on Automated Software Engineering (ASE 2025)  
+**PDF**: [Full Paper](./full_paper/FaultSeeker%20LLM-Empowered%20Framework%20for%20Blockchain%20Transaction.pdf)
 
-## Local run (live analysis with your keys)
+---
 
-1. Python 3.11 on PATH. For live traces: Foundry `cast` (`foundryup`) and an
-   archive RPC key (dRPC) - free public RPCs cannot `debug_traceTransaction`.
-2. Windows: `run.bat`. Linux/Mac: `./run.sh`
-   (first run clones your fork and installs dependencies).
-3. Open **http://127.0.0.1:8420**. Keys go in the UI's ⚙ Settings
-   (chain, model, dRPC/BlockPI RPC, LLM key) - sent per-request to your local
-   server only. Credentials are never placed in browser storage or run history.
-   Supply the complete RPC URL and leave RPC key blank, or include `{key}` in
-   the URL and supply its value separately; the server URL-encodes that value.
+## 🚀 Quick Start
 
-### Modes
+### Prerequisites
 
-- **SAVED CAPTURE** - replays `api/capture` (Zunami UZD). No keys, no network.
-- **ANALYZE (no-LLM)** - deterministic Stage 1 via your fork's
-  `main(txn_hash, chain, no_llm=True)`. Needs an archive RPC key for real
-  transactions; without one it reports a visible error or inconclusive result.
-- **ANALYZE (model selected)** - full pipeline Stage 1-3 with the chosen
-  model and its API key, cost tracking on. Real spend on your key.
+- **Python 3.8+**
+- **[Foundry](https://book.getfoundry.sh/getting-started/installation)** - For transaction replay
+- **OpenAI API Key** - For LLM-based analysis
 
-No API keys are stored anywhere in this repository. Do not commit any.
+### Installation
 
-## Hosted live deploy (Render)
+```bash
+# Clone the repository
+git clone https://github.com/kairanskrr/FaultSeeker.git
+cd FaultSeeker
 
-Live URL: **https://faultseeker-demo-console.onrender.com**
+# Create virtual environment (recommended)
+python3 -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
 
-The same console, hosted as a Docker web service (Render free tier, Oregon).
-Unlike the GitHub Pages replay, this one runs the real pipeline through your
-fork - ANALYZE works here.
+# Install FaultSeeker
+pip install -e .
 
-- Access is gated: the site asks for the demo access code first
-  (`DEMO_GATE_PASSWORD` env var on Render; rotate it there anytime). Rate
-  limits: 10 runs/hour, 40/day per network, one run at a time.
-- Keys: server-side env vars on Render power out-of-the-box live runs
-  (`ETH_RPC_URL` = dRPC endpoint, `GOOGLE_API_KEY` = Gemini, optional
-  `BSC_RPC_URL` = BlockPI). The page's ⚙ Settings fields override them
-  per-request; request-sent keys are held in memory for that run only and
-  server env values are restored after every run. Keys never enter the repo.
-- Free tier notes: 512 MB RAM, sleeps after 15 min idle (first load after
-  sleep takes ~30-60s). 750 free instance-hours/month.
-- Redeploy: Render auto-deploys on push to `main`. Manual: Render dashboard
-  -> faultseeker-demo-console -> Manual Deploy.
-- `Dockerfile` pins the pipeline to your fork's `console-demo-compat` branch;
-  after PR #1 merges, change `FAULTSEEKER_REF` to `main` in the Dockerfile.
+# Configure API key
+echo "OPENAI_API_KEY=your-openai-api-key-here" > .env
+```
 
-Health check: `/healthz` (used by the keep-alive ping).
+### Basic Usage
+
+**Option 1: Analyze using transaction link**
+```bash
+faultseeker -txn_link "https://etherscan.io/tx/0xABCD..."
+# Output: ✓ Analysis complete. Results saved to: ./data/output/analysis_20251114_120530.json
+```
+
+**Option 2: Analyze using transaction hash and chain**
+```bash
+faultseeker -txn_hash "0xABCD..." -chain eth
+```
+
+### Available Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-txn_link` | - | Full transaction URL (e.g., `https://etherscan.io/tx/0x...`) |
+| `-txn_hash` | - | Transaction hash (alternative to `-txn_link`) |
+| `-chain` | `eth` | Blockchain: `eth`, `bsc`, `poly`, `opt`, `arbi`, `avax`, `fantom`, `base` |
+| `-forensics_model` | `gpt-4o-mini` | LLM for Stage 1 (forensics analysis) |
+| `-function_analysis_model` | `gpt-4o-mini` | LLM for Stage 2 (function analysis) |
+| `-cache` | `./data/cache` | Directory for cached intermediate results |
+| `-output` | `./data/output` | Output directory for final reports |
+
+
+**Example:**
+```bash
+faultseeker -txn_hash 0x9f4ef3cc55b016ea6b867807a09f80d1b2e36f6cd6fccfaf0182f46060332c57 -chain bsc
+```
+
+---
+
+## 🔧 Configuration
+
+### AI Models
+
+**OpenAI GPT (Default):**
+```bash
+# Add to .env file
+echo "OPENAI_API_KEY=sk-..." >> .env
+```
+
+The system defaults to GPT models for reliability. Model names are case-insensitive and whitespace is automatically stripped.
+
+
+### Supported Chains
+
+**Currently Supported:**
+- ✅ Ethereum (`eth`)
+- ✅ BSC (`bsc`)
+
+**Easy to Add** (requires RPC endpoint configuration in `foundry.toml`):
+- Polygon (`poly`)
+- Optimism (`opt`)
+- Arbitrum (`arbi`)
+- Avalanche (`avax`)
+- Fantom (`fantom`)
+- Base (`base`)
+
+To add a new chain, update the RPC URL in `foundry.toml`:
+
+```toml
+[rpc_endpoints]
+polygon = "https://polygon-rpc.com"
+optimism = "https://mainnet.optimism.io"
+# ... add more
+```
+
+---
+
+## 📈 Benchmark & Results
+
+FaultSeeker has been evaluated on **115 real-world blockchain attacks** covering **65 unique vulnerability types**.
+
+### Vulnerability Coverage
+
+| Framework | Total Categories | Covered |
+|-----------|-----------------|---------|
+| **SWC Registry** | 36 | 11 |
+| **DASP Top 10** | 10 | 6 |
+
+📁 **Benchmark Details**: See [`benchmark/`](./benchmark/) directory for full dataset and classification.
+
+---
+
+## 🏗️ Architecture
+
+FaultSeeker employs a **two-stage pipeline**:
+![FaultSeeker](full_paper/figs/overview.png)
+
+### Stage 1: Transaction-Level Forensics
+![Tx-Level Forensics](full_paper/figs/tx-analysis.png)
+
+Analyzes the attack transaction to extract:
+- **Execution trace insights**: Call sequences, state changes
+- **Fund flow patterns**: Token transfers, balance changes
+- **Actor identification**: Attackers vs. victims
+- **Affected contracts**: Scope of analysis
+
+### Stage 2: Function-Level Analysis
+
+![Function-Level Analysis](full_paper/figs/fucntion-analysis.png)
+
+Narrows down to specific vulnerabilities:
+- **2a. Fast Ranking**: Filters functions based on forensic evidence (no LLM)
+- **2b. Deep Analysis**: Uses LLM to analyze top-ranked functions and produce detailed vulnerability reports
+
+---
+
+## 📁 Project Structure
+
+```
+FaultSeeker/
+├── faultseeker/
+│   ├── core/                      # Core pipeline components
+│   │   ├── config.py              # Configuration dataclass
+│   │   ├── pipeline.py            # Main orchestration pipeline
+│   │   └── base_agent.py          # Base agent abstraction
+│   │
+│   ├── forensics/                 # Stage 1: Transaction Forensics
+│   │   ├── orchestrator.py        # Forensics coordinator
+│   │   ├── trace_analyzer.py      # Execution trace analysis
+│   │   ├── fund_flow_analyzer.py  # Fund flow & actor identification
+│   │   ├── address_classifier.py  # Address role classification
+│   │   └── result.py              # ForensicsResult dataclass
+│   │
+│   ├── function_analysis/         # Stage 2: Function Analysis
+│   │   ├── function_ranker.py     # Stage 2a: Fast ranking (no LLM)
+│   │   └── function_analyzer.py   # Stage 2b: Deep LLM analysis
+│   │
+│   ├── data_collection/           # Data collection utilities
+│   │   ├── txn_sequencer.py       # Transaction data aggregation
+│   │   ├── txn_info_collector.py  # Transaction metadata fetching
+│   │   ├── txn_replayer.py        # Transaction replay via Foundry
+│   │   ├── contract_downloader.py # Smart contract source retrieval
+│   │   └── trace_parser.py        # Trace parsing utilities
+│   │
+│   ├── prompts/                   # LLM prompt templates
+│   │   ├── forensics/             # Stage 1 prompts
+│   │   └── function_analysis/     # Stage 2 prompts
+│   │
+│   ├── utils/                     # Utility modules
+│   │   ├── agent.py               # GPTAgent & OllamaAgent
+│   │   ├── utils.py               # Helper functions
+│   │   ├── chunk_splitter.py      # Smart contract chunking
+│   │   └── solidityParser/        # Solidity AST parsing (ANTLR)
+│   │
+│   └── main.py                    # CLI entry point
+│
+├── benchmark/                     # Evaluation dataset
+│   ├── benchmark_classification.csv
+│   ├── ground_truth/              # 115 annotated attack cases
+│   └── README.md
+│
+├── data/                          # Runtime data (auto-generated)
+│   ├── cache/                     # Cached forensics & contracts
+│   └── output/                    # Analysis results (JSON)
+│
+├── requirements.txt               # Python dependencies
+├── setup.py                       # Package installation
+├── foundry.toml                   # Foundry RPC configuration
+└── README.md
+```
+
+---
+
+## 📚 Citation
+
+If you use FaultSeeker in your research, please cite our paper:
+
+```bibtex
+@inproceedings{faultseeker2025,
+  title={{FaultSeeker: LLM-Empowered Framework for Blockchain Transaction Fault Localization}},
+  author={Sun, Kairan and Xu, Zhengzi and Li, Kaixuan and Zhang, Lyuye and Sun, Yuqiang and Tan, Liwei and Liu, Yang},
+  booktitle={Proceedings of the 40th IEEE/ACM International Conference on Automated Software Engineering},
+  year={2025},
+  series={ASE '25},
+  publisher={IEEE},
+}
+```
+
+---
+
+**⭐ If you find FaultSeeker helpful, please consider starring the repository!**
+
+---
+
+## 🌐 Web console
+
+> Full setup, usage, testing and Render deployment instructions: **[GUIDE.md](GUIDE.md)**.
+
+`web/` holds the FaultSeeker++ console and `faultseeker/server/` the API behind it.
+
+```bash
+pip install -r requirements.txt && pip install -e .
+uvicorn faultseeker.server.app:app --port 8000      # open http://localhost:8000
+```
+
+Each analysis runs in its own subprocess, one at a time. The stepper follows real pipeline output, and model/RPC
+keys live only in that subprocess's environment and are redacted from logs. Tests: `pytest tests`.
+
+### Deploy on Render
+1. Push this repo, then create a **Blueprint** from `render.yaml` (Docker build installs Foundry's `cast`).
+2. Set `OPENAI_API_KEY` only if you want a shared key (anyone with the URL can then spend it); otherwise users enter their own.
+3. Set `ETHERSCAN_API_KEY` for BSC, Base, Optimism and Avalanche source downloads (Etherscan's paid tier).
+4. Add a disk at `/app/data` (see `render.yaml`) to keep history and caches across deploys.
+
+### Networks
+Ethereum and BNB Smart Chain are the benchmarked networks. The other networks in the selector are **beta**: wired through
+replay, explorer and source download, but not evaluated. zkSync Era is listed but disabled (not replayable with `cast`).
+Replaying older transactions needs an archive RPC with call tracing: enter one under *RPC connection*.
+Add or change networks in `faultseeker/chains.py` and `foundry.toml`.
+
+### Environment variables
+`OPENAI_API_KEY`, `ETHERSCAN_API_KEY`, `FAULTSEEKER_HTTP_PROXY`, `FAULTSEEKER_DATA_DIR`, `FAULTSEEKER_MAX_CONCURRENT`,
+`FAULTSEEKER_RUN_TIMEOUT`, `FAULTSEEKER_OPENAI_MODELS`, `FAULTSEEKER_OLLAMA_MODELS`, `FAULTSEEKER_ALLOW_PRIVATE_RPC` (local dev only).
+Drop a recorded result at `captures/capture.json` to replace the built-in reference capture.

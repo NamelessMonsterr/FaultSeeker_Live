@@ -1,0 +1,25 @@
+{
+  "name": "WiseLending",
+  "cause": "Bad HealthFactor Check",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x04e16a79ff928db2fa88619cdd045cdfc7979a61d836c9c9e585b3d6f6d8bc31"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2024-01-12 19:29:23 UTC",
+  "lost": "~464K",
+  "location": {
+    "0x37e49bf3749513a02fa535f0cbc383796e8107e4#WiseLending.sol#416:24": [
+      "0x37e49bf3749513a02fa535f0cbc383796e8107e4#WiseLending#depositExactAmount",
+      "0x37e49bf3749513a02fa535f0cbc383796e8107e4#WiseLending#416:24"
+    ],
+    "0x37e49bf3749513a02fa535f0cbc383796e8107e4#WiseLending.sol#679:34": [
+      "0x37e49bf3749513a02fa535f0cbc383796e8107e4#WiseLending#withdrawExactAmount",
+      "0x37e49bf3749513a02fa535f0cbc383796e8107e4#WiseLending#679:34"
+    ]
+  },
+  "detection": {
+    "time": "2024-01-12 20:46:00 UTC",
+    "link": "['https://twitter.com/EXVULSEC/status/1746138811862577515', 'https://twitter.com/peckshield/status/1745907642118123774']"
+  }
+}

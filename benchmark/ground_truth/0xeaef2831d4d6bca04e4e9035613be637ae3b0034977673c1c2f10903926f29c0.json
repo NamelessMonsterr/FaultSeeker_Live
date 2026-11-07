@@ -1,0 +1,21 @@
+{
+  "name": "BrahTOPG",
+  "cause": "Arbitrary External Call Vulnerability",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0xeaef2831d4d6bca04e4e9035613be637ae3b0034977673c1c2f10903926f29c0"
+  ],
+  "complexity_level": "Complex",
+  "time": "2022-11-09 16:55:47 UTC",
+  "lost": "$89k",
+  "location": {
+    "0xd248b30a3207a766d318c7a87f5cf334a439446d#Zapper.sol#46:24": [
+      "0xd248b30a3207a766d318c7a87f5cf334a439446d#Zapper#zapIn",
+      "0xd248b30a3207a766d318c7a87f5cf334a439446d#Zapper#46:24"
+    ]
+  },
+  "disclosure": {
+    "time": "2022-11-11",
+    "link": "['https://medium.com/neptune-mutual/decoding-brahma-brahtopg-smart-contract-vulnerability-7b7c364b79d8']"
+  }
+}

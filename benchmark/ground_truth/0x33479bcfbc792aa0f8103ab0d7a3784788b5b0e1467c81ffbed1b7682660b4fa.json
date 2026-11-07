@@ -1,0 +1,20 @@
+{
+  "name": "Umbrella Network",
+  "cause": "Underflow",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x33479bcfbc792aa0f8103ab0d7a3784788b5b0e1467c81ffbed1b7682660b4fa"
+  ],
+  "complexity_level": "Complex",
+  "time": "2022/3/20 07:48",
+  "location": {
+    "0xb3fb1d01b07a706736ca175f827e4f56021b85de#contracts/staking/StakingRewards.sol#8859:43": [
+      "0xb3fb1d01b07a706736ca175f827e4f56021b85de#StakingRewards#withdraw",
+      "0xb3fb1d01b07a706736ca175f827e4f56021b85de#StakingRewards#201:2"
+    ]
+  },
+  "disclosure": {
+    "time": "2022/3/20 10:44",
+    "link": "https://twitter.com/ishwinder/status/1505555913658314761"
+  }
+}

@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: faultseeker
+    runtime: docker
+    plan: standard            # analysis loads pandas/numpy plus replay traces; 512 MB plans may run out of memory
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: OPENAI_API_KEY   # optional: leave unset to require each user to bring their own key
+        sync: false
+      - key: ETHERSCAN_API_KEY  # needed to download source on BSC, Base, Optimism and Avalanche
+        sync: false
+      - key: FAULTSEEKER_HTTP_PROXY  # optional: route explorer page fetches through a proxy if they are blocked
+        sync: false
+      - key: FAULTSEEKER_MAX_CONCURRENT
+        value: "1"
+    # Keeps run history and caches across deploys (paid plans only):
+    # disk:
+    #   name: faultseeker-data
+    #   mountPath: /app/data
+    #   sizeGB: 5

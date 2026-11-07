@@ -1,0 +1,21 @@
+{
+  "name": "VINU",
+  "cause": "Price Manipulation",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0xaf46a42fe1ed7193b25c523723dc047c7500e50a00ecb7bbb822d665adb3e1f3"
+  ],
+  "complexity_level": "Complex",
+  "time": "2023-06-06 11:06:35 UTC",
+  "lost": "~$6k",
+  "location": {
+    "0xf7ef0d57277ad6c2babf87ab64ba61abdd2590d2##556:10": [
+      "0xf7ef0d57277ad6c2babf87ab64ba61abdd2590d2#VINU#addLiquidityETH",
+      "0xf7ef0d57277ad6c2babf87ab64ba61abdd2590d2#VINU#556:10"
+    ]
+  },
+  "disclosure": {
+    "time": "2023-06-06 11:58:00 UTC",
+    "link": "['https://twitter.com/hexagate_/status/1666051854386511873?cxt=HHwWgoC24bPVgJ8uAAAA']"
+  }
+}

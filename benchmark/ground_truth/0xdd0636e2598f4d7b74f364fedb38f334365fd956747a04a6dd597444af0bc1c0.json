@@ -1,0 +1,21 @@
+{
+  "name": "UnizenIO",
+  "cause": "unverified external call",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0xdd0636e2598f4d7b74f364fedb38f334365fd956747a04a6dd597444af0bc1c0"
+  ],
+  "complexity_level": "Complex",
+  "time": "2024-03-08 22:23:35 UTC",
+  "lost": "~2M",
+  "location": {
+    "0xf411903cbc70a74d22900a5de66a2dda66507255##1045:14": [
+      "0xf411903cbc70a74d22900a5de66a2dda66507255##ERC777#transferFrom",
+      "0xf411903cbc70a74d22900a5de66a2dda66507255#ERC777#1045:14"
+    ]
+  },
+  "detection": {
+    "time": "2024-03-09 01:25:00 UTC",
+    "link": "['https://x.com/Phalcon_xyz/status/1766274000534004187']"
+  }
+}

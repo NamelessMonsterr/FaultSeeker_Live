@@ -1,0 +1,17 @@
+{
+  "name": "PHIL",
+  "cause": "Business Logic Flaw",
+  "platform": "BNBChain",
+  "transaction_hash": [
+    "0x20ecd8310a2cc7f7774aa5a045c8a99ad84a8451d6650f24e0911e9f4355b13a"
+  ],
+  "complexity_level": "Moderate",
+  "time": "2023-12-14 11:04:10 UTC",
+  "lost": "~$2 $BNB",
+  "location": {
+    "0x4308d314096878d3bf16c9d8db86101f70bbebf1##:": [
+      "0x4308d314096878d3bf16c9d8db86101f70bbebf1#PHIL#simpleToken",
+      "0x4308d314096878d3bf16c9d8db86101f70bbebf1#PHIL#:"
+    ]
+  }
+}

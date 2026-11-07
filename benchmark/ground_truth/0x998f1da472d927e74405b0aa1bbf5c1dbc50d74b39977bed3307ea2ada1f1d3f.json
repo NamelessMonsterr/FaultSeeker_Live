@@ -1,0 +1,21 @@
+{
+  "name": "UnverifiedContr_0x00C409",
+  "cause": "unverified external call",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x998f1da472d927e74405b0aa1bbf5c1dbc50d74b39977bed3307ea2ada1f1d3f"
+  ],
+  "complexity_level": "Complex",
+  "time": "2024-04-17 13:32:47 UTC",
+  "lost": "~ 18 eth",
+  "location": {
+    "0x00c409001c1900ddcda20000008e112417db003b##:": [
+      "0x00c409001c1900ddcda20000008e112417db003b##0xba381f8f",
+      "0x00c409001c1900ddcda20000008e112417db003b##:"
+    ]
+  },
+  "detection": {
+    "time": "2024-04-17 13:45:00 UTC",
+    "link": "['https://x.com/CyversAlerts/status/1780593407871635538']"
+  }
+}

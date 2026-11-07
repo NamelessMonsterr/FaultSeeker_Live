@@ -1,0 +1,21 @@
+{
+  "name": "Melo",
+  "cause": "Access Control",
+  "platform": "BNBChain",
+  "transaction_hash": [
+    "0x3f1973fe56de5ecd59a815d3b14741cf48385903b0ccfe248f7f10c2765061f7"
+  ],
+  "complexity_level": "Complex",
+  "time": "2023-05-06 01:56:19 UTC",
+  "lost": "~$90k",
+  "location": {
+    "0x9a1aef8c9ada4224ad774afdac07c24955c92a54##317:8": [
+      "0x9a1aef8c9ada4224ad774afdac07c24955c92a54#cERC20#mint",
+      "0x9a1aef8c9ada4224ad774afdac07c24955c92a54#cERC20#317:8"
+    ]
+  },
+  "detection": {
+    "time": "2023-05-06 02:01:00 UTC",
+    "link": "['https://twitter.com/peckshield/status/1654667621139349505']"
+  }
+}

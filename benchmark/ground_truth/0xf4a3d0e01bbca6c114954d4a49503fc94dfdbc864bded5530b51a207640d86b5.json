@@ -1,0 +1,21 @@
+{
+  "name": "Uerii Token",
+  "cause": "Access Control",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0xf4a3d0e01bbca6c114954d4a49503fc94dfdbc864bded5530b51a207640d86b5"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2022-10-17 12:31:11 UTC",
+  "lost": "$2.4 k",
+  "location": {
+    "0x418c24191ae947a78c99fdc0e45a1f96afb254be##493:3": [
+      "0x418c24191ae947a78c99fdc0e45a1f96afb254be#Token#mint",
+      "0x418c24191ae947a78c99fdc0e45a1f96afb254be#Token#493:3"
+    ]
+  },
+  "disclosure": {
+    "time": "2022-10-17 12:41:00 UTC",
+    "link": "['https://x.com/peckshield/status/1581988895142526976']"
+  }
+}

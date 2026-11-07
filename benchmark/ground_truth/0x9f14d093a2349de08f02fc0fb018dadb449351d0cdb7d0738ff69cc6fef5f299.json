@@ -1,0 +1,24 @@
+{
+  "name": "MonoX",
+  "cause": "Flashloan",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x9f14d093a2349de08f02fc0fb018dadb449351d0cdb7d0738ff69cc6fef5f299"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2021/11/30 13:27",
+  "location": {
+    "0x66e7d7839333f502df355f5bd87aea24bac2ee63#contracts/Monoswap.sol#29969:86": [
+      "0x66e7d7839333f502df355f5bd87aea24bac2ee63#Monoswap#_removeLiquidity",
+      "0x66e7d7839333f502df355f5bd87aea24bac2ee63#Monoswap#433:35"
+    ]
+  },
+  "detection": {
+    "time": "2021/11/30 14:33",
+    "link": "https://twitter.com/BlockSecTeam/status/1465690478414761992"
+  },
+  "disclosure": {
+    "time": "2021/11/30 14:33",
+    "link": "https://twitter.com/BlockSecTeam/status/1465690490213261323"
+  }
+}

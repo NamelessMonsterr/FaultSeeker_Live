@@ -1,0 +1,21 @@
+{
+  "name": "Raft_fi",
+  "cause": "Donate Inflation ExchangeRate & Rounding Error",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0xfeedbf51b4e2338e38171f6e19501327294ab1907ab44cfd2d7e7336c975ace7"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2023-11-10 18:59:23 UTC",
+  "lost": "~$3.2 M",
+  "location": {
+    "0x9ab6b21cdf116f611110b048987e58894786c244#InterestRatePositionManager.f.sol:3401:63": [
+      "0X9ab6b21cdf116f611110b048987e58894786c244#PositionManager#managePosition",
+      "0x9ab6b21cdf116f611110b048987e58894786c244#PositionManager#3401:63"
+    ]
+  },
+  "disclosure": {
+    "time": "2023-11-11 06:41:00 UTC",
+    "link": "['https://twitter.com/BlockSecTeam/status/1723229393529835972']"
+  }
+}

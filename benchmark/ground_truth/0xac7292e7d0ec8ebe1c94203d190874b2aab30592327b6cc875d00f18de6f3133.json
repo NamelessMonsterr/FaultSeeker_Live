@@ -1,0 +1,24 @@
+{
+  "name": "Qubit Finance",
+  "cause": "Logic bug",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0xac7292e7d0ec8ebe1c94203d190874b2aab30592327b6cc875d00f18de6f3133"
+  ],
+  "complexity_level": "Moderate",
+  "time": "2022/1/27 21:34",
+  "location": {
+    "0x80d1486ef600cc56d4df9ed33baf53c60d5a629b#contracts/bridge/QBridgeHandler.sol#5764:64": [
+      "0x80d1486ef600cc56d4df9ed33baf53c60d5a629b#QBridgeHandler#deposit",
+      "0x80d1486ef600cc56d4df9ed33baf53c60d5a629b#QBridgeHandler#122:15"
+    ]
+  },
+  "detection": {
+    "time": "2022/1/27 23:19",
+    "link": "https://twitter.com/peckshield/status/1486841239450255362"
+  },
+  "disclosure": {
+    "time": "2022/1/28 7:33",
+    "link": "https://twitter.com/QubitFin/status/1486965562903531522"
+  }
+}

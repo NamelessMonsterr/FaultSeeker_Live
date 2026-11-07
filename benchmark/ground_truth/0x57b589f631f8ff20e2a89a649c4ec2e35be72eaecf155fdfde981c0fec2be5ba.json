@@ -1,0 +1,21 @@
+{
+  "name": "Local Trade LCT",
+  "cause": "Improper Access Control of Close-source contract",
+  "platform": "BNBChain",
+  "transaction_hash": [
+    "0x57b589f631f8ff20e2a89a649c4ec2e35be72eaecf155fdfde981c0fec2be5ba"
+  ],
+  "complexity_level": "Moderate",
+  "time": "2023-05-23 11:54:39 UTC",
+  "lost": "~384 BNB",
+  "location": {
+    "0x312dc37075646c7e0dba21df5bdfe69e76475fdc##:": [
+      "0x312dc37075646c7e0dba21df5bdfe69e76475fdc##0xb5863c10",
+      "0x312dc37075646c7e0dba21df5bdfe69e76475fdc#LCT#:"
+    ]
+  },
+  "detection": {
+    "time": "2023-05-24 03:24:00 UTC",
+    "link": "['https://x.com/NumenAlert/status/1661211423618527234']"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "ChannelsFinance",
+  "cause": "CompoundV2 Inflation Attack",
+  "platform": "BNBChain",
+  "transaction_hash": [
+    "0x0237855c63eb85c5f437fba5267cc869a08c58a49501e3e5ebec9990bdd97565"
+  ],
+  "complexity_level": "Moderate",
+  "time": "2023-12-30 12:17:51 UTC",
+  "lost": "~320K",
+  "location": {
+    "0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82##652:3": [
+      "0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82##_transfer",
+      "0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82##652:3"
+    ]
+  }
+}

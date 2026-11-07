@@ -1,0 +1,25 @@
+{
+  "name": "Seneca",
+  "cause": "Arbitrary External Call Vulnerability",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x23fcf9d4517f7cc39815b09b0a80c023ab2c8196c826c93b4100f2e26b701286"
+  ],
+  "complexity_level": "Moderate",
+  "time": "2024-02-28 12:09:59 UTC",
+  "lost": "~6M",
+  "location": {
+    "0x45e15d1e4f92f28a916f4f2971ad9adc278e148b#Chamber2.sol#408:77": [
+      "0x45e15d1e4f92f28a916f4f2971ad9adc278e148b#Chamber#performOperations",
+      "0x45e15d1e4f92f28a916f4f2971ad9adc278e148b#Chamber#408:77"
+    ]
+  },
+  "detection": {
+    "time": "2024-02-28 17:00:00 UTC",
+    "link": "['https://x.com/SenecaUSD/status/1762886130561630227']"
+  },
+  "disclosure": {
+    "time": "2024-02-29 03:00:00 UTC",
+    "link": "['https://twitter.com/Phalcon_xyz/status/1763045563040411876']"
+  }
+}

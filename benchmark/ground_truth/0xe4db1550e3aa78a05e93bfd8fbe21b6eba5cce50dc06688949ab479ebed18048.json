@@ -1,0 +1,21 @@
+{
+  "name": "landNFT",
+  "cause": "Lack of permission control",
+  "platform": "BNBChain",
+  "transaction_hash": [
+    "0xe4db1550e3aa78a05e93bfd8fbe21b6eba5cce50dc06688949ab479ebed18048"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2023-05-14 16:39:50 UTC",
+  "lost": "149,616 $BUSD",
+  "location": {
+    "0x1a62fe088f46561be92bb5f6e83266289b94c154##1596:4": [
+      "0x1a62fe088f46561be92bb5f6e83266289b94c154#ERC721A#mint",
+      "0x1a62fe088f46561be92bb5f6e83266289b94c154#ERC721A#1596:4"
+    ]
+  },
+  "disclosure": {
+    "time": "2023-05-15 06:46:00 UTC",
+    "link": "['https://x.com/BeosinAlert/status/1658000784943124480?cxt=HHwWgMDU_b27s4IuAAAA']"
+  }
+}

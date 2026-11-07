@@ -1,0 +1,21 @@
+{
+  "name": "OlympusDAO",
+  "cause": "No input validation",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x3ed75df83d907412af874b7998d911fdf990704da87c2b1a8cf95ca5d21504cf"
+  ],
+  "complexity_level": "Moderate",
+  "time": "2022-10-21 05:22:47 UTC",
+  "lost": "~$292K (30500 OHM)",
+  "location": {
+    "0x007fe7c498a2cf30971ad8f2cbc36bd14ac51156#BondFixedExpiryTeller.sol#137:5": [
+      "0x007fe7c498a2cf30971ad8f2cbc36bd14ac51156#BondFixedExpiryTeller#redeem",
+      "0x007fe7c498a2cf30971ad8f2cbc36bd14ac51156#BondFixedExpiryTeller#137:5"
+    ]
+  },
+  "disclosure": {
+    "time": "2022-10-21 11:16:00 UTC",
+    "link": "['https://twitter.com/peckshield/status/1583416829237526528', 'https://blog.solidityscan.com/olympus-dao-hack-analysis-f07d2a64f5ee', 'https://mirror.xyz/0xbanky.eth/c7G9ZfTB8pzQ5cCMw5UhdFehmR6l0fVqd_B-ZuXz2_o']"
+  }
+}

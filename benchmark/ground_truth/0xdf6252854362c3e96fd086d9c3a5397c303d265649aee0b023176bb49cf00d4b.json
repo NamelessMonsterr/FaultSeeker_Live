@@ -1,0 +1,17 @@
+{
+  "name": "Thena",
+  "cause": "Yield Protocol Flaw",
+  "platform": "BNBChain",
+  "transaction_hash": [
+    "0xdf6252854362c3e96fd086d9c3a5397c303d265649aee0b023176bb49cf00d4b"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2023-03-27 17:35:56 UTC",
+  "lost": "$10k",
+  "location": {
+    "0xaedb00947b0bfd2723898f78018b4bb7b2398cdc##:": [
+      "0xaedb00947b0bfd2723898f78018b4bb7b2398cdc##unstake",
+      "0xaedb00947b0bfd2723898f78018b4bb7b2398cdc##:"
+    ]
+  }
+}

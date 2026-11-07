@@ -1,0 +1,25 @@
+{
+  "name": "TheNFTV2",
+  "cause": "logic flaw",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0xd5b4d68432cbbd912130bbb5b93399031ddbb400d8f723c78050574de7533106"
+  ],
+  "complexity_level": "Exceptionally Complex",
+  "time": "2023-11-25 08:17:23 UTC",
+  "lost": "~$19K",
+  "location": {
+    "0x79a7d3559d73ea032120a69e59223d4375deb595#TheNFTv2.sol#231:6": [
+      "0x79a7d3559d73ea032120a69e59223d4375deb595#TheNFTV2#burn",
+      "0x79a7d3559d73ea032120a69e59223d4375deb595#TheNFTV2#231:6"
+    ],
+    "0x79a7d3559d73ea032120a69e59223d4375deb595#TheNFTv2.sol#422:11": [
+      "0x79a7d3559d73ea032120a69e59223d4375deb595#TheNFTV2#transferFrom",
+      "0x79a7d3559d73ea032120a69e59223d4375deb595#TheNFTV2#422:11"
+    ]
+  },
+  "disclosure": {
+    "time": "2023-11-26 03:28:00 UTC",
+    "link": "['https://x.com/MetaTrustAlert/status/1728616715825848377?s=20']"
+  }
+}

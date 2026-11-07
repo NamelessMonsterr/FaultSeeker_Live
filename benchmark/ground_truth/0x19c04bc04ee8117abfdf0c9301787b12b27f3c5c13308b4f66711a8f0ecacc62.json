@@ -1,0 +1,20 @@
+{
+  "name": "Soda",
+  "cause": "Wrong variable",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x19c04bc04ee8117abfdf0c9301787b12b27f3c5c13308b4f66711a8f0ecacc62"
+  ],
+  "complexity_level": "Complex",
+  "time": "2020/9/20 12:06",
+  "location": {
+    "0x164315ac326d7d4caf71067f7b2de45f95c03f8c##21957:94": [
+      "0x164315ac326d7d4caf71067f7b2de45f95c03f8c#WETHCalculator#collectDebt",
+      "0x164315ac326d7d4caf71067f7b2de45f95c03f8c#WETHCalculator#657:13"
+    ]
+  },
+  "disclosure": {
+    "time": "2020/9/20 14:35",
+    "link": "https://twitter.com/Soda_finance/status/1307689921629560833"
+  }
+}

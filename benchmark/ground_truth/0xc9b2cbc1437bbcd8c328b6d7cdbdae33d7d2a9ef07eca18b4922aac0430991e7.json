@@ -1,0 +1,17 @@
+{
+  "name": "Juice",
+  "cause": "Business Logic Flaw",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0xc9b2cbc1437bbcd8c328b6d7cdbdae33d7d2a9ef07eca18b4922aac0430991e7"
+  ],
+  "complexity_level": "Complex",
+  "time": "2024-03-09 06:06:59 UTC",
+  "lost": "~54 ETH",
+  "location": {
+    "0x8584ddbd1e28bca4bc6fb96bafe39f850301940e#JuiceStaking.sol#85:11": [
+      "0x8584ddbd1e28bca4bc6fb96bafe39f850301940e#JuiceStaking#harvest",
+      "0x8584ddbd1e28bca4bc6fb96bafe39f850301940e#JuiceStaking#85:11"
+    ]
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "name": "faultseeker-ui-tests",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node ui.test.mjs" },
+  "devDependencies": { "jsdom": "^31.0.0" }
+}

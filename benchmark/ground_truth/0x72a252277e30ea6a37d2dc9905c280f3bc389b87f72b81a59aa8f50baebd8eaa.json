@@ -1,0 +1,25 @@
+{
+  "name": "SorStaking",
+  "cause": "Incorrect reward calculation",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x6439d63cc57fb68a32ea8ffd8f02496e8abad67292be94904c0b47a4d14ce90d"
+  ],
+  "complexity_level": "Complex",
+  "time": "2025-01-04 11:59:23 UTC",
+  "lost": "$43K",
+  "location": {
+    "0x5d16b8ba2a9a4eca6126635a6ffbf05b52727d50#sorraStaking.sol#104:26": [
+      "0x5d16b8ba2a9a4eca6126635a6ffbf05b52727d50#sorraStaking#withdraw",
+      "0x5d16b8ba2a9a4eca6126635a6ffbf05b52727d50#sorraStaking#104:26"
+    ],
+    "0x5d16b8ba2a9a4eca6126635a6ffbf05b52727d50#sorraStaking.sol#213:5": [
+      "0x5d16b8ba2a9a4eca6126635a6ffbf05b52727d50#sorraStaking#getPendingRewards",
+      "0x5d16b8ba2a9a4eca6126635a6ffbf05b52727d50#sorraStaking#213:5"
+    ]
+  },
+  "disclosure": {
+    "time": "2025-01-05 04:38:00 UTC",
+    "link": "['https://x.com/TenArmorAlert/status/1875582709512188394']"
+  }
+}

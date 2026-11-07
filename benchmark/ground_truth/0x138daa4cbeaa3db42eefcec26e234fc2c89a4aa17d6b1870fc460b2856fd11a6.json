@@ -1,0 +1,29 @@
+{
+  "name": "Dexible",
+  "cause": "Arbitrary External Call Vulnerability",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0x138daa4cbeaa3db42eefcec26e234fc2c89a4aa17d6b1870fc460b2856fd11a6"
+  ],
+  "complexity_level": "Complex",
+  "time": "2023-02-17 04:20:35 UTC",
+  "lost": "~$1.5M",
+  "location": {
+    "0x33e690aea97e4ef25f0d140f1bf044d663091daf#SwapHandler.sol#38:25": [
+      "0x33e690aea97e4ef25f0d140f1bf044d663091daf#SwapHandler#fill",
+      "0x33e690aea97e4ef25f0d140f1bf044d663091daf#SwapHandler#38:25"
+    ],
+    "0x33e690aea97e4ef25f0d140f1bf044d663091daf#Dexible.sol#61:33": [
+      "0x33e690aea97e4ef25f0d140f1bf044d663091daf#Dexible#selfSwap",
+      "0x33e690aea97e4ef25f0d140f1bf044d663091daf#Dexible#61:33"
+    ],
+    "0xde62e1b0edaa55aac5ffbe21984d321706418024##:": [
+      "0xde62e1b0edaa55aac5ffbe21984d321706418024##selfSwap",
+      "0xde62e1b0edaa55aac5ffbe21984d321706418024##:"
+    ]
+  },
+  "disclosure": {
+    "time": "2023-02-17 08:05:00 UTC",
+    "link": "['https://x.com/peckshield/status/1626493024879673344']"
+  }
+}

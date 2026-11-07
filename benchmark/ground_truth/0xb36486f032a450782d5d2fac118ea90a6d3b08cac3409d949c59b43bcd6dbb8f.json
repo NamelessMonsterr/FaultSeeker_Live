@@ -1,0 +1,21 @@
+{
+  "name": "ElasticSwap",
+  "cause": "Business Logic Flaw",
+  "platform": "Ethereum",
+  "transaction_hash": [
+    "0xb36486f032a450782d5d2fac118ea90a6d3b08cac3409d949c59b43bcd6dbb8f"
+  ],
+  "complexity_level": "Complex",
+  "time": "2022-12-13 02:32:47 UTC",
+  "lost": "$845k",
+  "location": {
+    "0xa0c5aa50ce3cc69b1c478d8235597bc0c51dfdab#Exchange.sol#88:78": [
+      "0xa0c5aa50ce3cc69b1c478d8235597bc0c51dfdab#addLiquidity#swap",
+      "0xa0c5aa50ce3cc69b1c478d8235597bc0c51dfdab#addLiquidity#88:78"
+    ]
+  },
+  "disclosure": {
+    "time": "2022-12-15",
+    "link": "['https://quillaudits.medium.com/decoding-elastic-swaps-850k-exploit-quillaudits-9ceb7fcd8d1a']"
+  }
+}
