@@ -2,7 +2,7 @@ services:
   - type: web
     name: faultseeker
     runtime: docker
-    plan: standard            # analysis loads pandas/numpy plus replay traces; 512 MB plans may run out of memory
+    plan: free            # analysis loads pandas/numpy plus replay traces; 512 MB plans may run out of memory
     healthCheckPath: /api/health
     autoDeploy: true
     envVars:
