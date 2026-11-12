@@ -1,10 +1,11 @@
 import re
+from faultseeker.utils.selectors import canonicalize
     
     
 class TraceNode:
     """Represents a single node in the transaction trace."""
     def __init__(self, type, gas=None, address=None, function=None, params=None, 
-                 call_type=None, value=None, children=None, contract_type=None):
+                 call_type=None, value=None, children=None, contract_type=None, selector=None):
         self.type = type
         self.gas = gas
         self.address = address
@@ -13,6 +14,7 @@ class TraceNode:
         self.call_type = call_type
         self.value = value
         self.contract_type = contract_type
+        self.selector = selector    # 4-byte selector when known (raw cast output, or a decoded name with one table entry)
         self.children = children or []
     
     def to_dict(self):
@@ -26,6 +28,7 @@ class TraceNode:
             'call_type': self.call_type,
             'value': self.value,
             'contract_type': self.contract_type,
+            'selector': self.selector,
             'children': [child.to_dict() for child in self.children]
         }
     
@@ -40,7 +43,8 @@ class TraceNode:
             params=data.get('params'),
             call_type=data.get('call_type'),
             value=data.get('value'),
-            contract_type=data.get('contract_type')
+            contract_type=data.get('contract_type'),
+            selector=data.get('selector')
         )
         node.children = [cls.from_dict(child) for child in data.get('children', [])]
         return node
@@ -101,6 +105,7 @@ class TraceParser:
         call_match = self.call_pattern.match(content)
         if call_match:
             gas, address, function, params, call_type = call_match.groups()
+            function, selector = canonicalize(function)   # same identity whether cast printed a selector or a name
             if address.lower() not in self.address_call_memo:
                 self.address_call_memo[address.lower()] = []
             if function not in self.address_call_memo[address.lower()]:
@@ -111,7 +116,8 @@ class TraceParser:
                 address=address,
                 function=function,
                 params=params.strip(),
-                call_type=call_type
+                call_type=call_type,
+                selector=selector
             )
         return_match = self.return_pattern.match(content)
         if return_match:

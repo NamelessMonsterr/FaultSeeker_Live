@@ -1,7 +1,8 @@
 // Browser-level tests: loads the real index.html + console.js in jsdom against a real server process
 // (stand-in pipeline worker). Run from this folder:  npm install && npm test
 // Environment: PYTHON (default python3). FaultSeeker's Python requirements must be importable.
-import { JSDOM } from 'jsdom';
+import { JSDOM, CookieJar, VirtualConsole } from 'jsdom';
+import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, writeFileSync, chmodSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -20,6 +21,27 @@ async function until(fn, ms = 20000, step = 80) {
   return null;
 }
 const hash = (prefix, fill = '1') => '0x' + prefix + fill.repeat(64 - prefix.length);
+const GOOD_KEY = 'good-key-' + 'k'.repeat(30);          // the fake providers accept keys that start with "good-"
+const CODEX_KEY = 'good-codex-' + 'c'.repeat(24);
+const BAD_KEY = 'bad-key-' + 'b'.repeat(24);
+const ACCESS_CODE = 'ui test access code 123';
+
+// ---------- fake OpenAI-compatible providers (OFFLINE test doubles on 127.0.0.1) ----------
+function startFake() {
+  const calls = []; let mode = 'ok';
+  const srv = http.createServer((req, res) => {
+    const key = (req.headers.authorization || '').replace('Bearer ', '');
+    calls.push({ path: req.url, key });
+    res.setHeader('content-type', 'application/json');
+    if (mode === 'down') { res.statusCode = 503; return res.end('{}'); }
+    if (req.url === '/v1/models' && key.startsWith('good-')) return res.end('{"data":[]}');
+    res.statusCode = req.url === '/v1/models' ? 401 : 404;
+    res.end('{"error":{}}');
+  });
+  return new Promise((r) => srv.listen(0, '127.0.0.1', () => r({ calls, port: srv.address().port, setMode: (m) => { mode = m; }, close: () => srv.close() })));
+}
+const fakeOpenAI = await startFake();     // stands in for api.openai.com (via the test registry)
+const fakeCodex = await startFake();      // stands in for the Codex proxy
 
 // ---------- server ----------
 const freePort = () => new Promise((res) => { const s = net.createServer().listen(0, () => { const p = s.address().port; s.close(() => res(p)); }); });
@@ -27,43 +49,64 @@ const tmp = mkdtempSync(join(tmpdir(), 'fs-ui-'));
 mkdirSync(join(tmp, 'bin'));
 for (const tool of ['cast', 'getCode']) { writeFileSync(join(tmp, 'bin', tool), '#!/bin/sh\nexit 0\n'); chmodSync(join(tmp, 'bin', tool), 0o755); }
 const port = await freePort();
+const port2 = await freePort();
+const closedPort = await freePort();      // nothing listens here: the Mercury endpoint is unreachable
 const BASE = `http://127.0.0.1:${port}/`;
-const server = spawn(process.env.PYTHON || 'python3', ['-m', 'uvicorn', 'faultseeker.server.app:app', '--port', String(port), '--log-level', 'warning'], {
-  cwd: ROOT,
-  env: { ...process.env, PATH: `${join(tmp, 'bin')}:${process.env.PATH}`, PYTHONPATH: ROOT, FAULTSEEKER_DATA_DIR: join(tmp, 'data'),
-    FAULTSEEKER_WORKER_MODULE: 'tests.fake_worker', FAULTSEEKER_ALLOW_PRIVATE_RPC: '1', FAULTSEEKER_OLLAMA_MODELS: 'llama3',
-    FAKE_DELAY: '0.3', OPENAI_API_KEY: '' },
-  stdio: ['ignore', 'inherit', 'inherit'],
-});
-const stop = () => { try { server.kill('SIGTERM'); } catch { /* already gone */ } };
+const BASE2 = `http://127.0.0.1:${port2}/`;
+const registry = JSON.parse((await import('node:fs')).readFileSync(join(ROOT, 'config', 'models.json'), 'utf8'));
+registry.providers.openai.base_url = `http://127.0.0.1:${fakeOpenAI.port}/v1`;
+writeFileSync(join(tmp, 'models.json'), JSON.stringify(registry));
+const baseEnv = { ...process.env, PATH: `${join(tmp, 'bin')}:${process.env.PATH}`, PYTHONPATH: ROOT,
+  FAULTSEEKER_WORKER_MODULE: 'tests.fake_worker', FAULTSEEKER_ALLOW_PRIVATE_RPC: '1', FAULTSEEKER_OLLAMA_MODELS: 'llama3',
+  FAKE_DELAY: '0.3', OPENAI_API_KEY: '', FAULTSEEKER_MODELS_FILE: join(tmp, 'models.json'),
+  CODEX_PROXY_BASE_URL: `http://127.0.0.1:${fakeCodex.port}/v1`, CODEX_PROXY_MODEL: 'codex-exact',
+  MERCURY_BASE_URL: `http://127.0.0.1:${closedPort}/v1`, MERCURY_MODEL: 'mercury-exact' };
+const launch = (p, dataDir, extra = {}) => spawn(process.env.PYTHON || 'python3', ['-m', 'uvicorn', 'faultseeker.server.app:app', '--port', String(p), '--log-level', 'warning'],
+  { cwd: ROOT, env: { ...baseEnv, FAULTSEEKER_DATA_DIR: join(tmp, dataDir), ...extra }, stdio: ['ignore', 'inherit', 'inherit'] });
+const server = launch(port, 'data');
+const server2 = launch(port2, 'data2', { FAULTSEEKER_ACCESS_CODE: ACCESS_CODE });   // the access-protected instance
+const stop = () => { for (const s of [server, server2]) { try { s.kill('SIGTERM'); } catch { /* already gone */ } } fakeOpenAI.close(); fakeCodex.close(); };
 process.on('exit', stop);
-for (let i = 0; i < 100; i++) { try { if ((await fetch(BASE + 'api/health')).ok) break; } catch { /* not up yet */ } await sleep(200); }
+for (const b of [BASE, BASE2]) for (let i = 0; i < 100; i++) { try { if ((await fetch(b + 'api/health')).ok) break; } catch { /* not up yet */ } await sleep(200); }
 
 // ---------- page helper ----------
 const pages = [];
-async function openPage(hashPart = '', { fetchImpl } = {}) {
-  const errors = [];
-  const dom = await JSDOM.fromURL(BASE + hashPart, {
-    runScripts: 'dangerously', resources: 'usable', pretendToBeVisual: true,
+const jarFetch = (jar, base) => async (u, o = {}) => {       // a browser-like fetch: cookies and Origin on writes
+  const url = new URL(u, base);
+  const headers = { ...(o.headers || {}) };
+  const cookie = jar.getCookieStringSync(url.href);
+  if (cookie) headers.cookie = cookie;
+  if (o.method && o.method !== 'GET') headers.origin = new URL(base).origin;
+  const res = await fetch(url, { ...o, headers, redirect: 'manual' });
+  for (const sc of res.headers.getSetCookie()) jar.setCookieSync(sc, url.href);
+  return res;
+};
+async function openPage(hashPart = '', { fetchImpl, base = BASE, jar } = {}) {
+  const errors = []; const navigations = [];
+  const virtualConsole = new VirtualConsole();
+  virtualConsole.on('jsdomError', (e) => { if (/navigation/.test(e.message)) navigations.push(1); else errors.push(e.message); });
+  const dom = await JSDOM.fromURL(base + hashPart, {
+    runScripts: 'dangerously', resources: 'usable', pretendToBeVisual: true, virtualConsole, ...(jar ? { cookieJar: jar } : {}),
     beforeParse(w) {
-      w.fetch = fetchImpl ? (u, o) => fetchImpl(new URL(u, BASE), o) : (u, o) => fetch(new URL(u, BASE), o);
+      w.fetch = fetchImpl ? (u, o) => fetchImpl(new URL(u, base), o) : jar ? jarFetch(jar, base) : (u, o) => fetch(new URL(u, base), o);
       w.confirm = () => true; w.scrollTo = () => {}; w.Element.prototype.scrollIntoView = () => {};   // not implemented by jsdom
       w.addEventListener('error', (e) => errors.push(e.message));
     },
   });
   const w = dom.window, d = w.document;
   const page = {
-    w, d, errors, $: (id) => d.getElementById(id),
+    w, d, errors, navigations, $: (id) => d.getElementById(id),
     click: (el) => el.dispatchEvent(new w.MouseEvent('click', { bubbles: true })),
     type(el, v) { el.value = v; el.dispatchEvent(new w.Event('input', { bubbles: true })); },
     select(el, v) { el.value = v; el.dispatchEvent(new w.Event('change', { bubbles: true })); },
     submit() { page.$('analysis-form').dispatchEvent(new w.Event('submit', { cancelable: true, bubbles: true })); },
     goto(h) { w.location.hash = h; },
     ready: () => until(() => page.$('chain').options.length > 0),
+    loaded: () => until(() => d.readyState === 'complete'),     // deferred scripts have run (jsdom resolves fromURL earlier)
     async start(tx, { chain = 'bsc', key = true } = {}) {
       page.goto(''); await until(() => !page.$('setup').hidden);
       page.type(page.$('transaction'), tx); page.select(page.$('chain'), chain);
-      page.select(page.$('model'), 'gpt-4o-mini'); page.type(page.$('model-key'), key ? 'sk-test-' + 'k'.repeat(30) : '');
+      page.select(page.$('model'), 'gpt-4o-mini'); page.type(page.$('model-key'), key ? GOOD_KEY : '');
       page.submit();
       return until(() => w.location.hash.startsWith('#run/') && w.location.hash.slice(5));
     },
@@ -99,16 +142,17 @@ try {
   select($('chain'), 'fantom');
   ok(/limited support/.test($('notice').textContent) && /Stage 2/.test($('notice').textContent) && $('notice').dataset.kind === 'warn', 'partial network shows a sticky warning');
   select($('chain'), 'eth');
-  ok($('model').options.length === 5, 'models: 4 OpenAI + 1 Ollama');
-  ok(/Required/.test($('key-requirement').textContent) && !$('model-key').disabled, 'OpenAI model: key required');
+  ok($('model').options.length === 7, 'models: 4 OpenAI + Codex proxy + Mercury + 1 Ollama');
+  ok([...$('model').options].map((o) => o.value).includes('ollama:llama3'), 'Ollama model id carries its explicit provider prefix');
+  ok(/Required/.test($('key-requirement').textContent) && !$('model-key').disabled && /OpenAI/.test($('key-hint').textContent), 'OpenAI model: key required, hint names the provider');
   type($('transaction'), hash('abcd'));
   ok($('analyze').disabled, 'valid hash alone is not enough without a key');
-  select($('model'), 'llama3');
+  select($('model'), 'ollama:llama3');
   ok(/Not needed/.test($('key-requirement').textContent) && $('model-key').disabled && !$('analyze').disabled, 'Ollama model: key disabled, analyze enabled');
   select($('model'), 'gpt-4o-mini');
   ok($('analyze').disabled, 'back to OpenAI: disabled again');
   type($('transaction'), '0x123');
-  type($('model-key'), 'sk-test-' + 'k'.repeat(30));
+  type($('model-key'), GOOD_KEY);
   ok($('analyze').disabled, 'short hash keeps analyze disabled');
   type($('transaction'), hash('abcd'));
   ok(!$('analyze').disabled, 'valid hash + key enables analyze');
@@ -153,7 +197,7 @@ try {
 
   // ======================================================================================
   section('successful run (live progress → report → history)');
-  const secret = 'sk-test-' + 'k'.repeat(30);
+  const secret = GOOD_KEY;
   type($('model-key'), secret);
   select($('chain'), 'bsc');
   type($('transaction'), hash('abcd'));
@@ -270,6 +314,106 @@ try {
   ok(await until(() => $('running').dataset.state === 'cancelled', 20000), 'cancel → cancelled state');
   ok($('cancel').hidden && /CANCELLED/.test(d.querySelector('.running-badge').textContent) && !!d.querySelector('.error-actions'), 'cancelled UI: badge, no cancel button, way back');
   ok(!d.querySelector('.error-detail'), 'cancellation is not presented as an error');
+
+  // ======================================================================================
+  section('providers, key rules and key validation (against local fake providers)');
+  p.goto(''); await until(() => !$('setup').hidden);
+  select($('model'), 'codex-proxy');
+  ok(/Required/.test($('key-requirement').textContent) && /Codex proxy/.test($('key-hint').textContent), 'Codex proxy: key hint names Codex proxy');
+  select($('model'), 'mercury');
+  ok(/Inception Mercury/.test($('key-hint').textContent), 'Mercury: key hint names Inception Mercury');
+  const countRuns = async () => (await (await fetch(BASE + 'api/runs')).json()).runs.length;
+  const runsBefore = await countRuns();
+  select($('chain'), 'bsc'); type($('transaction'), hash('cafe'));
+
+  select($('model'), 'codex-proxy'); type($('model-key'), BAD_KEY); p.submit();
+  ok(await until(() => d.querySelector('.field-error[data-for="model-key"]')), 'invalid key → error under the key field');
+  ok(/Codex proxy/.test(d.querySelector('.field-error[data-for="model-key"]').textContent) && /rejected/.test(d.querySelector('.field-error[data-for="model-key"]').textContent), 'error names the provider that rejected it');
+  ok(await countRuns() === runsBefore && !p.w.location.hash.startsWith('#run/'), 'an invalid key starts nothing');
+
+  select($('model'), 'mercury'); type($('model-key'), GOOD_KEY); p.submit();
+  ok(await until(() => !$('notice').hidden && /Could not verify the API key/.test($('notice').textContent)), 'unreachable provider → "could not verify" notice');
+  ok($('notice').dataset.kind === 'warn' && !p.w.location.hash.startsWith('#run/') && await countRuns() === runsBefore, 'an unreachable provider is NOT treated as a valid key');
+
+  fakeOpenAI.setMode('down');
+  select($('model'), 'gpt-4o-mini'); p.submit();
+  ok(await until(() => /Could not verify the API key/.test($('notice').textContent) && !p.w.location.hash.startsWith('#run/')), 'provider outage (503) blocks the run too');
+  ok(await countRuns() === runsBefore, 'still nothing started');
+  fakeOpenAI.setMode('ok');
+
+  select($('model'), 'codex-proxy'); type($('model-key'), CODEX_KEY); p.submit();
+  ok(await until(() => p.w.location.hash.startsWith('#run/')), 'valid key at the selected provider → run starts');
+  ok(await until(() => [...$('run-details').querySelectorAll('dd')].some((x) => x.textContent === 'Codex proxy')), 'run details show the provider');
+  ok(await until(() => p.w.location.hash.startsWith('#result/'), 40000), 'run completes');
+  const keysAt = (f) => new Set(f.calls.map((c) => c.key));
+  ok([...keysAt(fakeOpenAI)].every((k) => k === GOOD_KEY), 'OpenAI endpoint only ever received the OpenAI-flow key: ' + [...keysAt(fakeOpenAI)].join(','));
+  ok([...keysAt(fakeCodex)].every((k) => k === BAD_KEY || k === CODEX_KEY) && keysAt(fakeCodex).has(CODEX_KEY), 'Codex endpoint only received Codex-flow keys');
+  ok(!fakeOpenAI.calls.some((c) => c.key === CODEX_KEY || c.key === BAD_KEY) && !fakeCodex.calls.some((c) => c.key === GOOD_KEY), 'no key was ever sent to the other provider');
+  ok(!d.body.textContent.includes(CODEX_KEY) && !$('logs').textContent.includes(CODEX_KEY), 'the key text is nowhere in the page');
+  p.goto('');
+
+  // ======================================================================================
+  section('access protection (second server, access code, cookie jar)');
+  const jar = new CookieJar();
+  const gate = await openPage('', { base: BASE2, jar });
+  await gate.loaded();
+  ok(gate.w.location.pathname === '/login' && !!gate.$('login-form') && !gate.$('setup'), 'an unauthenticated visit lands on the sign-in page, not the console');
+  ok(!gate.d.documentElement.outerHTML.includes('Analyze transaction'), 'no console content is served before sign-in');
+  ok(gate.d.querySelectorAll('script:not([src])').length === 0, 'sign-in page has no inline scripts');
+  gate.type(gate.$('code'), 'not the code');
+  gate.$('login-form').dispatchEvent(new gate.w.Event('submit', { cancelable: true, bubbles: true }));
+  ok(await until(() => !gate.$('login-error').hidden && /Incorrect access code/.test(gate.$('login-error').textContent)), 'wrong code → clear error');
+  ok(gate.$('code').value === '' && gate.$('code').getAttribute('aria-invalid') === 'true' && jar.getCookiesSync(BASE2).length === 0, 'field cleared, no cookie issued');
+  gate.type(gate.$('code'), ACCESS_CODE);
+  gate.$('login-form').dispatchEvent(new gate.w.Event('submit', { cancelable: true, bubbles: true }));
+  ok(await until(() => jar.getCookiesSync(BASE2).some((c) => c.key === 'fs_session')), 'correct code → session cookie');
+  const cookie = jar.getCookiesSync(BASE2).find((c) => c.key === 'fs_session');
+  ok(cookie.httpOnly && String(cookie.sameSite).toLowerCase() === 'strict', 'cookie is HttpOnly and SameSite=Strict');
+  ok(gate.navigations.length >= 1, 'page navigates to the console after signing in');
+  gate.close();
+
+  const inside = await openPage('', { base: BASE2, jar });
+  ok(await inside.ready() && !!inside.$('signout'), 'signed in: console loads and shows Sign out');
+  ok(inside.$('analyze').disabled && inside.$('model').options.length === 7, 'console works under protection');
+  const keep = await inside.start(hash('beef'), { chain: 'bsc' });
+  ok(!!keep && await until(() => inside.w.location.hash.startsWith('#result/'), 40000), 'a full run works through the protected API (polling, results)');
+  inside.click(inside.$('signout'));
+  ok(await until(() => !jar.getCookiesSync(BASE2).some((c) => c.key === 'fs_session' && c.expiryTime && c.expiryTime() > Date.now()) || jar.getCookiesSync(BASE2).length === 0), 'Sign out clears the cookie');
+  ok(await until(() => inside.navigations.length >= 1), 'and returns to the sign-in page');
+  ok((await fetch(BASE2 + 'api/runs', { headers: { cookie: `fs_session=${cookie.value}` } })).status === 401, 'the old session token no longer works (revoked server-side)');
+  inside.close();
+
+  // a session that disappears while the console is open sends the user to sign in
+  const jar2 = new CookieJar();
+  const lg = await openPage('', { base: BASE2, jar: jar2 });
+  await lg.loaded();
+  lg.type(lg.$('code'), ACCESS_CODE);
+  lg.$('login-form').dispatchEvent(new lg.w.Event('submit', { cancelable: true, bubbles: true }));
+  await until(() => jar2.getCookiesSync(BASE2).length > 0); lg.close();
+  const live = await openPage('', { base: BASE2, jar: jar2 });
+  await live.ready();
+  await fetch(BASE2 + 'auth/logout', { method: 'POST', headers: { cookie: jar2.getCookieStringSync(BASE2) } });   // revoke behind its back
+  const navBefore = live.navigations.length;
+  live.click(live.$('history-button'));
+  ok(await until(() => live.navigations.length > navBefore), 'an expired session sends the user back to sign in');
+  ok(live.$('notice').hidden, 'without a confusing error message');
+  live.close();
+
+  // rate limiting is shown to the user
+  const jar3 = new CookieJar();
+  const brute = await openPage('', { base: BASE2, jar: jar3 });
+  await brute.loaded();
+  for (let i = 0; i < 6; i++) {
+    brute.type(brute.$('code'), 'wrong' + i);
+    brute.$('login-form').dispatchEvent(new brute.w.Event('submit', { cancelable: true, bubbles: true }));
+    await until(() => !brute.$('login-error').hidden && !brute.$('login-submit').disabled); await sleep(60);
+  }
+  ok(/Too many failed attempts/.test(brute.$('login-error').textContent), 'repeated wrong codes → rate-limit message: ' + brute.$('login-error').textContent);
+  brute.type(brute.$('code'), ACCESS_CODE);
+  brute.$('login-form').dispatchEvent(new brute.w.Event('submit', { cancelable: true, bubbles: true }));
+  await sleep(500);
+  ok(jar3.getCookiesSync(BASE2).length === 0, 'even the right code is refused while locked out');
+  brute.close();
 
   // ======================================================================================
   section('server unreachable');

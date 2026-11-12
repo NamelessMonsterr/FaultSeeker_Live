@@ -35,7 +35,7 @@ def test_secrets_never_leave_the_worker_environment(client, monkeypatch):
     assert data["run"]["rpc_mode"] == "custom" and data["run"]["key_source"] == "user"
     blob = json.dumps(data) + all_stored_text(client) + json.dumps(client.get("/api/runs").json())
     assert KEY not in blob and rpc_key not in blob and "rpc.example/v3" not in blob
-    assert any("env check" in line and "••••" in line for line in data["logs"])
+    assert any("env check" in line and "OPENAI_API_KEY=••••" in line for line in data["logs"])
 
 
 def test_server_side_keys_are_redacted_too(make_client):
@@ -46,7 +46,7 @@ def test_server_side_keys_are_redacted_too(make_client):
     data = wait_final(c, rid)
     assert data["run"]["key_source"] == "server"
     line = next(l for l in data["logs"] if "env check" in l)
-    assert "sk-server" not in line and "ETHERSCANSECRET999" not in line
+    assert "sk-server" not in line and "ETHERSCANSECRET999" not in line and "OPENAI_API_KEY=••••" in line
     assert "sk-server" not in all_stored_text(c)
 
 
@@ -59,10 +59,12 @@ def test_user_key_overrides_server_key_for_the_worker(make_client):
 def test_ollama_model_needs_no_key(make_client):
     c = make_client(FAULTSEEKER_OLLAMA_MODELS="llama3.1:8b")
     models = {m["id"]: m for m in c.get("/api/config").json()["models"]}
-    assert models["llama3.1:8b"]["provider"] == "ollama" and models["llama3.1:8b"]["key_required"] is False
-    rid = start_run(c, mode="llama3.1:8b", model_key="sk-ignored-" + "z" * 20)
+    entry = models["ollama:llama3.1:8b"]          # explicit provider prefix in the id, not a guess from the name
+    assert entry["provider"] == "ollama" and entry["key_required"] is False and entry["key_optional"] is False
+    rid = start_run(c, mode="ollama:llama3.1:8b", model_key="sk-ignored-" + "z" * 20)
     data = wait_final(c, rid)
-    assert data["run"]["state"] == "completed" and data["run"]["key_source"] == "none"
+    assert data["run"]["state"] == "completed" and data["run"]["key_source"] == "none" and data["run"]["provider"] == "ollama"
+    assert c.keycheck.calls == [], "no key check is made for a provider that takes no key"
 
 
 def test_only_one_run_at_a_time_and_cancel_kills_grandchildren(client, monkeypatch, tmp_path):
@@ -89,13 +91,13 @@ def test_only_one_run_at_a_time_and_cancel_kills_grandchildren(client, monkeypat
     wait_final(client, start_run(client))   # a new run is accepted after cancel
 
 
-def test_concurrency_limit_is_configurable(make_client, monkeypatch):
-    c = make_client(FAULTSEEKER_MAX_CONCURRENT=2, FAKE_MODE="hang")
-    a, b = start_run(c), start_run(c)
+def test_concurrency_is_fixed_at_one_even_if_asked_otherwise(make_client, monkeypatch):
+    c = make_client(FAULTSEEKER_MAX_CONCURRENT=5, FAKE_MODE="hang")
+    first = start_run(c)
     assert c.post("/api/runs", json=payload()).status_code == 409
-    for rid in (a, b):
-        c.post(f"/api/runs/{rid}/cancel")
-        wait_final(c, rid)
+    assert c.get("/api/config").json()["limits"]["concurrent_runs"] == 1
+    c.post(f"/api/runs/{first}/cancel")
+    wait_final(c, first)
 
 
 def test_timeout_stops_the_run(make_client):
@@ -191,3 +193,40 @@ def test_old_runs_are_pruned(make_client):
         ids.append(rid)
     kept = [r["id"] for r in c.get("/api/runs").json()["runs"]]
     assert len(kept) <= 4 and ids[-1] in kept and ids[0] not in kept
+
+
+@pytest.mark.parametrize("mode,code,hint_word", [
+    ("param_rejected", "provider_parameter_rejected", "params"),
+    ("not_found", "model_not_found", "model ID"),
+    ("forbidden", "provider_forbidden", "permissions"),
+    ("unreachable", "provider_unreachable", "retried"),
+])
+def test_provider_failures_stop_the_run_quickly_with_an_actionable_reason(client, monkeypatch, mode, code, hint_word):
+    monkeypatch.setenv("FAKE_MODE", mode)
+    t = time.time()
+    data = wait_final(client, start_run(client))
+    assert data["run"]["state"] == "failed" and data["run"]["error"]["code"] == code
+    assert hint_word in data["run"]["error"]["hint"] and time.time() - t < 15, "fatal provider errors must not wait for the pipeline"
+
+
+def test_a_couple_of_connection_errors_are_tolerated_but_flagged(client, monkeypatch):
+    monkeypatch.setenv("FAKE_MODE", "unreachable")
+    monkeypatch.setenv("FAKE_CONNECTION_ERRORS", "2")
+    # two failures are below the limit: the stand-in then carries on, and the report says model calls failed
+    monkeypatch.setenv("FAKE_MODE", "unreachable_then_ok")
+    data = wait_final(client, start_run(client))
+    assert data["run"]["state"] == "completed"
+
+
+def test_a_bad_request_that_is_not_about_a_parameter_does_not_fail_the_run(client, monkeypatch):
+    monkeypatch.setenv("FAKE_MODE", "bad_request_other")
+    rid = start_run(client)
+    data = wait_final(client, rid)
+    assert data["run"]["state"] == "completed"
+    assert any("model request(s) failed" in w for w in client.get(f"/api/runs/{rid}/result").json()["warnings"])
+
+
+def test_provider_not_configured_is_reported_from_the_worker(client, monkeypatch):
+    monkeypatch.setenv("FAKE_MODE", "provider_config")
+    err = wait_final(client, start_run(client))["run"]["error"]
+    assert err["code"] == "provider_not_configured" and "CODEX_PROXY_MODEL" in err["message"] and "operator" in err["hint"]

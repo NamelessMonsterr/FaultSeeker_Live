@@ -63,6 +63,27 @@ def main():
     if mode == "quota":
         say("openai.RateLimitError: Error code: 429 - {'error': {'code': 'insufficient_quota'}}")
         time.sleep(30)
+    errors = {
+        "param_rejected": "openai.BadRequestError: Error code: 400 - {'error': {'message': \"Unsupported parameter: 'temperature' is not supported with this model.\", 'param': 'temperature'}}",
+        "not_found": "openai.NotFoundError: Error code: 404 - {'error': {'message': 'The model `x` does not exist'}}",
+        "forbidden": "openai.PermissionDeniedError: Error code: 403 - {'error': {'message': 'Forbidden'}}",
+    }
+    if mode in errors:
+        say("Traceback (most recent call last):")
+        say(errors[mode])
+        time.sleep(30)
+    if mode in ("unreachable", "unreachable_then_ok"):
+        count = 3 if mode == "unreachable" else 2
+        for _ in range(count):
+            say("openai.APIConnectionError: Connection error.")
+        if mode == "unreachable":
+            time.sleep(30)
+    if mode == "bad_request_other":      # a 400 that is about one request (too long), not about a parameter: not fatal
+        say("openai.BadRequestError: Error code: 400 - {'error': {'message': 'maximum context length exceeded', 'code': 'context_length_exceeded'}}")
+    if mode == "provider_config":
+        marker({"event": "error", "type": "ProviderConfigError",
+                "message": "Model 'codex-proxy' is not configured: set CODEX_PROXY_MODEL to the exact model ID."})
+        sys.exit(1)
     if mode == "source_mentions_error":
         # Words that look like a provider error but are only logged contract text must not fail the run.
         say("functions to be analyzed: {'check': 'AuthenticationError invalid_api_key insufficient_quota'}")
@@ -80,8 +101,15 @@ def main():
     say("         [1/2] Analyzing mint...")
     say("         [2/2] Analyzing burn (created contract param)...")
     say("   ✓ Function analysis completed")
-    say("env check key=" + os.environ.get("OPENAI_API_KEY", "none") + " rpc=" + os.environ.get("FAULTSEEKER_RPC_URL", "none")
-        + " etherscan=" + os.environ.get("ETHERSCAN_API_KEY", "none"))
+    tracked = ["OPENAI_API_KEY", "CODEX_PROXY_API_KEY", "MERCURY_API_KEY", "ETHERSCAN_API_KEY", "FAULTSEEKER_ACCESS_CODE",
+               "FAULTSEEKER_SESSION_SECRET", "FAULTSEEKER_RPC_URL", "FAULTSEEKER_ISOLATED_RUN"]
+    # Deliberately print raw values so tests can prove the server redacts them before storing or serving the log.
+    say("env check " + " ".join(f"{n}={os.environ.get(n, 'unset')}" for n in tracked))
+    import hashlib
+    report = {n: (hashlib.sha256(os.environ[n].encode()).hexdigest() if n in os.environ else None) for n in tracked}
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    with open(os.path.join(os.path.dirname(out), "env.json"), "w") as fh:
+        json.dump(report, fh)
 
     if mode == "bad_rank":
         ranked = ["An error occurred."]

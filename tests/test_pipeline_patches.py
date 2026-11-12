@@ -1,4 +1,5 @@
 """The small changes made to the original pipeline modules. Needs the project's full requirements."""
+import json
 import os
 import stat
 import subprocess
@@ -27,27 +28,29 @@ def script(path: Path, body: str) -> Path:
 
 @pytest.fixture()
 def fake_cast(tmp_path, monkeypatch):
-    """A `cast` that records its arguments and counts calls. Behaviour is set with CAST_MODE."""
+    """A `cast` that records its arguments and counts calls. Failure is switched on by creating a file named fail next to it."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     script(bin_dir / "cast", f'echo "$@" >> "{tmp_path}/argv.log"\n'
-           'if [ "$CAST_MODE" = fail ]; then echo "boom line 1" >&2; echo "dns error: could not resolve" >&2; exit 1; fi\n'
+           'if [ -f "${0%/*}/fail" ]; then echo "boom line 1" >&2; echo "dns error: could not resolve" >&2; exit 1; fi\n'
            'echo "Traces:"; echo "  [18] 0x5FbDB2315678afecb367f032d93F642f64180aa3::2fbebd38(00)"\n')
     monkeypatch.setenv("PATH", str(bin_dir))
     monkeypatch.delenv("FAULTSEEKER_RPC_URL", raising=False)
-    monkeypatch.delenv("CAST_MODE", raising=False)
     return SimpleNamespace(argv=tmp_path / "argv.log", cache=str(tmp_path / "replay"))
 
 
 def calls(fake):
-    return fake.argv.read_text().splitlines() if fake.argv.exists() else []
+    """Only the replay invocations (the replayer also asks cast for its version first)."""
+    lines = fake.argv.read_text().splitlines() if fake.argv.exists() else []
+    return [l for l in lines if l.startswith("run ")]
 
 
 def test_replay_uses_the_foundry_alias_by_default(fake_cast, capsys):
     out = TransactionReplayer(fake_cast.cache).run(TX, "linea")
     assert "Traces:" in out
     assert calls(fake_cast) == [f"run --quick {TX} --rpc-url linea"]
-    assert "--rpc-url linea" in capsys.readouterr().out
+    shown = capsys.readouterr().out
+    assert "--rpc-url linea" in shown and "cast version:" in shown
 
 
 def test_replay_uses_a_custom_endpoint_without_printing_it(fake_cast, monkeypatch, capsys):
@@ -66,7 +69,7 @@ def test_replay_result_is_cached(fake_cast):
 
 
 def test_replay_failure_is_reported_and_not_cached(fake_cast, monkeypatch, capsys):
-    monkeypatch.setenv("CAST_MODE", "fail")
+    (Path(fake_cast.argv).parent / "bin" / "fail").write_text("")     # cast runs with a scrubbed environment, so a file is the switch
     r = TransactionReplayer(fake_cast.cache)
     assert not r.run(TX, "eth")
     printed = capsys.readouterr().out
@@ -180,3 +183,74 @@ def test_real_pipeline_reports_a_stage1_failure_end_to_end(tmp_path):
     assert "Explorer request failed (curl exit 6)" in out
     assert "cannot unpack" not in proc.stderr + out
     assert not (tmp_path / "out" / "r.json").exists()
+
+
+def test_cast_runs_in_a_minimal_environment_with_an_empty_home(tmp_path, monkeypatch):
+    """OFFLINE: a stand-in `cast` dumps the environment it receives."""
+    dump = tmp_path / "env.txt"
+    bin_dir = tmp_path / "envbin"
+    bin_dir.mkdir()
+    script(bin_dir / "cast", f'env > "{dump}"; ls -A "$HOME" >> "{dump}.home"; echo "Traces:"\n')
+    polluted = tmp_path / "realhome"
+    (polluted / ".foundry" / "cache").mkdir(parents=True)
+    (polluted / ".foundry" / "cache" / "signatures").write_text("{}")
+    for k, v in {"PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(polluted), "ETHERSCAN_API_KEY": "etherscan-secret",
+                 "OPENAI_API_KEY": "sk-openai-secret", "CODEX_PROXY_API_KEY": "codex-secret", "MERCURY_API_KEY": "mercury-secret",
+                 "FAULTSEEKER_ACCESS_CODE": "access-code-secret", "FOUNDRY_ETH_RPC_URL": "http://evil", "FOUNDRY_PROFILE": "x",
+                 "HTTPS_PROXY": "http://proxy.local:3128", "LANG": "C.UTF-8"}.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.delenv("FAULTSEEKER_CAST_OFFLINE", raising=False)
+    TransactionReplayer.transaction_replay(TX, "eth")
+    env = dict(l.split("=", 1) for l in dump.read_text().splitlines() if "=" in l)
+    assert env["HOME"] != str(polluted) and env["HOME"].startswith(("/tmp", str(tmp_path.parent), "/var")) or "faultseeker-cast-home-" in env["HOME"]
+    assert "faultseeker-cast-home-" in env["HOME"] and not Path(env["HOME"]).exists(), "temporary HOME is removed afterwards"
+    assert (Path(str(dump) + ".home").read_text().strip() == ""), "cast starts with an empty home: no signature cache"
+    assert env["FOUNDRY_OFFLINE"] == "true" and env["HTTPS_PROXY"] == "http://proxy.local:3128" and env["LANG"] == "C.UTF-8"
+    blob = json.dumps(env)
+    for leaked in ("etherscan-secret", "sk-openai-secret", "codex-secret", "mercury-secret", "access-code-secret", "evil", "FOUNDRY_PROFILE"):
+        assert leaked not in blob, leaked
+    assert not [k for k in env if k.startswith(("FOUNDRY_ETH", "FOUNDRY_PROFILE", "ETHERSCAN", "OPENAI", "CODEX", "MERCURY", "FAULTSEEKER"))]
+
+
+def test_cast_offline_flag_can_be_turned_off(tmp_path, monkeypatch):
+    dump = tmp_path / "env.txt"
+    bin_dir = tmp_path / "envbin"
+    bin_dir.mkdir()
+    script(bin_dir / "cast", f'env > "{dump}"; echo "Traces:"\n')
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    monkeypatch.setenv("FAULTSEEKER_CAST_OFFLINE", "0")
+    TransactionReplayer.transaction_replay(TX, "eth")
+    assert "FOUNDRY_OFFLINE" not in dump.read_text()
+
+
+def _run_worker(tmp_path, model, env_extra):
+    from faultseeker.server import worker
+    bin_dir = tmp_path / "wbin"
+    bin_dir.mkdir(exist_ok=True)
+    script(bin_dir / "cast", 'echo "no route to host" >&2; exit 1\n')
+    script(bin_dir / "curl", "exit 6\n")
+    root = Path(worker.__file__).resolve().parents[2]
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("OPENAI", "CODEX", "MERCURY", "FAULTSEEKER", "OLLAMA"))}
+    env.update(PATH=str(bin_dir) + os.pathsep + os.environ["PATH"], PYTHONPATH=str(root), PYTHONUNBUFFERED="1", FAULTSEEKER_ISOLATED_RUN="1", **env_extra)
+    return subprocess.run([sys.executable, "-m", "faultseeker.server.worker", "--hash", TX, "--chain", "eth", "--model", model,
+                           "--out", str(tmp_path / "out" / "r.json")], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120)
+
+
+def test_real_worker_reports_an_unconfigured_provider_before_doing_any_work(tmp_path):
+    proc = _run_worker(tmp_path, "codex-proxy", {})
+    assert proc.returncode == 1
+    assert '"type": "ProviderConfigError"' in proc.stdout and "CODEX_PROXY_MODEL" in proc.stdout
+    assert "cast exited" not in proc.stdout, "no blockchain work is attempted with a model that cannot be built"
+    proc = _run_worker(tmp_path, "gpt-4o-mini", {})
+    assert '"type": "ProviderConfigError"' in proc.stdout and "OPENAI_API_KEY" in proc.stdout
+    proc = _run_worker(tmp_path, "not-in-the-registry", {"OPENAI_API_KEY": "sk-test-x"})
+    assert "not in the provider registry" in proc.stdout
+
+
+def test_real_worker_builds_agents_for_a_proxy_provider_and_reaches_stage_1(tmp_path):
+    """OFFLINE: the proxy URL is never called, because Stage 1 (fake cast/curl failing) ends the run first."""
+    env = {"CODEX_PROXY_BASE_URL": "http://127.0.0.1:9/v1", "CODEX_PROXY_MODEL": "exact-model", "CODEX_PROXY_API_KEY": "codex-" + "k" * 20}
+    proc = _run_worker(tmp_path, "codex-proxy", env)
+    assert proc.returncode == 1 and "Stage 1 (Forensics) failed to produce results" in proc.stdout
+    assert "cast exited with code 1: no route to host" in proc.stdout and "ProviderConfigError" not in proc.stdout
+    assert "codex-kkk" not in proc.stdout + proc.stderr

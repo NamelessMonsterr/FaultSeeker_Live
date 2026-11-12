@@ -1,21 +1,38 @@
+# Render Blueprint. Free plan, Docker (Python 3.11 inside the image), deployed from the main2 branch only.
+# Nothing here is a secret: every `sync: false` value is typed into the Render dashboard, never committed.
 services:
   - type: web
     name: faultseeker
     runtime: docker
-    plan: free            # analysis loads pandas/numpy plus replay traces; 512 MB plans may run out of memory
-    healthCheckPath: /api/health
+    plan: free
+    branch: main2
     autoDeploy: true
+    healthCheckPath: /api/health
     envVars:
-      - key: OPENAI_API_KEY   # optional: leave unset to require each user to bring their own key
+      # Required before sharing the URL: choose your own code (12+ characters). There is no default.
+      - key: FAULTSEEKER_ACCESS_CODE
         sync: false
-      - key: ETHERSCAN_API_KEY  # needed to download source on BSC, Base, Optimism and Avalanche
+      # Models. Leave a key unset to make every user bring their own; setting any of them REQUIRES the access code above.
+      - key: OPENAI_API_KEY
         sync: false
-      - key: FAULTSEEKER_HTTP_PROXY  # optional: route explorer page fetches through a proxy if they are blocked
+      - key: CODEX_PROXY_BASE_URL
         sync: false
-      - key: FAULTSEEKER_MAX_CONCURRENT
-        value: "1"
-    # Keeps run history and caches across deploys (paid plans only):
-    # disk:
-    #   name: faultseeker-data
-    #   mountPath: /app/data
-    #   sizeGB: 5
+      - key: CODEX_PROXY_MODEL
+        sync: false
+      - key: CODEX_PROXY_API_KEY
+        sync: false
+      - key: MERCURY_BASE_URL
+        sync: false
+      - key: MERCURY_MODEL
+        sync: false
+      - key: MERCURY_API_KEY
+        sync: false
+      - key: FAULTSEEKER_ENABLED_MODELS
+        sync: false
+      # Blockchain access.
+      - key: ETHERSCAN_API_KEY
+        sync: false
+      - key: FAULTSEEKER_HTTP_PROXY
+        sync: false
+    # Free web services have no persistent disk: run history lives in the container and is lost on restart or
+    # spin-down. Do not add a disk or a paid plan to this file.

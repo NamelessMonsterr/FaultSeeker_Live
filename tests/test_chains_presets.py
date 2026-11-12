@@ -76,7 +76,8 @@ def test_frontend_references_only_ids_that_exist_in_the_html():
     html_ids = set(re.findall(r'\bid="([^"]+)"', html))
     used = set(re.findall(r"\$\('([^']+)'\)", js)) | set(re.findall(r"getElementById\('([^']+)'\)", js))
     dynamic = {f"preset-{kind}-{c}" for kind in ("btn", "list") for c in ("eth", "bsc")}
-    missing = used - html_ids
+    created_by_script = {"signout"}          # the Sign out button exists only when access protection is on
+    missing = used - html_ids - created_by_script
     assert not missing, f"console.js uses ids missing from index.html: {missing}"
     assert dynamic <= html_ids
     for chain in ("eth", "bsc"):

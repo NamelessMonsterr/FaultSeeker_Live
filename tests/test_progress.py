@@ -77,7 +77,18 @@ def test_failure_signal_patterns():
     assert progress.EXPLORER_ERROR.match("Explorer request failed (curl exit 6): x")
     assert progress.EXPLORER_ERROR.match("Explorer page did not report a successful transaction (status: unknown).")
     codes = {code for _, code, _, _ in progress.FATAL_PATTERNS}
-    assert codes == {"model_key_rejected", "model_quota"}
+    assert codes == {"model_key_rejected", "model_quota", "provider_forbidden", "model_not_found", "provider_parameter_rejected"}
+    assert progress.CONNECTION_ERROR.match("openai.APIConnectionError: Connection error.")
+    assert progress.CONNECTION_ERROR.match("openai.APITimeoutError: Request timed out.")
+    assert not progress.CONNECTION_ERROR.match("openai.RateLimitError: Error code: 429")
+
+
+def test_parameter_rejection_is_recognised_only_for_parameter_errors():
+    rule = next(r for r in progress.FATAL_PATTERNS if r[1] == "provider_parameter_rejected")[0]
+    assert rule.search("openai.BadRequestError: Error code: 400 - Unsupported parameter: 'temperature'")
+    assert rule.search("openai.BadRequestError: Error code: 400 - {'error': {'param': 'max_tokens'}}")
+    assert rule.search("openai.UnprocessableEntityError: Error code: 422 - invalid value for parameter")
+    assert not rule.search("openai.BadRequestError: Error code: 400 - maximum context length exceeded")
 
 
 def test_stage_table_matches_what_the_frontend_expects():

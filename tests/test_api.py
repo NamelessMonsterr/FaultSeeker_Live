@@ -26,6 +26,8 @@ def test_config_contents(client):
     assert {c["id"] for c in cfg["chains"] if c["support"] == "full"} == {"eth", "bsc"}
     assert len(cfg["presets"]["eth"]) == 101 and len(cfg["presets"]["bsc"]) == 13
     assert cfg["models"][0]["key_required"] is True and sum(m["default"] for m in cfg["models"]) == 1
+    assert {m["provider"] for m in cfg["models"]} == {"openai"}      # proxies appear only when their env is set
+    assert cfg["auth"] == {"required": False}
     assert cfg["environment"]["ready"] is True and cfg["active_run"] is None
 
 
@@ -129,7 +131,7 @@ def test_environment_not_ready_blocks_runs(make_client, monkeypatch):
     assert r.json()["error"]["issues"]
 
 
-def test_env_file_keys_are_seen_by_the_server(make_client, tmp_path, monkeypatch):
+def test_env_file_keys_are_seen_by_the_server(make_client, tmp_path):
     pytest = __import__("pytest")
     pytest.importorskip("dotenv")
     env_file = tmp_path / ".env"
@@ -137,6 +139,19 @@ def test_env_file_keys_are_seen_by_the_server(make_client, tmp_path, monkeypatch
     c = make_client(FAULTSEEKER_ENV_FILE=env_file)
     try:
         assert c.get("/api/config").json()["models"][0]["key_required"] is False
-        assert c.get("/api/config").json()["environment"]["server_model_key"] is True
+        assert c.get("/api/config").json()["environment"]["server_model_keys"] == ["openai"]
     finally:
         os.environ.pop("OPENAI_API_KEY", None)
+
+
+def test_environment_report_names_the_cast_version_and_flags_untested_ones(client, monkeypatch):
+    from faultseeker.server import settings
+    monkeypatch.setattr(settings, "cast_version", lambda: "9.9.9")
+    report = settings.environment_report()
+    assert report["cast_version"] == "9.9.9" and "has not been tested" in report["notes"][0]
+    assert all(v in report["notes"][0] for v in settings.TESTED_FOUNDRY_VERSIONS)
+    for tested in settings.TESTED_FOUNDRY_VERSIONS:
+        monkeypatch.setattr(settings, "cast_version", lambda tested=tested: tested)
+        assert settings.environment_report()["notes"] == []
+    assert settings.PINNED_FOUNDRY_VERSION in settings.TESTED_FOUNDRY_VERSIONS
+    assert f"FOUNDRY_VERSION=v{settings.PINNED_FOUNDRY_VERSION}" in (settings.ROOT / "Dockerfile").read_text()

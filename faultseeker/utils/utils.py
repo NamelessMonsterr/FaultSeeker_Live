@@ -296,18 +296,25 @@ def get_function_calls_to_expand():
 
 
 def is_function_hash(function_name):
+    """True when the name is a bare 4-byte selector (as printed by cast when a signature is unknown)."""
     if function_name.startswith('0x'):
         function_name = function_name[2:]
-    function_hash_pattern = r'[0-9a-f]{8}'
-    if re.match(function_hash_pattern, function_name):
-        return True
-    return False
+    return re.fullmatch(r'[0-9a-fA-F]{8}', function_name) is not None
 
 
 def build_agent(task, model):
-    model = model.strip().lower()
+    """Build the agent for a model id from the provider registry (config/models.json).
 
-    if model.startswith('gpt'):
-        return GPTAgent(task, model)
-    else:
-        return OllmaAgent(task, model)
+    The provider is whatever the registry entry names. Nothing is guessed from the model name. Local Ollama models can
+    be given explicitly as 'ollama:<name>'.
+    """
+    from faultseeker.providers import load_registry
+    from faultseeker.utils.agent import GPTAgent, OllmaAgent
+    if not os.environ.get('FAULTSEEKER_ISOLATED_RUN'):
+        # CLI use: pick up a .env file like before. The web server isolates runs and sets the flag instead.
+        from dotenv import load_dotenv
+        load_dotenv()
+    resolved = load_registry().resolve(model)
+    if resolved.provider.type == 'ollama':
+        return OllmaAgent(task, resolved.model_id, host=resolved.host)
+    return GPTAgent(task, resolved)

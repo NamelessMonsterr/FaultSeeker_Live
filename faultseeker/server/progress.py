@@ -92,6 +92,8 @@ def parse_line(line: str) -> Optional[Update]:
 
 
 # ---- failure signals found in output -------------------------------------------------------------
+_PARAM_WORDS = (r"(unsupported|unrecognized|unknown|not supported|invalid)[^\n]{0,60}(parameter|argument|value)"
+                r"|temperature|max_tokens|max_completion_tokens|reasoning_effort|top_p")
 FATAL_PATTERNS = [
     (re.compile(r"AuthenticationError|Incorrect API key|invalid_api_key", re.I), "model_key_rejected",
      "The model provider rejected the API key.",
@@ -99,7 +101,20 @@ FATAL_PATTERNS = [
     (re.compile(r"insufficient_quota|exceeded your current quota", re.I), "model_quota",
      "The model provider reports no remaining quota for this key.",
      "Add credit or use a different key, then run again."),
+    (re.compile(r"PermissionDeniedError", re.I), "provider_forbidden",
+     "The model provider refused access for this key or location.",
+     "Check the key's permissions and the provider's access rules, then run again."),
+    (re.compile(r"NotFoundError", re.I), "model_not_found",
+     "The provider does not know the configured model ID or endpoint.",
+     "The operator should check the model ID and base URL for this provider."),
+    (re.compile(r"(BadRequestError|UnprocessableEntityError)[^\n]*(" + _PARAM_WORDS + ")", re.I), "provider_parameter_rejected",
+     "The provider rejected a request parameter configured for this model.",
+     "The run was stopped, not retried. The operator should adjust this model's params in config/models.json."),
 ]
+PROVIDER_UNREACHABLE = {"code": "provider_unreachable", "message": "The model provider could not be reached.",
+                        "hint": "Check the provider's base URL and status, then run again. Requests are not retried automatically."}
+CONNECTION_ERROR = re.compile(r"^openai\.(APIConnectionError|APITimeoutError|InternalServerError)")
+CONNECTION_ERROR_LIMIT = 3
 MODEL_ERROR = re.compile(r"^(openai\.\w*(Error|Exception)|ollama\._types\.\w*Error|httpx\.\w+Error)")
 CAST_ERROR = re.compile(r"^cast exited with code (\d+): ?(.*)$")
 EXPLORER_ERROR = re.compile(r"^(Explorer request failed|Explorer page did not report)")

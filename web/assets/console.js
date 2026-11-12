@@ -79,6 +79,12 @@
       init.body = JSON.stringify(opts.body);
     }
     const res = await fetch(path, init);
+    if (res.status === 401) {
+      // Session missing or expired: go to the sign-in page and stop this flow (the page is navigating away).
+      let code = null;
+      try { code = (await res.clone().json()).error.code; } catch (_) { /* not our JSON */ }
+      if (code === 'auth_required') { window.location.assign('/login'); await new Promise(() => {}); }
+    }
     let data = null;
     try { data = await res.json(); } catch (_) { /* empty body */ }
     return { ok: res.ok, status: res.status, data };
@@ -160,6 +166,8 @@
     const env = cfg.environment;
     setEnvironment(`${env.host.toUpperCase()} · ${env.ready ? 'READY' : 'ATTENTION'}`, env.ready ? 'ok' : 'warn',
       env.ready ? 'Replay, source download and explorer tools are available.' : env.issues.join(' '));
+    if (cfg.auth && cfg.auth.required) addSignOut();
+    if (env.ready && env.notes && env.notes.length) notify(env.notes.join(' '), { kind: 'info' });
     if (!env.ready) notify('This deployment is missing tools needed for analysis.', { kind: 'warn', detail: env.issues.join(' '), sticky: true });
 
     const chain = $('chain');
@@ -180,6 +188,15 @@
     buildDatalist();
     updateKeyRequirement();
     validateForm();
+  }
+
+  function addSignOut() {
+    if ($('signout')) return;
+    const button = h('button', { id: 'signout', type: 'button', class: 'quiet', text: 'Sign out', onclick: async () => {
+      try { await fetch('/auth/logout', { method: 'POST', cache: 'no-store' }); } catch (_) { /* leave anyway */ }
+      window.location.assign('/login');
+    } });
+    document.querySelector('.header-actions').append(button);
   }
 
   function refreshRecent() {
@@ -245,15 +262,16 @@
   function updateKeyRequirement() {
     const m = selectedModel();
     const input = $('model-key');
-    let tag = '', hint = 'Keys are used for this request and are never saved in browser storage.';
+    const who = m ? m.provider_label : 'the selected provider';
+    const stored = 'The key is used for this request only, is sent only to ' + who + ', and is never saved in browser storage.';
+    let tag = '', hint = stored;
     if (!m) { tag = ''; }
-    else if (m.provider === 'ollama') {
-      tag = '· Not needed'; hint = 'This model runs on the Ollama host configured for the server. No key is needed.';
-    } else if (m.key_required) tag = '· Required';
-    else { tag = '· Optional'; hint = 'Leave blank to use the server key, or enter your own. Keys are used for this request and are never saved in browser storage.'; }
+    else if (m.key_required) { tag = '· Required'; hint = `Key for ${who}. ${stored}`; }
+    else if (m.key_optional) { tag = '· Optional'; hint = `Leave blank to use the server's ${who} key, or enter your own. ${stored}`; }
+    else { tag = '· Not needed'; hint = `${who} does not use an API key from this form.`; }
     $('key-requirement').textContent = tag;
     $('key-hint').textContent = hint;
-    input.disabled = !!m && m.provider === 'ollama';
+    input.disabled = !!m && !m.key_required && !m.key_optional;
     if (input.disabled) input.value = '';
     $('show-key').disabled = input.disabled;
   }
@@ -306,6 +324,14 @@
     const err = (r.data && r.data.error) || { message: `Request failed (${r.status}).` };
     if (err.code === 'busy') {
       notify(err.message, { kind: 'warn', sticky: true, actions: err.active_run ? [{ label: 'Open running analysis', onClick: () => { location.hash = `#run/${err.active_run}`; } }] : [] });
+      return;
+    }
+    if (err.code === 'key_validation_unavailable') {
+      notify('Could not verify the API key right now, so the analysis was not started.', { kind: 'warn', sticky: true, detail: err.message });
+      return;
+    }
+    if (err.code === 'server_key_rejected') {
+      notify(err.message, { kind: 'error', sticky: true });
       return;
     }
     if (err.code === 'environment_not_ready') {
@@ -436,6 +462,7 @@
       ['Transaction', shortHash(run.txn_hash), run.txn_hash],
       ['Network', chainLabel(run.chain)],
       ['Model', m ? m.label : run.model],
+      ['Provider', m ? m.provider_label : (run.provider || '—')],
       ['RPC', run.rpc_mode === 'custom' ? 'Custom endpoint' : 'Server connection'],
       ['Model key', run.key_source === 'user' ? 'Supplied for this run' : run.key_source === 'server' ? 'Server key' : 'Not used'],
       ['Run ID', run.id],

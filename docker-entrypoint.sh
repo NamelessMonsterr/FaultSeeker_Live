@@ -1,5 +1,5 @@
 #!/bin/sh
-# A mounted Render disk is root-owned; fix that, then drop privileges.
+# Fix ownership of a mounted volume (local Docker), then drop privileges. Render free plans have no disk.
 set -e
 mkdir -p /app/data /app/logs
 chown -R app:app /app/data /app/logs 2>/dev/null || true

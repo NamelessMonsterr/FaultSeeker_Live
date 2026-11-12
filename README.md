@@ -252,7 +252,7 @@ If you use FaultSeeker in your research, please cite our paper:
 
 ## 🌐 Web console
 
-> Full setup, usage, testing and Render deployment instructions: **[GUIDE.md](GUIDE.md)**.
+> Full setup, usage, testing and Render deployment instructions: **[GUIDE.md](GUIDE.md)**. Environment variable names are listed in `.env.example`.
 
 `web/` holds the FaultSeeker++ console and `faultseeker/server/` the API behind it.
 
@@ -261,22 +261,11 @@ pip install -r requirements.txt && pip install -e .
 uvicorn faultseeker.server.app:app --port 8000      # open http://localhost:8000
 ```
 
-Each analysis runs in its own subprocess, one at a time. The stepper follows real pipeline output, and model/RPC
-keys live only in that subprocess's environment and are redacted from logs. Tests: `pytest tests`.
-
-### Deploy on Render
-1. Push this repo, then create a **Blueprint** from `render.yaml` (Docker build installs Foundry's `cast`).
-2. Set `OPENAI_API_KEY` only if you want a shared key (anyone with the URL can then spend it); otherwise users enter their own.
-3. Set `ETHERSCAN_API_KEY` for BSC, Base, Optimism and Avalanche source downloads (Etherscan's paid tier).
-4. Add a disk at `/app/data` (see `render.yaml`) to keep history and caches across deploys.
-
-### Networks
-Ethereum and BNB Smart Chain are the benchmarked networks. The other networks in the selector are **beta**: wired through
-replay, explorer and source download, but not evaluated. zkSync Era is listed but disabled (not replayable with `cast`).
-Replaying older transactions needs an archive RPC with call tracing: enter one under *RPC connection*.
-Add or change networks in `faultseeker/chains.py` and `foundry.toml`.
-
-### Environment variables
-`OPENAI_API_KEY`, `ETHERSCAN_API_KEY`, `FAULTSEEKER_HTTP_PROXY`, `FAULTSEEKER_DATA_DIR`, `FAULTSEEKER_MAX_CONCURRENT`,
-`FAULTSEEKER_RUN_TIMEOUT`, `FAULTSEEKER_OPENAI_MODELS`, `FAULTSEEKER_OLLAMA_MODELS`, `FAULTSEEKER_ALLOW_PRIVATE_RPC` (local dev only).
-Drop a recorded result at `captures/capture.json` to replace the built-in reference capture.
+* **Models** come from one registry, `config/models.json` (direct OpenAI, Ollama and any OpenAI-compatible proxy), with endpoints,
+  exact model IDs and keys read from environment variables. Nothing is guessed from a model name. The CLI uses the same registry:
+  use a registry id such as `gpt-4o-mini`, or `ollama:<name>` for a local Ollama model.
+* **Access protection**: set `FAULTSEEKER_ACCESS_CODE` (12+ characters) before sharing the server. A server that holds a model key
+  refuses to start publicly without it.
+* **Foundry** is pinned to 1.9.0 in the Docker image; traces are normalised so the result does not depend on which `cast` version
+  or signature cache produced them.
+* **Render**: free plan, Docker, branch `main2` (see `render.yaml`).

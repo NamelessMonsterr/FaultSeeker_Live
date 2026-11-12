@@ -24,7 +24,7 @@ DEFAULT_CAPTURE_TX = os.environ.get(
 # Test seam: module executed in the worker subprocess.
 WORKER_MODULE = os.environ.get("FAULTSEEKER_WORKER_MODULE", "faultseeker.server.worker")
 
-MAX_CONCURRENT_RUNS = max(1, int(os.environ.get("FAULTSEEKER_MAX_CONCURRENT", "1")))
+MAX_CONCURRENT_RUNS = 1   # fixed: the pipeline writes to shared relative folders (temp2/, Implementation/)
 RUN_TIMEOUT_SECONDS = int(os.environ.get("FAULTSEEKER_RUN_TIMEOUT", "3600"))
 MAX_STORED_RUNS = int(os.environ.get("FAULTSEEKER_MAX_STORED_RUNS", "100"))
 MAX_LINE_BYTES = int(os.environ.get("FAULTSEEKER_MAX_LINE_BYTES", str(32 * 1024 * 1024)))
@@ -35,6 +35,19 @@ ALLOW_PRIVATE_RPC = os.environ.get("FAULTSEEKER_ALLOW_PRIVATE_RPC", "") == "1"
 MAX_BODY_BYTES = 16 * 1024
 
 ON_RENDER = bool(os.environ.get("RENDER"))
+# "Public" means reachable by people other than the operator. Render and the Docker image set it automatically.
+PUBLIC_MODE = ON_RENDER or os.environ.get("FAULTSEEKER_PUBLIC", "") == "1"
+ALLOW_UNSAFE_PUBLIC = os.environ.get("FAULTSEEKER_ALLOW_UNSAFE_PUBLIC", "") == "1"
+ACCESS_CODE = os.environ.get("FAULTSEEKER_ACCESS_CODE", "")
+ACCESS_CODE_MIN_LENGTH = 12
+SESSION_HOURS = float(os.environ.get("FAULTSEEKER_SESSION_HOURS", "12"))
+LOGIN_MAX_FAILURES_PER_IP = int(os.environ.get("FAULTSEEKER_LOGIN_MAX_FAILURES", "5"))
+LOGIN_WINDOW_SECONDS = int(os.environ.get("FAULTSEEKER_LOGIN_WINDOW_SECONDS", "900"))
+LOGIN_MAX_FAILURES_GLOBAL = int(os.environ.get("FAULTSEEKER_LOGIN_MAX_FAILURES_GLOBAL", "50"))
+
+# Foundry: the version the Docker image installs and the versions the test-suite has been run against.
+PINNED_FOUNDRY_VERSION = "1.9.0"
+TESTED_FOUNDRY_VERSIONS = ("1.4.4", "1.5.1", "1.9.0")
 
 from faultseeker import chains as _chains  # noqa: E402
 
@@ -43,43 +56,88 @@ CHAIN_IDS = {c["id"] for c in CHAINS if c["support"] != "unsupported"}
 # Platform names used by the benchmark ground-truth files.
 PLATFORM_TO_CHAIN = {"Ethereum": "eth", "BNBChain": "bsc"}
 
-_MODEL_LABELS = {
-    "gpt-4o-mini": "GPT-4o mini",
-    "gpt-4o": "GPT-4o",
-    "gpt-4.1-mini": "GPT-4.1 mini",
-    "gpt-4.1": "GPT-4.1",
-}
 
 
-def _csv(name: str, default: str):
-    return [m.strip() for m in os.environ.get(name, default).split(",") if m.strip()]
+from faultseeker import providers as _providers  # noqa: E402
 
 
-def server_has_openai_key() -> bool:
-    return bool(os.environ.get("OPENAI_API_KEY", "").strip())
+def registry() -> "_providers.Registry":
+    return _providers.load_registry()
+
+
+def server_held_key_envs():
+    """Names of provider key variables that hold a value in the server's own environment."""
+    return [name for name in registry().all_key_envs() if os.environ.get(name, "").strip()]
+
+
+def server_has_key(provider) -> bool:
+    return bool(provider.api_key_env and os.environ.get(provider.api_key_env, "").strip())
 
 
 def models():
-    """Selectable analysis models. Names starting with 'gpt' use OpenAI, anything else uses Ollama
-    (this mirrors faultseeker.utils.utils.build_agent)."""
-    default = os.environ.get("FAULTSEEKER_DEFAULT_MODEL", "gpt-4o-mini").strip().lower()
+    """Models offered to users, from the single registry (config/models.json) filtered by FAULTSEEKER_ENABLED_MODELS."""
+    reg = registry()
+    default = os.environ.get("FAULTSEEKER_DEFAULT_MODEL", "").strip().lower()
     out = []
-    for m in _csv("FAULTSEEKER_OPENAI_MODELS", "gpt-4o-mini,gpt-4o,gpt-4.1-mini,gpt-4.1"):
-        m = m.lower()
-        out.append({"id": m, "label": _MODEL_LABELS.get(m, m), "provider": "openai",
-                    "key_required": not server_has_openai_key()})
-    for m in _csv("FAULTSEEKER_OLLAMA_MODELS", ""):
-        out.append({"id": m.lower(), "label": f"{m} (Ollama)", "provider": "ollama", "key_required": False})
-    for item in out:
-        item["default"] = item["id"] == default
-    if out and not any(i["default"] for i in out):
-        out[0]["default"] = True
+    for spec in reg.enabled():
+        provider = reg.providers[spec.provider_id]
+        out.append({"id": spec.id, "label": spec.label, "provider": provider.id, "provider_label": provider.label,
+                    "key_required": bool(provider.api_key_env) and not server_has_key(provider),
+                    "key_optional": bool(provider.api_key_env) and server_has_key(provider)})
+    ids = [m["id"] for m in out]
+    chosen = default if default in ids else (ids[0] if ids else "")
+    for m in out:
+        m["default"] = m["id"] == chosen
     return out
+
+
+def unavailable_models():
+    """Registry models that cannot be offered, with the reason (names environment variables, never values)."""
+    enabled = {m["id"] for m in models()}
+    return [{"id": s.id, "reason": r} for s, r in registry().availability() if r and s.id not in enabled]
+
+
+def startup_problems():
+    """Fatal configuration problems. The server refuses to start while any exist."""
+    problems = []
+    try:
+        reg = registry()
+        reg.enabled()
+        held = [n for n in reg.all_key_envs() if os.environ.get(n, "").strip()]
+    except _providers.ProviderConfigError as exc:
+        return [f"Model registry: {exc}"]
+    if ACCESS_CODE and len(ACCESS_CODE) < ACCESS_CODE_MIN_LENGTH:
+        problems.append(f"FAULTSEEKER_ACCESS_CODE must be at least {ACCESS_CODE_MIN_LENGTH} characters.")
+    if held and not ACCESS_CODE and PUBLIC_MODE and not ALLOW_UNSAFE_PUBLIC:
+        problems.append(
+            "A server-held model API key is set (" + ", ".join(held) + ") but access protection is not. Anyone who finds the "
+            "URL could spend that key. Set FAULTSEEKER_ACCESS_CODE (12+ characters), or remove the server key so users bring "
+            "their own, or set FAULTSEEKER_ALLOW_UNSAFE_PUBLIC=1 to accept the risk explicitly.")
+    return problems
+
+
+_cast_version = None
+
+
+def cast_version() -> str:
+    """`cast --version` once, in a clean environment (cached). '' when cast is unavailable."""
+    global _cast_version
+    if _cast_version is None:
+        import re
+        import subprocess
+        try:
+            env = {k: v for k, v in os.environ.items() if k == "PATH"}
+            out = subprocess.run(["cast", "--version"], capture_output=True, text=True, timeout=15, env=env).stdout
+            m = re.search(r"(\d+\.\d+\.\d+)", out)
+            _cast_version = m.group(1) if m else ""
+        except (OSError, subprocess.SubprocessError):
+            _cast_version = ""
+    return _cast_version
 
 
 def environment_report():
     """What the deployed container can actually do. Cheap, no network."""
-    issues = []
+    issues, notes = [], []
     if not shutil.which("cast"):
         issues.append("Foundry 'cast' is missing, so transactions cannot be replayed.")
     if not shutil.which("getCode"):
@@ -88,12 +146,20 @@ def environment_report():
         issues.append("'curl' is missing, so explorer pages cannot be fetched.")
     if not (ROOT / "foundry.toml").exists():
         issues.append("foundry.toml is missing, so server RPC aliases are unavailable.")
-    if not models():
-        issues.append("No analysis models are configured.")
+    try:
+        if not models():
+            issues.append("No analysis models are available. See the model registry and its environment variables.")
+    except _providers.ProviderConfigError as exc:
+        issues.append(f"Model registry: {exc}")
+    version = cast_version() if shutil.which("cast") else ""
+    if version and version not in TESTED_FOUNDRY_VERSIONS:
+        notes.append(f"cast {version} has not been tested with this release (tested: {', '.join(TESTED_FOUNDRY_VERSIONS)}).")
     return {
         "host": "render" if ON_RENDER else "local",
         "ready": not issues,
         "issues": issues,
-        "server_model_key": server_has_openai_key(),
+        "notes": notes,
+        "cast_version": version,
+        "server_model_keys": sorted(p.id for p in registry().providers.values() if server_has_key(p)),
         "explorer_key": bool(os.environ.get("ETHERSCAN_API_KEY", "").strip()),
     }

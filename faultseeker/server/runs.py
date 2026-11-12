@@ -27,6 +27,9 @@ class Run:
         self.id = uuid.uuid4().hex[:16]
         self.txn_hash, self.chain, self.model = txn_hash, chain, model
         self.rpc_mode, self.key_source = rpc_mode, key_source
+        self.provider = ""
+        self.key_check = ""
+        self.connection_errors = 0
         self.state = "running"
         self.created_at = time.time()
         self.finished_at: Optional[float] = None
@@ -56,6 +59,7 @@ class Run:
     def meta(self) -> dict:
         return {
             "id": self.id, "txn_hash": self.txn_hash, "chain": self.chain, "model": self.model,
+            "provider": self.provider, "key_check": self.key_check,
             "rpc_mode": self.rpc_mode, "key_source": self.key_source, "state": self.state,
             "created_at": self.created_at, "finished_at": self.finished_at,
             "last_activity_at": self.last_activity_at, "error": self.error,
@@ -109,29 +113,54 @@ class RunManager:
             excess -= 1
 
     # -- public API --------------------------------------------------------------------------------
-    def start(self, *, txn_hash: str, chain: str, model: str, model_key: str, rpc_url: str) -> Run:
+    def start(self, *, txn_hash: str, chain: str, model: str, model_key: str, rpc_url: str,
+              key_check: str = "") -> Run:
         if len(self.active) >= settings.MAX_CONCURRENT_RUNS:
             current = next(iter(self.active.values()))
             raise BusyError(current.id, current.created_at)
-        run = Run(txn_hash, chain, model,
-                  "custom" if rpc_url else "server",
-                  "user" if model_key else ("server" if settings.server_has_openai_key() else "none"))
-        run.redactor = Redactor(model_key, rpc_url, os.environ.get("OPENAI_API_KEY", "").strip(),
-                                os.environ.get("ETHERSCAN_API_KEY", "").strip())
+        reg = settings.registry()
+        resolved = reg.resolve(model)                       # explicit provider from the registry, never guessed
+        provider = resolved.provider
+        key_env = provider.api_key_env
+        server_key = os.environ.get(key_env, "").strip() if key_env else ""
+        effective_key = model_key or server_key
+        run = Run(txn_hash, chain, resolved.id, "custom" if rpc_url else "server",
+                  "user" if model_key else ("server" if server_key else "none"))
+        run.provider = provider.id
+        run.key_check = key_check
+        run.redactor = Redactor(*self._secrets(reg, model_key, effective_key, rpc_url, resolved))
         self.runs[run.id] = run
         self.active[run.id] = run
         self._prune()
         self._write_meta(run)
         self._event(run, "Run accepted", "info")
-        env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONPATH=str(settings.ROOT))
-        if model_key:
-            env["OPENAI_API_KEY"] = model_key
+        asyncio.get_running_loop().create_task(self._supervise(run, self._worker_env(reg, provider, effective_key, rpc_url)))
+        return run
+
+    @staticmethod
+    def _secrets(reg, model_key, effective_key, rpc_url, resolved):
+        """Everything that must never appear in logs, errors, stored metadata or API responses."""
+        out = [model_key, effective_key, rpc_url, os.environ.get("ETHERSCAN_API_KEY", "").strip(), settings.ACCESS_CODE]
+        out += [os.environ.get(n, "").strip() for n in reg.all_key_envs()]      # server-held keys of every provider
+        for provider in reg.providers.values():                                   # private endpoints are sensitive too
+            if provider.type == "openai_compatible" and not provider.public_endpoint:
+                out.append((provider.base_url or os.environ.get(provider.base_url_env or "", "")).strip().rstrip("/"))
+        out.append(resolved.host or "")
+        return out
+
+    @staticmethod
+    def _worker_env(reg, provider, effective_key, rpc_url):
+        """The worker gets only what this run needs: one provider key, no access code, no other providers' keys."""
+        env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONPATH=str(settings.ROOT), FAULTSEEKER_ISOLATED_RUN="1")
+        for name in reg.all_key_envs() + ["FAULTSEEKER_ACCESS_CODE", "FAULTSEEKER_SESSION_SECRET"]:
+            env.pop(name, None)
+        if provider.api_key_env and effective_key:
+            env[provider.api_key_env] = effective_key
         if rpc_url:
             env["FAULTSEEKER_RPC_URL"] = rpc_url
         else:
             env.pop("FAULTSEEKER_RPC_URL", None)
-        asyncio.get_running_loop().create_task(self._supervise(run, env))
-        return run
+        return env
 
     def get(self, run_id: str) -> Optional[Run]:
         if not RUN_ID_RE.match(run_id or ""):
@@ -149,7 +178,7 @@ class RunManager:
         run = Run(meta["txn_hash"], meta["chain"], meta["model"], meta.get("rpc_mode", "server"),
                   meta.get("key_source", "none"))
         run.id = run_id
-        for key in ("state", "created_at", "finished_at", "last_activity_at", "error", "stages", "current", "summary"):
+        for key in ("state", "created_at", "finished_at", "last_activity_at", "error", "stages", "current", "summary", "provider", "key_check"):
             if key in meta:
                 setattr(run, key, meta[key])
         try:
@@ -296,6 +325,12 @@ class RunManager:
         if progress.EXPLORER_ERROR.match(stripped):
             run.explorer_error = stripped[:300]
             self._event(run, "Explorer lookup failed", "error")
+        if progress.CONNECTION_ERROR.match(stripped):
+            run.connection_errors += 1
+            if run.connection_errors >= progress.CONNECTION_ERROR_LIMIT and not run.fatal:
+                run.fatal = dict(progress.PROVIDER_UNREACHABLE)
+                self._event(run, run.fatal["message"], "error")
+                asyncio.get_running_loop().create_task(self._kill(run))
         if progress.MODEL_ERROR.match(stripped):
             run.model_errors += 1
             if run.model_errors == 1:
@@ -334,7 +369,18 @@ class RunManager:
                                             else f"Could not start the analysis worker: {exc}")}
             await self._kill(run)   # never leave a worker running once the run is finished
         finally:
+            await self._drain(run)
             self._finish(run, timed_out)
+
+    @staticmethod
+    async def _drain(run: Run):
+        """After a kill the output pipe may still hold unread data; reading it to EOF lets asyncio close the transport."""
+        if run.proc is None or run.proc.stdout is None:
+            return
+        try:
+            await asyncio.wait_for(run.proc.stdout.read(), timeout=2)
+        except Exception:    # noqa: BLE001 - best effort; the process is already dead
+            pass
 
     def _finish(self, run: Run, timed_out: bool):
         rc = run.proc.returncode if run.proc else None
@@ -386,6 +432,9 @@ class RunManager:
     def _classify_failure(self, run: Run, rc) -> dict:
         err = run.worker_error or {}
         message = err.get("message", "")
+        if err.get("type") == "ProviderConfigError":
+            return {"code": "provider_not_configured", "message": message,
+                    "hint": "The operator needs to set the environment variables named above, then run again."}
         if run.cast_error and ("Stage 1" in message or not message or "Forensics" in message):
             detail = run.cast_error
             hint = ("Replaying older transactions needs an archive-capable RPC. Provide one under "
