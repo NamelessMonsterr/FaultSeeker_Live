@@ -53,7 +53,9 @@ was not exercised.
 | `utils/utils.py` | `build_agent` resolves the model through the registry. **It no longer guesses the provider from a `gpt` prefix.** `is_function_hash` is anchored to a bare 8-hex selector. |
 | `data_collection/txn_replayer.py` | Runs `cast` in a minimal environment with an empty temporary `HOME`; prints the cast version; honours `FAULTSEEKER_RPC_URL`; never prints the RPC URL; prints cast's error output. |
 | `data_collection/trace_parser.py` | Normalises each call to one identity (name + selector) whether cast printed a selector or a decoded name. Nodes gain a `selector` field (old cached traces still load). |
-| `data_collection/txn_info_collector.py`, `contract_downloader.py` | Browser user agent, timeout, optional proxy and a diagnostic for explorer pages; `getCode --chainid`; optional `ETHERSCAN_API_KEY`. |
+| `data_collection/txn_info_collector.py` | **Reads the transaction over RPC** (status, block, from/to, input, logs, token transfers) and no longer fetches any explorer page by default. The old page scrape is kept behind `FAULTSEEKER_EXPLORER_FALLBACK=1` ([section 3](#rpc-first-transaction-collection)). |
+| `data_collection/rpc_client.py`, `rpc_collector.py` (new) | Standard-library JSON-RPC client (endpoint resolution, `ws`→`http`, retries, never prints the URL) and the record builder. |
+| `data_collection/contract_downloader.py`, `source_fetcher.py` (new) | Source comes from **Sourcify (free, no key)**; `getCode --chainid` with the optional `ETHERSCAN_API_KEY` is the other source. Neither found → a clear message, no crash. |
 | `core/pipeline.py` | A failed Stage 1 is reported instead of crashing with `cannot unpack NoneType`. |
 | `foundry.toml`, `requirements.txt` | RPC aliases for the extra networks; `fastapi`, `uvicorn`. |
 
@@ -66,7 +68,7 @@ form. An unknown name now stops with a message listing the known models. All fla
 
 ## 2. Quick start (local)
 
-Needs Python 3.10+ (3.11 is what Render runs), `curl`, and Foundry's `cast`.
+Needs Python 3.10+ (3.11 is what Render runs) and Foundry's `cast`. `curl` is needed only for the optional explorer fallback.
 
 ```bash
 cd FaultSeeker-main
@@ -88,8 +90,8 @@ For private local use the access code can stay empty. A first run needs an RPC t
 |---|---|---|
 | Python 3.10+ (3.11 recommended) | Runtime | `python3 --version` |
 | Foundry `cast` | Replays the transaction. **Tested: 1.4.4, 1.5.1, 1.9.0** (image pins 1.9.0; see [section 8](#8-foundry-versions-and-trace-handling)) | `cast --version` |
-| `curl` | Fetches explorer pages | `curl --version` |
-| `getCode` | Downloads verified source (installed by `requirements.txt`) | `getCode -v` |
+| `curl` | Optional: only the explorer fallback uses it | `curl --version` |
+| `getCode` | Downloads verified source from the Etherscan API (installed by `requirements.txt`); Sourcify is tried too and needs no key | `getCode -v` |
 | A model | OpenAI, an OpenAI-compatible proxy, or Ollama ([section 4](#4-model-providers)) | |
 | An archive RPC with call tracing | Replaying anything but very recent transactions | |
 
@@ -101,6 +103,15 @@ Expand **RPC connection** in the console: paste a complete endpoint, or put `{ke
 that run's worker environment and are masked in logs. The server's default endpoints are in `foundry.toml` and are non-archive.
 
 ---
+
+### RPC-first transaction collection
+Stage 1 gets everything from the RPC endpoint of the run (`FAULTSEEKER_RPC_URL`, set by the console for a custom endpoint, otherwise the
+`foundry.toml` alias for the network). `ws://` and `wss://` endpoints are used over HTTP(S) (an Infura-style `/ws/` path segment is dropped).
+Calls: `eth_getTransactionByHash`, `eth_getTransactionReceipt`, `eth_getBlockByNumber`, `eth_blockNumber`, and `eth_call` for token
+symbol/decimals. The record keeps the keys the explorer collector produced (`status`, `block_number`, `address_info`, `transaction_date`,
+`token_transfer`) and adds `input_data`, `method_selector`, `value_wei`, `logs`, `gas_consumption`. The endpoint URL is never printed or put in an
+error. Failures print `RPC collection failed (<kind>): …` and surface as `rpc_failed`, `tx_not_found` or `tx_not_successful`.
+Set `FAULTSEEKER_EXPLORER_FALLBACK=1` to also try the explorer page after a transport/lookup failure (never after a revert).
 
 ## 4. Model providers
 
@@ -209,7 +220,7 @@ URL is not protection. For anything you share, set the code.
 * **Setup:** hash, presets (benchmark exploits), network, model, key (the hint names the selected provider), optional RPC.
 * **Run view:** the tracker advances only on real pipeline output; logs are redacted; **Cancel** kills the worker and its children.
   One analysis runs at a time (a second submit offers to open the running one).
-* **Failures** are explained with a code, message and hint: `rpc_failed`, `explorer_unavailable`, `model_key_rejected`, `model_quota`,
+* **Failures** are explained with a code, message and hint: `rpc_failed`, `tx_not_found`, `tx_not_successful`, `explorer_unavailable`, `model_key_rejected`, `model_quota`,
   `provider_forbidden`, `model_not_found`, `provider_parameter_rejected`, `provider_unreachable` (3 connection errors; no retries),
   `provider_not_configured`, `timeout`, `interrupted`, `worker_crashed`, `no_forensics`, `pipeline_error`, `result_missing`.
 * **Reports:** ranked suspicious functions with evidence; `UNRANKED` and warnings appear when the model's output was unusable.
@@ -223,9 +234,9 @@ URL is not protection. For anything you share, set the code.
 | Network | id | Chain ID | Support |
 |---|---|---|---|
 | Ethereum | `eth` | 1 | **Full** (benchmarked in the paper) |
-| BNB Smart Chain | `bsc` | 56 | **Full**; source download needs `ETHERSCAN_API_KEY` |
+| BNB Smart Chain | `bsc` | 56 | **Full**; source from Sourcify, or `ETHERSCAN_API_KEY` for contracts Sourcify lacks |
 | Polygon PoS, Arbitrum One, Linea, Scroll, Gnosis, Celo, Moonbeam | `polygon` `arbitrum` `linea` `scroll` `gnosis` `celo` `moonbeam` | various | Beta |
-| Optimism, Base, Avalanche C-Chain | `optimism` `base` `avalanche` | various | Beta; source download needs `ETHERSCAN_API_KEY` |
+| Optimism, Base, Avalanche C-Chain | `optimism` `base` `avalanche` | various | Beta; source from Sourcify, or `ETHERSCAN_API_KEY` |
 | Fantom, Cronos, Aurora | `fantom` `cronos` `aurora` | 250 / 25 / 1313161554 | **Partial**: replay works; `getCode` cannot download source, so Stage 2 fails |
 | zkSync Era | `zksync` | 324 | **Not supported** (`cast` cannot replay it) |
 
@@ -298,8 +309,11 @@ never overrides real environment variables.
 | `FAULTSEEKER_ENABLED_MODELS`, `FAULTSEEKER_DEFAULT_MODEL` | all configured, first | Offered models and default |
 | `OPENAI_API_KEY`, `CODEX_PROXY_*`, `MERCURY_*` | none | See [section 4](#4-model-providers) |
 | `FAULTSEEKER_OLLAMA_MODELS`, `OLLAMA_HOST` | none | Ollama models and address |
-| `ETHERSCAN_API_KEY` | none | Source download on BSC, Base, Optimism, Avalanche |
-| `FAULTSEEKER_HTTP_PROXY` | none | Proxy for explorer page fetches |
+| `ETHERSCAN_API_KEY` | none | Optional. Widens source coverage beyond Sourcify (tried first when set) |
+| `FAULTSEEKER_EXPLORER_FALLBACK` | off | `1` lets Stage 1 try the explorer page when RPC reading fails (never when the transaction reverted) |
+| `FAULTSEEKER_HTTP_PROXY` | none | Proxy for the explorer fallback only |
+| `FAULTSEEKER_SOURCIFY_URL` | `https://sourcify.dev/server` | Sourcify server (self-hosted mirror, tests) |
+| `FAULTSEEKER_RPC_RETRIES` | 2 | Retries after the first RPC attempt (0 = single attempt) |
 | `FAULTSEEKER_CAST_OFFLINE` | 1 | `0` lets cast do online signature lookups |
 | `FAULTSEEKER_SELECTOR_TABLE` | none | Extra `{"selector": "signature"}` JSON |
 | `FAULTSEEKER_DATA_DIR` | `./data` | Run history (the pipeline cache is `./data/cache`) |
@@ -349,13 +363,19 @@ FAULTSEEKER_TEST_FOUNDRY_DIRS=/f/1.4.4:/f/1.5.1:/f/1.9.0 python -m pytest tests 
 
 | Run | Conditions | Result |
 |---|---|---|
-| 1 | **Python 3.11.15** (Render's version), full requirements, real Foundry **1.4.4 + 1.5.1 + 1.9.0** | **245 passed, 0 failed, 0 skipped, 0 warnings** |
-| 2 | Python 3.12.3, full requirements, Foundry 1.5.1 only | 237 passed, 0 failed, 0 skipped |
-| 3 | Python 3.11.15, full requirements, **no Foundry installed** | 232 passed, 0 failed, 5 skipped (4 Foundry integration + 1 `cast sig` oracle) |
-| 4 | Python 3.12.3, **minimal packages** (fastapi, uvicorn, httpx, pytest), no Foundry | 153 passed, 0 failed, 13 skipped (each names its missing dependency), 1 third-party deprecation warning |
-| 5 | Browser suite: Node v22.23.4, jsdom 31.0.0, server on Python 3.11.15, local fake providers | **148 checks passed, 0 failed** |
+| 1 | Python 3.12.3, full requirements (incl. `getSourceCode`), real Foundry **1.4.4 + 1.5.1 + 1.9.0** (1.9.0 tarball checksum matches the Dockerfile pin) | **261 passed, 0 failed, 0 skipped** |
+| 2 | Python 3.12.3, full requirements, **no Foundry on PATH** | 248 passed, 0 failed, 5 skipped (4 Foundry integration + 1 `cast sig` oracle) |
+| 3 | Python 3.12.3, **minimal packages** (fastapi, uvicorn, httpx, pytest), no Foundry | 154 passed, 0 failed, 12 skipped (each names its missing dependency), 1 third-party deprecation warning |
+| 4 | Browser suite: Node v22, jsdom 31, server on Python 3.12.3, local fake providers | **148 checks passed, 0 failed** |
 
-Key package versions in runs 1 and 5: fastapi 0.162.4, httpx 0.28.1, openai 3.49.0, pytest 9.2.0, web3 8.0.0.
+**Not re-run for this revision:** Python 3.11 (Render's version) was not available in the build environment, so the earlier Python 3.11
+runs were not repeated; the code uses only the standard library plus packages already required, but that is not a test result.
+New in this revision: `test_rpc_collection.py` (14 tests) and a local fake JSON-RPC node/Sourcify (`tests/fake_rpc.py`).
+The key proof is `test_collection_works_with_explorers_blocked_and_never_touches_them`: a `curl` stand-in that answers like Cloudflare and
+records every call is on PATH, collection succeeds for `eth` and `bsc` from the fake node, and the `curl` log stays empty.
+`test_real_worker_collects_over_rpc_when_explorers_are_blocked` shows the same through the real worker and pipeline.
+
+Key package versions are whatever pip resolved on the build date; they were not pinned for this run.
 
 ### What kind of test each is
 * **Real tools, local only:** `test_cast_integration.py` starts a local `anvil` chain and runs real `cast` (1.4.4, 1.5.1, 1.9.0) on real
@@ -376,12 +396,13 @@ Key package versions in runs 1 and 5: fastapi 0.162.4, httpx 0.28.1, openai 3.49
 | `test_access.py` | Constant-time compare; sessions, expiry, revocation; rate limiting; **every route enumerated** (only the allowlist is public); cookie flags; CSRF; CSP; **startup refusal** and its overrides; no default password in any shipped file |
 | `test_selectors.py`, `test_trace_formats.py` | Every selector re-derived by keccak and `cast sig`; identical identity and analyzer classification across 3 versions × cold/warm (incl. nested); a sensitivity test showing the formats diverge without the identity layer; the documented residual for unknown functions |
 | `test_cast_integration.py` | Real Foundry: isolated replay ignores a polluted `HOME`, direct cast does not; deterministic output; version logged; 1.9.0 decodes `transfer` while 1.4.4/1.5.1 do not, and the parsed identity is the same |
+| `test_rpc_collection.py` | Collection over RPC with explorers blocked, token-transfer shape and fund-flow arithmetic, ws→http, retries, reverted / pending / unknown hash, no URL in errors, the flagged explorer fallback, Sourcify and `getCode` source paths, real worker end to end |
 | `test_pipeline_patches.py` | Replayer environment isolation (no keys, empty HOME, offline flag), explorer/`getCode` changes, Stage 1 failure, real worker with registry models |
 | `test_runs.py`, `test_api.py`, `test_security.py`, `test_progress.py`, `test_results.py`, `test_chains_presets.py`, `test_worker.py`, `test_cli.py` | Run lifecycle, failure classification (including every provider failure), API behaviour, validation and redaction, progress parsing against the pipeline's printed lines, result normalization, networks and frontend contract, worker protocol, the original CLI |
 | `tests/ui/ui.test.mjs` | Console behaviour in jsdom: setup, networks, presets, provider-aware key hints, invalid / **unreachable** / outage key checks, full run to report, every failure type, capture, routing, busy/cancel, **access protection with a cookie jar** (sign-in, wrong code, sign-out, expired session, rate-limit message), unreachable server, untrusted text never interpreted as HTML |
 
 ### What the tests do **not** prove
-* **No real Ethereum or BSC analysis was run or verified.** No test calls a real model, a real RPC, Etherscan or any explorer.
+* **No real Ethereum or BSC analysis was run or verified.** No test calls a real model, a real RPC node, Sourcify, Etherscan or any explorer. The RPC and Sourcify paths were exercised against local fakes written from the JSON-RPC and Sourcify v2 documentation; real providers may differ (response quirks, rate limits, pruned history).
 * Stages after replay (trace analysis through ranking) were exercised only through the stand-in worker; analysis quality is untested.
 * The Docker image could not be built here (no Docker). Its Foundry download, checksum and extraction were executed as written, and the
   entrypoint was syntax-checked; the full build, Render's behaviour and the free plan's memory use are untested.
@@ -407,7 +428,7 @@ metadata and changes no branch.
    * The models you want: `CODEX_PROXY_BASE_URL`, `CODEX_PROXY_MODEL`, `MERCURY_BASE_URL`, `MERCURY_MODEL`, and optionally
      `OPENAI_API_KEY`, `CODEX_PROXY_API_KEY`, `MERCURY_API_KEY`. **If you set any key, the access code is mandatory**: the server will
      not start publicly without it. Leave keys unset to make each user bring their own.
-   * `FAULTSEEKER_ENABLED_MODELS` (optional), `ETHERSCAN_API_KEY` (BSC source), `FAULTSEEKER_HTTP_PROXY` (only if explorers block you).
+   * `FAULTSEEKER_ENABLED_MODELS` (optional), `ETHERSCAN_API_KEY` (BSC source), `FAULTSEEKER_EXPLORER_FALLBACK` / `FAULTSEEKER_HTTP_PROXY` (leave unset: Stage 1 no longer needs explorers).
 4. Wait for the build (installs Python 3.11 dependencies and the checksum-verified Foundry 1.9.0).
 5. Open the URL: you should land on the sign-in page; after signing in the badge reads **RENDER · READY**.
 
@@ -415,7 +436,7 @@ metadata and changes no branch.
 * **Memory is 512 MB and has not been measured** for this pipeline. A run killed for memory shows `worker_crashed`.
 * The service **spins down when idle** and cold-starts on the next request; a run in progress at restart becomes `interrupted`.
 * **Storage is ephemeral:** run history, the replay cache and sessions vanish on restart or redeploy.
-* Replay and explorer access depend on your RPC and on the explorer not blocking Render's network ([section 17](#17-known-limitations)).
+* Replay **and** transaction collection depend on your RPC. No explorer is contacted by default, so Etherscan/BscScan blocking Render's network no longer matters ([section 17](#17-known-limitations)).
 
 ### First-run checklist
 1. `GET /api/health` returns `{"status":"ok"}`; `/` redirects to `/login`; the wrong code is refused; the right one signs in.
@@ -459,7 +480,11 @@ The image sets `FAULTSEEKER_PUBLIC=1`, so adding a server-held key (`-e OPENAI_A
 | Function names look raw (`2fbebd38`) in a trace | Unknown to cast and to the bundled table | Add the signature via `FAULTSEEKER_SELECTOR_TABLE` |
 | Different classification between machines | Different `cast` version | Compare the `cast version:` log line; use the pinned 1.9.0 |
 | Replay fails ("missing trie node", etc.) | Non-archive RPC | Use an archive RPC with tracing |
-| `Explorer page did not report a successful transaction` | Blocked request, wrong network or reverted tx | Check the network; try `FAULTSEEKER_HTTP_PROXY` |
+| `RPC collection failed (not_found)` | The endpoint does not know the hash: wrong network, or a pruned node | Match the network and RPC chain; use an archive RPC |
+| `RPC collection failed (not_successful)` | The transaction reverted or is not mined | Only successful transactions are analyzed |
+| `RPC collection failed (rejected / unreachable)` | Bad key, rate limit, provider down | Check the RPC URL and key; use another endpoint |
+| `Contract source unavailable for 0x…` | Not verified on Sourcify and no Etherscan-API result | Set `ETHERSCAN_API_KEY`; the run continues without that contract's source |
+| `Explorer page did not report a successful transaction` | Only with `FAULTSEEKER_EXPLORER_FALLBACK=1`: blocked page | Leave the fallback off |
 | `worker_crashed` | Often out of memory on the free plan | See Technical logs; try smaller transactions |
 | Locked out of sign-in | Rate limit (429) | Wait for `Retry-After` |
 
@@ -471,7 +496,7 @@ FaultSeeker-main/
 ├── config/models.json          provider and model registry (no secrets)
 ├── faultseeker/
 │   ├── chains.py  providers.py
-│   ├── core/ forensics/ data_collection/ function_analysis/ utils/   original pipeline (utils/selectors.py is new)
+│   ├── core/ forensics/ data_collection/ function_analysis/ utils/   original pipeline (utils/selectors.py, data_collection/rpc_client.py, rpc_collector.py, source_fetcher.py are new)
 │   └── server/  app.py auth.py keycheck.py runs.py worker.py progress.py results.py presets.py security.py settings.py
 ├── web/            index.html, assets/ (console), login/ (sign-in page)
 ├── tests/          pytest suite, fixtures/, fake_worker.py, fake_provider.py, ui/ (browser suite)
@@ -484,8 +509,14 @@ FaultSeeker-main/
 
 ## 17. Known limitations
 * **No real Ethereum or BSC run has been verified**, and no real provider was called. Treat the first real runs as the actual acceptance test.
-* **Explorer scraping is fragile.** Stage 1 reads Etherscan-family HTML; a block (including of Render's network) fails Stage 1 with a clear
-  message. The durable fix is reading receipts/logs over RPC instead; not done.
+* **Explorer scraping is no longer on the default path.** Stage 1 reads the transaction over RPC. The scrape remains only behind
+  `FAULTSEEKER_EXPLORER_FALLBACK=1`, and is as fragile as before (Cloudflare returns 403 to datacenter IPs).
+* **RPC collection limits.** Token transfers come from `Transfer` events in the receipt (ERC-20, ERC-721, ERC-1155 single and batch); symbols and
+  decimals are read with `eth_call` at `latest` (a token that implements neither is shown as `ERC20` with its raw amount). Native-coin and
+  internal transfers are not part of the record, as before. The fund-flow graph is now a multigraph, so two transfers between the same pair
+  of addresses are both kept (the page scrape collapsed them). Reverted transactions are rejected, as before.
+* **Source download.** Sourcify only has contracts someone verified there; for others, set `ETHERSCAN_API_KEY`. Without either, Stage 2 has no
+  source for that contract and says so. Sourcify results were not tested against the live service (see section 11).
 * Beta and partial networks are unverified; zkSync is unsupported.
 * One analysis at a time; free-plan memory, spin-down and ephemeral storage ([section 12](#12-deploying-to-render-free-plan)).
 * A shared access code, in-memory sessions, and rate limiting that trusts the proxy's forwarded address.

@@ -40,8 +40,7 @@ class ContractDownloader:
         os.makedirs(self.cache_dir, exist_ok=True)
 
     @staticmethod
-    def get_source_code(chain, address, output_dir):
-        os.makedirs(output_dir, exist_ok=True)
+    def _run_getcode(chain, address, output_dir):
         from faultseeker import chains
         known = chains.get(chain)
         network_args = ['--chainid', str(known['chain_id'])] if known else ['-n', chain]
@@ -58,6 +57,50 @@ class ContractDownloader:
             print(f'{address}[{chain}]')
             print(ret.stderr.decode('utf-8'))
         logging.info('==========================================')
+
+    @staticmethod
+    def _has_sources(output_dir):
+        return any(f.endswith('.sol') for _, _, files in os.walk(output_dir) for f in files)
+
+    @staticmethod
+    def get_source_code(chain, address, output_dir):
+        """Download verified source into output_dir.
+
+        With ETHERSCAN_API_KEY set: getCode (Etherscan API) first, Sourcify (free, keyless) if that fails or finds
+        nothing. Without a key: Sourcify first, then a keyless getCode attempt. If nothing yields source, a clear
+        'Contract source unavailable' line is printed and the call returns without raising.
+        """
+        from faultseeker import chains
+        from faultseeker.data_collection import source_fetcher
+        os.makedirs(output_dir, exist_ok=True)
+        known = chains.get(chain)
+        has_key = bool(os.environ.get('ETHERSCAN_API_KEY', '').strip())
+
+        def via_sourcify():
+            if not known:
+                return False
+            try:
+                return source_fetcher.fetch(known['chain_id'], address, output_dir) > 0
+            except source_fetcher.SourceUnavailable as exc:
+                print(f'Sourcify lookup failed for {address}[{chain}]: {exc}', flush=True)
+                return False
+
+        def via_getcode():
+            try:
+                ContractDownloader._run_getcode(chain, address, output_dir)
+            except (subprocess.CalledProcessError, OSError) as exc:
+                detail = (getattr(exc, 'stderr', b'') or b'').decode('utf-8', 'ignore').strip()[:200] if isinstance(
+                    getattr(exc, 'stderr', None), bytes) else str(exc)[:200]
+                print(f'getCode failed for {address}[{chain}]: {detail}', flush=True)
+                return False
+            return ContractDownloader._has_sources(output_dir)
+
+        order = (via_getcode, via_sourcify) if has_key else (via_sourcify, via_getcode)
+        for attempt in order:
+            if attempt():
+                return
+        print(f'Contract source unavailable for {address}[{chain}]: it is not verified on Sourcify and the Etherscan '
+              f'API did not return it. Set ETHERSCAN_API_KEY (free tier) to widen coverage.', flush=True)
 
 
     @staticmethod

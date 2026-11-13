@@ -125,7 +125,7 @@ def test_environment_not_ready_blocks_runs(make_client, monkeypatch):
     from faultseeker.server import settings
     monkeypatch.setattr(shutil, "which", lambda name: None)
     report = settings.environment_report()
-    assert report["ready"] is False and len(report["issues"]) >= 3
+    assert report["ready"] is False and len(report["issues"]) >= 2   # cast and getCode; curl is only needed by the optional explorer fallback
     r = c.post("/api/runs", json=payload())
     assert r.status_code == 503 and r.json()["error"]["code"] == "environment_not_ready"
     assert r.json()["error"]["issues"]

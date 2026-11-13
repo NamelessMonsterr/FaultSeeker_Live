@@ -32,6 +32,11 @@ services:
       # Blockchain access.
       - key: ETHERSCAN_API_KEY
         sync: false
+      # Transaction data is read over RPC (the user's endpoint, or the foundry.toml alias). Optional, off by default:
+      # set FAULTSEEKER_EXPLORER_FALLBACK=1 to also try the explorer page when RPC reading fails; the proxy below is
+      # only used by that fallback.
+      - key: FAULTSEEKER_EXPLORER_FALLBACK
+        sync: false
       - key: FAULTSEEKER_HTTP_PROXY
         sync: false
     # Free web services have no persistent disk: run history lives in the container and is lost on restart or

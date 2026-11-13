@@ -45,6 +45,12 @@ class FunctionRanker:
             'algebraswapcallback'
         ]
 
+    @staticmethod
+    def _call_identity(call: dict) -> str:
+        """'function@address' for one call of a repeated pattern. The address is normalized; the function name is not
+        (Solidity names are case-sensitive)."""
+        return f"{call.get('function') or ''}@{(call.get('address') or '').lower()}"
+
     def rank(self, forensics_result, tx_analysis: dict) -> RankingResult:
         """
         Rank functions for detailed analysis.
@@ -78,11 +84,9 @@ class FunctionRanker:
                                (i['function'].lower() in self.filtered_functions)])
 
                     if check == 0:
-                        repeated_memo_key = ','.join([
-                            i['function'] for i in pattern['pattern']
-                            if (i['function'] is None) or
-                            (i['function'].lower() in self.filtered_functions)
-                        ])
+                        # Identity of a pattern = its ordered (function, address) sequence, multiplicity included. Depth and
+                        # repeat count are deliberately not part of it: two sightings of the same loop are duplicates.
+                        repeated_memo_key = ','.join(self._call_identity(i) for i in pattern['pattern'])
 
                         if repeated_memo_key not in repeated_patterns_memo:
                             repeated_patterns_memo.append(repeated_memo_key)
@@ -149,9 +153,15 @@ class FunctionRanker:
                             'depth': call['depth']
                         })
 
-        # Fallback: if no functions found, use function_call_loc_memo
+        # Fallback: if no functions found, use function_call_loc_memo. Same safe-function filter and the same
+        # address bookkeeping as the ordinary path above.
         if len(functions_to_be_inspected) == 0:
             for function_call in tx_analysis['function_call_loc_memo']:
+                function_name, _, address = function_call.rpartition('::')
+                if function_name.lower() in self.extended_filtered_functions:
+                    continue
+                if address and address.lower() not in [a.lower() for a in address_list]:
+                    address_list.append(address)
                 function_call_key = function_call.replace('::', '_')
                 function_call_value = {
                     'count': len(tx_analysis['function_call_loc_memo'][function_call]),

@@ -243,6 +243,7 @@ try {
     ['e8e8', /Explorer page did not report/, /explorer/i, 'FAILED'],
     ['dead', /rejected the API key/, /belongs to the selected provider/, 'FAILED'],
     ['9a07', /no remaining quota/, /credit/, 'FAILED'],
+    ['1c1c', /Stage 2 \(Function Analysis\) incomplete.*bar@0x.*iteration limit/, /provider key, quota and availability/, 'FAILED'],
     ['0bad', /stopped unexpectedly/, /technical logs/, 'FAILED'],
   ];
   for (const [prefix, msg, hintRe, badge] of failCases) {

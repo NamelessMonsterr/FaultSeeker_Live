@@ -29,9 +29,9 @@ _RULES = [
             "Replaying it with Foundry against the RPC endpoint to rebuild the call trace.",
             "Replaying transaction to rebuild its call trace")),
     (re.compile(r"Collecting transaction info"),
-     Update("collect", "Reading the explorer record",
-            "Fetching status, block and token transfers from the block explorer page.",
-            "Reading transaction record from the block explorer")),
+     Update("collect", "Reading the transaction record",
+            "Fetching status, block, addresses, input, logs and token transfers over RPC.",
+            "Reading transaction record over RPC")),
     (re.compile(r"Analyzing execution trace"),
      Update("trace", "Analyzing the execution trace",
             "The model is reading the call trace for flash loans, callbacks and repeated patterns.",
@@ -118,3 +118,4 @@ CONNECTION_ERROR_LIMIT = 3
 MODEL_ERROR = re.compile(r"^(openai\.\w*(Error|Exception)|ollama\._types\.\w*Error|httpx\.\w+Error)")
 CAST_ERROR = re.compile(r"^cast exited with code (\d+): ?(.*)$")
 EXPLORER_ERROR = re.compile(r"^(Explorer request failed|Explorer page did not report)")
+COLLECT_ERROR = re.compile(r"^RPC collection failed \((\w+)\): ?(.*)$")

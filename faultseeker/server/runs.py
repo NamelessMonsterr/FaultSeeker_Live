@@ -1,7 +1,27 @@
-"""Run lifecycle: start a worker subprocess, stream its output into progress state, persist results."""
+"""Run lifecycle: start a worker subprocess, stream its output into progress state, persist results.
+
+State machine of one run (all transitions happen on the event loop, never from another thread):
+
+    running --(finalization decides, in this precedence)--> interrupted   server shutdown        (shutting_down)
+                                                         > cancelled     cancel was accepted     (cancel_requested)
+                                                         > failed        timeout
+                                                         > failed        fatal provider error
+                                                         > completed / failed   worker outcome and its result file
+    A failure while finalizing (normalising or writing the result, classifying the failure) ends as `failed`,
+    never as a stranded `running`.
+
+Admission: a run occupies `active` from start() until finalization, on every path including errors in start() itself.
+
+Cancellation policy: the LAST decision wins ("late cancel wins"). A cancel is accepted for as long as the run is
+`running`, which includes the window after the worker exited successfully but before finalization ran; that run
+ends `cancelled` and its result is discarded. A cancel accepted before the worker exists means it is never
+spawned; one that races the spawn terminates the worker right after it appears. Repeated cancels are idempotent.
+"""
 import asyncio
 import json
+import logging
 import os
+import shutil
 import signal
 import sys
 import time
@@ -13,7 +33,13 @@ from . import progress, results, settings
 from .security import RUN_ID_RE, Redactor
 from .worker import MARKER
 
+log = logging.getLogger(__name__)
+SHUTDOWN_WAIT_SECONDS = 15
 FINAL_STATES = {"completed", "failed", "cancelled", "interrupted"}
+
+
+class ResultProcessingError(Exception):
+    """The worker succeeded but its result could not be normalised or stored."""
 
 
 class BusyError(Exception):
@@ -50,6 +76,7 @@ class Run:
         self.fatal: Optional[dict] = None
         self.cast_error = ""
         self.explorer_error = ""
+        self.collect_error = None
         self.model_errors = 0
         self.worker_error: Optional[dict] = None
         self.result_ready = False
@@ -71,6 +98,7 @@ class RunManager:
     def __init__(self):
         self.runs: Dict[str, Run] = {}
         self.active: Dict[str, Run] = {}
+        self._tasks: set = set()          # supervisor tasks, retained so shutdown() can await them
         settings.RUNS_DIR.mkdir(parents=True, exist_ok=True)
         self._mark_interrupted()
 
@@ -130,11 +158,24 @@ class RunManager:
         run.key_check = key_check
         run.redactor = Redactor(*self._secrets(reg, model_key, effective_key, rpc_url, resolved))
         self.runs[run.id] = run
-        self.active[run.id] = run
-        self._prune()
-        self._write_meta(run)
-        self._event(run, "Run accepted", "info")
-        asyncio.get_running_loop().create_task(self._supervise(run, self._worker_env(reg, provider, effective_key, rpc_url)))
+        self.active[run.id] = run               # admission is taken here ...
+        supervisor = None
+        try:
+            self._prune()
+            self._write_meta(run)
+            self._event(run, "Run accepted", "info")
+            supervisor = self._supervise(run, self._worker_env(reg, provider, effective_key, rpc_url))
+            task = asyncio.get_running_loop().create_task(supervisor)
+        except BaseException:
+            # ... so it must be given back on any failure before the supervisor owns the run.
+            self.active.pop(run.id, None)
+            self.runs.pop(run.id, None)
+            if supervisor is not None:
+                supervisor.close()
+            shutil.rmtree(self._dir(run.id), ignore_errors=True)
+            raise
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
         return run
 
     @staticmethod
@@ -232,17 +273,38 @@ class RunManager:
         return out
 
     async def cancel(self, run: Run) -> bool:
+        """Accept a cancellation. True while the run is still running (repeat calls are no-ops), False once finished."""
         if run.state != "running":
             return False
+        if run.cancel_requested:
+            return True                                      # idempotent: no second event, no second kill
         run.cancel_requested = True
         self._event(run, "Cancellation requested", "warn")
-        await self._kill(run)
+        await self._kill(run)                                # no process yet? _supervise checks the flag around spawn
         return True
 
     async def shutdown(self):
-        for run in list(self.active.values()):
+        runs = list(self.active.values())
+        for run in runs:
             run.shutting_down = True
-            await self._kill(run)
+        await asyncio.gather(*(self._kill(run) for run in runs), return_exceptions=True)
+        tasks = [t for t in self._tasks if not t.done()]
+        if tasks:
+            _, pending = await asyncio.wait(tasks, timeout=SHUTDOWN_WAIT_SECONDS)
+            for task in pending:                             # a supervisor that is stuck must not hang shutdown
+                task.cancel()
+            if pending:
+                await asyncio.wait(pending, timeout=5)
+
+    def _spawn_kill(self, run: Run):
+        """Kill from synchronous code (line handlers). The task is retained so shutdown() can await it."""
+        task = asyncio.get_running_loop().create_task(self._kill(run))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    @staticmethod
+    def _stop_requested(run: Run) -> bool:
+        return run.cancel_requested or run.shutting_down
 
     # -- supervision -------------------------------------------------------------------------------
     async def _kill(self, run: Run):
@@ -259,6 +321,10 @@ class RunManager:
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
+                return
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            except asyncio.TimeoutError:
                 pass
 
     def _event(self, run: Run, message: str, level: str = "info"):
@@ -322,6 +388,10 @@ class RunManager:
         if m:
             run.cast_error = m.group(2)[:400]
             self._event(run, "Transaction replay reported an error", "error")
+        m = progress.COLLECT_ERROR.match(stripped)
+        if m:
+            run.collect_error = (m.group(1), m.group(2)[:300])
+            self._event(run, "Transaction record could not be read over RPC", "error")
         if progress.EXPLORER_ERROR.match(stripped):
             run.explorer_error = stripped[:300]
             self._event(run, "Explorer lookup failed", "error")
@@ -330,7 +400,7 @@ class RunManager:
             if run.connection_errors >= progress.CONNECTION_ERROR_LIMIT and not run.fatal:
                 run.fatal = dict(progress.PROVIDER_UNREACHABLE)
                 self._event(run, run.fatal["message"], "error")
-                asyncio.get_running_loop().create_task(self._kill(run))
+                self._spawn_kill(run)
         if progress.MODEL_ERROR.match(stripped):
             run.model_errors += 1
             if run.model_errors == 1:
@@ -340,7 +410,7 @@ class RunManager:
             if progress.MODEL_ERROR.match(stripped) and pattern.search(stripped) and not run.fatal:
                 run.fatal = {"code": code, "message": message, "hint": hint}
                 self._event(run, message, "error")
-                asyncio.get_running_loop().create_task(self._kill(run))
+                self._spawn_kill(run)
 
     async def _supervise(self, run: Run, env: dict):
         out_path = self._dir(run.id) / "result.raw.json"
@@ -348,20 +418,31 @@ class RunManager:
                "--chain", run.chain, "--model", run.model, "--out", str(out_path)]
         timed_out = False
         try:
-            run.proc = await asyncio.create_subprocess_exec(
-                *cmd, cwd=str(settings.ROOT), env=env, stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT, start_new_session=True, limit=settings.MAX_LINE_BYTES)
+            if not self._stop_requested(run):               # cancelled / shutting down before spawn: never launch
+                run.proc = await asyncio.create_subprocess_exec(
+                    *cmd, cwd=str(settings.ROOT), env=env, stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT, start_new_session=True, limit=settings.MAX_LINE_BYTES)
 
-            async def pump():
-                async for raw in run.proc.stdout:
-                    self._handle_line(run, raw.decode("utf-8", errors="replace"))
-                await run.proc.wait()
+                async def pump():
+                    async for raw in run.proc.stdout:
+                        self._handle_line(run, raw.decode("utf-8", errors="replace"))
+                    await run.proc.wait()
 
+                if self._stop_requested(run):               # the request arrived while the process was being spawned
+                    await self._kill(run)
+                else:
+                    try:
+                        await asyncio.wait_for(pump(), timeout=settings.RUN_TIMEOUT_SECONDS)
+                    except asyncio.TimeoutError:
+                        timed_out = True
+                        await self._kill(run)
+        except asyncio.CancelledError:                      # the supervisor itself was cancelled (loop teardown)
+            run.shutting_down = True
             try:
-                await asyncio.wait_for(pump(), timeout=settings.RUN_TIMEOUT_SECONDS)
-            except asyncio.TimeoutError:
-                timed_out = True
                 await self._kill(run)
+            except Exception:    # noqa: BLE001
+                pass
+            raise
         except Exception as exc:  # noqa: BLE001
             started = run.proc is not None
             run.worker_error = {"type": type(exc).__name__,
@@ -369,7 +450,10 @@ class RunManager:
                                             else f"Could not start the analysis worker: {exc}")}
             await self._kill(run)   # never leave a worker running once the run is finished
         finally:
-            await self._drain(run)
+            try:
+                await self._drain(run)
+            except BaseException:    # noqa: BLE001 - even a cancellation here must not skip finalization
+                pass
             self._finish(run, timed_out)
 
     @staticmethod
@@ -383,8 +467,18 @@ class RunManager:
             pass
 
     def _finish(self, run: Run, timed_out: bool):
-        rc = run.proc.returncode if run.proc else None
+        """Always ends with a terminal state and releases admission, whatever goes wrong while finalizing."""
         run.finished_at = time.time()
+        try:
+            self._decide(run, timed_out)
+        except Exception as exc:  # noqa: BLE001
+            self._finalization_failed(run, exc)
+        finally:
+            self.active.pop(run.id, None)
+            self._persist(run)
+
+    def _decide(self, run: Run, timed_out: bool):
+        rc = run.proc.returncode if run.proc else None
         if run.shutting_down:
             run.state = "interrupted"
             run.error = {"code": "interrupted", "message": "The server restarted while this run was in progress.",
@@ -407,14 +501,19 @@ class RunManager:
                 run.error = {"code": "result_missing", "message": "The analysis finished but its result could not be read.",
                              "hint": "Check the technical logs and run again."}
             else:
-                normalized = results.normalize(raw, model_errors=run.model_errors)
-                (self._dir(run.id) / "result.json").write_text(json.dumps(normalized), encoding="utf-8")
+                try:
+                    normalized = results.normalize(raw, model_errors=run.model_errors)
+                    top = normalized["ranking"][0]["function"] if normalized["ranking"] else None
+                    summary = {"findings": len(normalized["ranking"]), "top_function": top,
+                               "warnings": len(normalized["warnings"]), "duration": normalized.get("duration")}
+                    self._write_result(run, normalized)
+                except Exception as exc:  # noqa: BLE001
+                    raise ResultProcessingError(f"{type(exc).__name__}: {exc}") from exc
+                # Everything fallible is done: only now does the run become 'completed'.
                 run.state = "completed"
                 for stage in run.stages:
                     stage["status"] = "done"
-                top = normalized["ranking"][0]["function"] if normalized["ranking"] else None
-                run.summary = {"findings": len(normalized["ranking"]), "top_function": top,
-                               "warnings": len(normalized["warnings"]), "duration": normalized.get("duration")}
+                run.summary = summary
                 run.current = {"title": "Report ready", "description": "The analysis finished."}
                 self._event(run, "Report ready", "success")
         else:
@@ -424,10 +523,49 @@ class RunManager:
                 active["status"] = "failed"
             run.current = {"title": "Analysis failed", "description": run.error["message"]}
             self._event(run, run.error["message"], "error")
-        self.active.pop(run.id, None)
-        self._write_meta(run)
-        ev = self._dir(run.id) / "events.jsonl"
-        ev.write_text("\n".join(json.dumps(e) for e in run.events), encoding="utf-8")
+
+    def _write_result(self, run: Run, normalized: dict):
+        """Atomic: result.json either exists complete or not at all."""
+        final = self._dir(run.id) / "result.json"
+        tmp = self._dir(run.id) / "result.json.tmp"
+        try:
+            tmp.write_text(json.dumps(normalized), encoding="utf-8")
+            os.replace(tmp, final)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+
+    def _finalization_failed(self, run: Run, exc: Exception):
+        """Plain assignments only: this must not be able to fail, or the run would be stranded."""
+        log.error("finalizing run %s failed: %s: %s", run.id, type(exc).__name__, exc)
+        if run.state in FINAL_STATES:
+            return                                           # the outcome was already decided; keep it
+        detail = f"{type(exc.__cause__ or exc).__name__}: {exc.__cause__ or exc}"[:200]
+        try:
+            detail = run.redactor.clean(detail)
+        except Exception:    # noqa: BLE001
+            detail = type(exc).__name__
+        if isinstance(exc, ResultProcessingError):
+            code, message = "result_processing_failed", f"The analysis finished but its result could not be processed ({detail})."
+        else:
+            code, message = "finalization_failed", f"The run could not be finalized ({detail})."
+        run.state = "failed"
+        run.error = {"code": code, "message": message, "hint": "Check the technical logs and run again."}
+        run.current = {"title": "Analysis failed", "description": message}
+        for stage in run.stages:
+            if stage["status"] == "active":
+                stage["status"] = "failed"
+
+    def _persist(self, run: Run):
+        """Best effort, each file on its own: a full disk must not undo the terminal state held in memory."""
+        try:
+            self._write_meta(run)
+        except Exception as exc:  # noqa: BLE001
+            log.error("could not store metadata of run %s: %s", run.id, exc)
+        try:
+            (self._dir(run.id) / "events.jsonl").write_text("\n".join(json.dumps(e) for e in run.events), encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001
+            log.error("could not store events of run %s: %s", run.id, exc)
 
     def _classify_failure(self, run: Run, rc) -> dict:
         err = run.worker_error or {}
@@ -435,6 +573,16 @@ class RunManager:
         if err.get("type") == "ProviderConfigError":
             return {"code": "provider_not_configured", "message": message,
                     "hint": "The operator needs to set the environment variables named above, then run again."}
+        if run.collect_error and not run.explorer_error and ("Stage 1" in message or not message):
+            kind, detail = run.collect_error
+            hints = {
+                "not_successful": "Only successful, mined transactions can be analyzed. Check the hash and the network.",
+                "not_found": "The RPC node does not know this hash. Check the network selection and that the RPC endpoint is for the same chain.",
+                "rejected": "The RPC endpoint refused the request. Check its URL and key, or use another endpoint.",
+            }
+            code = {"not_successful": "tx_not_successful", "not_found": "tx_not_found"}.get(kind, "rpc_failed")
+            return {"code": code, "message": detail,
+                    "hint": hints.get(kind, "Check the RPC connection (URL, key, rate limits) and run again.")}
         if run.cast_error and ("Stage 1" in message or not message or "Forensics" in message):
             detail = run.cast_error
             hint = ("Replaying older transactions needs an archive-capable RPC. Provide one under "
@@ -447,6 +595,10 @@ class RunManager:
         if "Stage 1" in message:
             return {"code": "no_forensics", "message": "Transaction data could not be collected.",
                     "hint": "Check the network selection and RPC connection, and that the transaction succeeded."}
+        if err.get("type") == "FunctionAnalysisIncomplete" or "Stage 2 (Function Analysis) incomplete" in message:
+            return {"code": "analysis_incomplete", "message": message,
+                    "hint": "Some functions could not be analyzed, usually a model or provider problem. Check the provider "
+                            "key, quota and availability, then run again."}
         if message:
             return {"code": "pipeline_error", "message": message, "hint": "See the technical logs for the full trace."}
         return {"code": "worker_crashed",

@@ -142,8 +142,8 @@ def environment_report():
         issues.append("Foundry 'cast' is missing, so transactions cannot be replayed.")
     if not shutil.which("getCode"):
         issues.append("'getCode' is missing, so contract source cannot be downloaded.")
-    if not shutil.which("curl"):
-        issues.append("'curl' is missing, so explorer pages cannot be fetched.")
+    if not shutil.which("curl") and os.environ.get("FAULTSEEKER_EXPLORER_FALLBACK", "").strip().lower() in ("1", "true", "yes", "on"):
+        issues.append("'curl' is missing, so the enabled explorer fallback cannot fetch pages.")
     if not (ROOT / "foundry.toml").exists():
         issues.append("foundry.toml is missing, so server RPC aliases are unavailable.")
     try:
@@ -161,5 +161,6 @@ def environment_report():
         "notes": notes,
         "cast_version": version,
         "server_model_keys": sorted(p.id for p in registry().providers.values() if server_has_key(p)),
+        "explorer_fallback": os.environ.get("FAULTSEEKER_EXPLORER_FALLBACK", "").strip().lower() in ("1", "true", "yes", "on"),
         "explorer_key": bool(os.environ.get("ETHERSCAN_API_KEY", "").strip()),
     }

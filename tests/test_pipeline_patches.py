@@ -115,6 +115,9 @@ def test_explorer_failures_are_printed(monkeypatch, capsys):
 
 
 def test_blocked_explorer_page_is_explained(monkeypatch, capsys):
+    monkeypatch.setenv("FAULTSEEKER_EXPLORER_FALLBACK", "1")
+    monkeypatch.setenv("FAULTSEEKER_RPC_URL", "http://127.0.0.1:9")
+    monkeypatch.setattr("faultseeker.data_collection.rpc_client.RETRY_DELAYS", ())
     monkeypatch.setattr(TransactionInfoCollector, "_fetch_website_content", staticmethod(lambda url: "<html>Just a moment...</html>"))
     assert TransactionInfoCollector().run(TX, "eth") == {}
     assert "Explorer page did not report a successful transaction" in capsys.readouterr().out
@@ -139,6 +142,8 @@ def test_getcode_uses_chain_ids_and_the_optional_explorer_key(tmp_path, monkeypa
     seen = {}
     fake_getcode(monkeypatch, seen)
     monkeypatch.delenv("ETHERSCAN_API_KEY", raising=False)
+    monkeypatch.setenv("FAULTSEEKER_SOURCIFY_URL", "http://127.0.0.1:9")      # nothing is reachable: getCode is the one that answers
+    monkeypatch.setattr(cd.ContractDownloader, "_has_sources", staticmethod(lambda d: True))
     cd.ContractDownloader.get_source_code("bsc", "0xabc", str(tmp_path / "o"))
     assert seen["cmd"] == ["getCode", "--chainid", "56", "-a", "0xabc", "-o", str(tmp_path / "o")]
     cd.ContractDownloader.get_source_code("scroll", "0xabc", str(tmp_path / "o"))
@@ -171,7 +176,8 @@ def test_real_pipeline_reports_a_stage1_failure_end_to_end(tmp_path):
     script(bin_dir / "curl", "exit 6\n")
     root = Path(worker.__file__).resolve().parents[2]
     env = dict(os.environ, PATH=str(bin_dir) + os.pathsep + os.environ["PATH"], PYTHONPATH=str(root),
-               PYTHONUNBUFFERED="1", OPENAI_API_KEY="sk-test-" + "k" * 24)
+               PYTHONUNBUFFERED="1", OPENAI_API_KEY="sk-test-" + "k" * 24,
+               FAULTSEEKER_RPC_URL="http://127.0.0.1:9", FAULTSEEKER_RPC_RETRIES="0")
     proc = subprocess.run([sys.executable, "-m", "faultseeker.server.worker", "--hash", TX, "--chain", "eth",
                            "--model", "gpt-4o-mini", "--out", str(tmp_path / "out" / "r.json")],
                           cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120)
@@ -180,7 +186,7 @@ def test_real_pipeline_reports_a_stage1_failure_end_to_end(tmp_path):
     assert "##FS## " in out and '"event": "start"' in out and '"event": "error"' in out
     assert "Stage 1 (Forensics) failed to produce results" in out
     assert "cast exited with code 1: no route to host" in out
-    assert "Explorer request failed (curl exit 6)" in out
+    assert "RPC collection failed (unreachable)" in out and "Explorer request failed" not in out
     assert "cannot unpack" not in proc.stderr + out
     assert not (tmp_path / "out" / "r.json").exists()
 
@@ -231,7 +237,8 @@ def _run_worker(tmp_path, model, env_extra):
     script(bin_dir / "curl", "exit 6\n")
     root = Path(worker.__file__).resolve().parents[2]
     env = {k: v for k, v in os.environ.items() if not k.startswith(("OPENAI", "CODEX", "MERCURY", "FAULTSEEKER", "OLLAMA"))}
-    env.update(PATH=str(bin_dir) + os.pathsep + os.environ["PATH"], PYTHONPATH=str(root), PYTHONUNBUFFERED="1", FAULTSEEKER_ISOLATED_RUN="1", **env_extra)
+    env.update(PATH=str(bin_dir) + os.pathsep + os.environ["PATH"], PYTHONPATH=str(root), PYTHONUNBUFFERED="1", FAULTSEEKER_ISOLATED_RUN="1",
+               FAULTSEEKER_RPC_URL="http://127.0.0.1:9", FAULTSEEKER_RPC_RETRIES="0", **env_extra)
     return subprocess.run([sys.executable, "-m", "faultseeker.server.worker", "--hash", TX, "--chain", "eth", "--model", model,
                            "--out", str(tmp_path / "out" / "r.json")], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120)
 

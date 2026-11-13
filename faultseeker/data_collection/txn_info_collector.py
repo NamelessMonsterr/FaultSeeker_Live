@@ -216,18 +216,34 @@ class TransactionInfoCollector:
                 with open(os.path.join(f'{self.cache_path}_revised', file), 'w') as f:
                     json.dump(data, f, indent=2)
     
-    def run(self, txn_hash: str, chain: str) -> dict:
-        """
-        Collect transaction information for given transaction hash and chain.
+    @staticmethod
+    def explorer_fallback_enabled() -> bool:
+        """The explorer page scrape runs only when FAULTSEEKER_EXPLORER_FALLBACK is 1/true/yes/on."""
+        return os.environ.get('FAULTSEEKER_EXPLORER_FALLBACK', '').strip().lower() in ('1', 'true', 'yes', 'on')
 
-        Args:
-            txn_hash: Transaction hash
-            chain: Chain identifier (eth, bsc, poly, etc.)
+    def _collect_rpc(self, txn_hash: str, chain: str):
+        """(record, definitive). `definitive` is True when the transaction itself ruled out analysis (it reverted
+        or is not mined), in which case another data source cannot change the answer."""
+        from faultseeker.data_collection import rpc_client, rpc_collector
+        try:
+            client = rpc_client.RpcClient(rpc_client.resolve_endpoint(chain))
+            record = rpc_collector.collect(client, txn_hash, chain)
+        except rpc_client.RpcError as e:
+            print(f"RPC collection failed ({e.kind}): {e.message}", flush=True)
+            return {}, False
+        if record.get('status') == 'Success':
+            return record, False
+        if record.get('status') == 'Pending':
+            reason = 'The transaction is not mined yet, so there is nothing to analyze.'
+        elif record.get('status') == 'Fail':
+            reason = 'The transaction reverted on-chain. Only successful transactions are analyzed.'
+        else:
+            reason = f"The receipt has an unrecognized status ({record.get('status')})."
+        print(f"RPC collection failed (not_successful): {reason}", flush=True)
+        return {}, True
 
-        Returns:
-            Dictionary containing transaction information
-        """
-        # Build transaction link and fetch content
+    def _run_explorer(self, txn_hash: str, chain: str) -> dict:
+        """The original explorer-page scrape. Only reached when FAULTSEEKER_EXPLORER_FALLBACK is enabled."""
         self.txn_hash = txn_hash
         self.get_transaction_link(chain)
         content = self._fetch_website_content(self.txn_link)
@@ -248,7 +264,7 @@ class TransactionInfoCollector:
         token_transfer = self._get_token_transferred(content)
         gas = self._get_transaction_gas(content)
 
-        output = {
+        return {
             "status": status_info,
             "gas_consumption": gas,
             "block_number": block_info,
@@ -258,9 +274,29 @@ class TransactionInfoCollector:
             "token_transfer": token_transfer
         }
 
-        return output
-      
-                       
+    def run(self, txn_hash: str, chain: str) -> dict:
+        """
+        Collect transaction information for given transaction hash and chain.
+
+        The default path reads everything over JSON-RPC (the run's RPC endpoint, or the foundry.toml alias) and never
+        requests an explorer page. With FAULTSEEKER_EXPLORER_FALLBACK=1 the explorer page is tried only when the RPC
+        read failed for a reason other than the transaction itself (reverted / not mined).
+
+        Args:
+            txn_hash: Transaction hash
+            chain: Chain identifier (eth, bsc, poly, etc.)
+
+        Returns:
+            Dictionary containing transaction information, or {} when it could not be collected
+        """
+        self.txn_hash = txn_hash
+        record, definitive = self._collect_rpc(txn_hash, chain)
+        if record or definitive or not self.explorer_fallback_enabled():
+            return record
+        print("Trying the block-explorer page because FAULTSEEKER_EXPLORER_FALLBACK is enabled.", flush=True)
+        return self._run_explorer(txn_hash, chain)
+
+
 if __name__ == "__main__":
     # df = pandas.read_csv('./transaction_links.csv')
     # df = df.dropna(subset=['txn_link'])

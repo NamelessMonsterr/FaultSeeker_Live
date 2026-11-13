@@ -128,6 +128,7 @@ def test_long_log_lines_are_truncated(make_client):
 
 
 @pytest.mark.parametrize("prefix,code", [("fa11", "rpc_failed"), ("e8e8", "explorer_unavailable"),
+                                         ("7c7c", "rpc_failed"), ("7e7e", "tx_not_successful"), ("1c1c", "analysis_incomplete"),
                                          ("dead", "model_key_rejected"), ("9a07", "model_quota")])
 def test_failure_classification(client, prefix, code):
     t = time.time()

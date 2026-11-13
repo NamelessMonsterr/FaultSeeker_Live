@@ -12,7 +12,7 @@ import time
 
 MARK = "##FS##"
 BY_PREFIX = {"fa11": "cast_fail", "dead": "auth_fail", "bad0": "bad_rank", "0bad": "crash",
-             "9a07": "quota", "e8e8": "explorer_fail", "0000": "empty", "4a49": "hang"}
+             "9a07": "quota", "e8e8": "explorer_fail", "7c7c": "rpc_collect_fail", "7e7e": "reverted", "1c1c": "analysis_incomplete", "0000": "empty", "4a49": "hang"}
 ADDR = "0xc342774492b54ce5f8ac662113ed702fc1b34972"
 
 
@@ -54,6 +54,20 @@ def main():
         sys.exit(1)
     if mode == "explorer_fail":
         say("Explorer page did not report a successful transaction (status: unknown). blocked?")
+        marker({"event": "error", "type": "RuntimeError", "message": "Stage 1 (Forensics) failed to produce results"})
+        sys.exit(1)
+    if mode == "analysis_incomplete":
+        say("      → Reviewing function calls...")
+        marker({"event": "error", "type": "FunctionAnalysisIncomplete", "message":
+                "Stage 2 (Function Analysis) incomplete: 1 of 2 attempted candidate(s) failed and were not recovered: "
+                "bar@0x" + "bb" * 20 + " (CandidateIncomplete: iteration limit (31) reached without an adequacy confirmation "
+                "after 1 completed step(s); last error ProviderDown: provider outage [redacted])"})
+        sys.exit(1)
+    if mode in ("rpc_collect_fail", "reverted"):
+        say("      → Collecting transaction info...")
+        say("RPC collection failed (unreachable): RPC request failed after 3 attempts: could not reach rpc.example (gaierror)."
+            if mode == "rpc_collect_fail" else
+            "RPC collection failed (not_successful): The transaction reverted on-chain. Only successful transactions are analyzed.")
         marker({"event": "error", "type": "RuntimeError", "message": "Stage 1 (Forensics) failed to produce results"})
         sys.exit(1)
     if mode == "auth_fail":
