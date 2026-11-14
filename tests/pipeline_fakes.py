@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import networkx as nx
 
-from faultseeker.utils.agent import AbstractAgent
+from faultseeker.utils.agent import AbstractAgent, GPTAgent
 
 A = "0x" + "aa" * 20
 B = "0x" + "bb" * 20
@@ -75,6 +75,7 @@ class State:
         self.attempt_n = 0                 # which attempt of the current candidate this is
         self.proc_calls = self.proc_failed = self.pvf_calls = 0
         self.proc_state = None             # outcome of the last processing call: 'ok' / 'failed'
+        self.adequacy_calls = self.understanding_calls = 0   # provider answers to adequacy / understanding prompts (re-asks included)
         self.task_sent = self.task_queries = 0   # task-selection replies sent in this attempt / in total
         self.processing_prompts = []
         self.in_attempt = False            # between a candidate's first understanding call and its adequacy check
@@ -112,6 +113,19 @@ GEN = {
 for _name in GEN:
     SCENARIOS[_name] = ([("foo", A)], [], set(), set(), set())
 SCENARIOS["srcmixed"] = ([("foo", A)], [], set(), set(), set())
+# Provider null-content injection through the REAL GPTAgent (validation + re-asks): scenario -> {"adequacy": n, "understanding": n}
+# = how many of the first provider answers to that kind of prompt arrive as 200 + content=None.
+NULLS = {"nullcheckforever": {"adequacy": 999}, "nullcheckonce": {"adequacy": 1}, "nullunderstand": {"understanding": 999}}
+for _name in NULLS:
+    SCENARIOS[_name] = ([("foo", A)], [], set(), set(), set())
+# Healthy analysis that records one finding, then the ranking reply under test (raw text from the provider).
+RANK = {"foundok": json.dumps([f"foo_{A}"]), "foundbare": json.dumps(["foo"]), "foundbad": "I believe the foo function is the culprit.",
+        "foundunmatched": json.dumps(["bar"]), "foundoutage": "An error occurred.", "foundnull": None}
+for _name in RANK:
+    SCENARIOS[_name] = ([("foo", A)], [], set(), set(), set())
+HASH_PREFIX.update({"nullcheckforever": "bac0", "nullcheckonce": "bac1", "nullunderstand": "bac2",
+                    "foundok": "bad0", "foundbare": "bad1", "foundbad": "bad2", "foundunmatched": "bad3", "foundoutage": "bad4",
+                    "foundnull": "bad5"})
 HASH_PREFIX.update({"tasklist": "b5b5", "taskstring": "b6b6", "taskretryok": "b7b7", "taskmissing": "b8b8", "tasktype": "b9b9",
                     "taskoutage": "bab0", "srcstrings": "bab1", "srcmixed": "bab2", "infolist": "bab3", "infotext": "bab4"})
 
@@ -169,6 +183,9 @@ class FakeAgent(AbstractAgent):
             return reply
         if self.role == "organization":
             if PVF_MARK in text:
+                if st.scenario in RANK and st.pvf_calls == 0:
+                    st.pvf_calls += 1
+                    return json.dumps({f"foo_{A}": {"evidence": "reentrancy before balance update", "confidence_score": 0.9}})
                 if hit and loop[3] and st.pvf_calls == 0:
                     st.pvf_calls += 1                       # the first step records a finding
                     return json.dumps({f"{sorted(st.current)[0]}_{A}": {"evidence": "reentrancy before balance update", "confidence_score": 0.9}})
@@ -178,7 +195,7 @@ class FakeAgent(AbstractAgent):
                 return "yes"
             return "understanding ok"
         if self.role == "agent":
-            return "[]"
+            return RANK.get(st.scenario, "[]")
         return "understanding ok"
 
 
@@ -187,6 +204,45 @@ def json_object(text):
         return isinstance(json.loads(text), dict)
     except ValueError:
         return False
+
+
+class _Msg:
+    def __init__(self, content):
+        self.message = type("M", (), {"content": content})()
+
+
+class _Completions:
+    def __init__(self, agent):
+        self.agent = agent
+
+    def create(self, messages, model=None, **kw):
+        return self.agent.provider_answer(messages[-1]["content"])
+
+
+class GPTBoundary(GPTAgent):
+    """The REAL GPTAgent (validation, bounded re-asks, text-only memory) on top of a fake OpenAI-style client. The fake
+    client answers like FakeAgent does, except that the first N answers to adequacy checks / understanding requests
+    arrive as HTTP 200 with content=None (the failure seen live)."""
+
+    def __init__(self, role, state):
+        AbstractAgent.__init__(self, "", "fake-model")
+        self.resolved = SimpleNamespace(extra_params={}, temperature_mode="omit", temperature_value=0)
+        self.role, self.state, self.logic = role, state, FakeAgent(role, state)
+        self._client = SimpleNamespace(chat=SimpleNamespace(completions=_Completions(self)))
+
+    def provider_answer(self, text):
+        st, plan = self.state, NULLS.get(self.state.scenario, {})
+        is_adequacy = self.role == "organization" and PVF_MARK not in text and "Current understanding:" in text
+        if is_adequacy:
+            st.adequacy_calls += 1
+            if st.adequacy_calls <= plan.get("adequacy", 0):
+                return SimpleNamespace(choices=[_Msg(None)])
+        content = self.logic._send_message(text)
+        if self.role == "organization" and PVF_MARK not in text and not is_adequacy and names_in(text):
+            st.understanding_calls += 1
+            if st.understanding_calls <= plan.get("understanding", 0):
+                return SimpleNamespace(choices=[_Msg(None)])
+        return SimpleNamespace(choices=[_Msg(content)])
 
 
 class FakeDownloader:
@@ -226,7 +282,12 @@ def install(scenario, setattr_):
     state = State(scenario)
     FakeDownloader.CALLS.clear()
     roles = iter(["reasoning", "generation", "processing", "organization", "filtering", "agent"])
-    setattr_(analyzer, "build_agent", lambda task, model: FakeAgent(next(roles, "agent"), state))
+    if scenario in NULLS:
+        import faultseeker.utils.agent as agent_module
+        setattr_(agent_module, "CONTENT_RETRY_DELAYS", (0, 0))           # keep the re-asks, skip the waiting
+        setattr_(analyzer, "build_agent", lambda task, model: GPTBoundary(next(roles, "agent"), state))
+    else:
+        setattr_(analyzer, "build_agent", lambda task, model: FakeAgent(next(roles, "agent"), state))
     setattr_(analyzer, "ContractDownloader", FakeDownloader)
     FakeForensics.scenario = scenario
     setattr_(orchestrator, "ForensicsOrchestrator", FakeForensics)

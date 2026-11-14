@@ -21,6 +21,22 @@ class ModelResponseError(ValueError):
     The message describes the problem and never quotes the reply, so nothing the model echoed can leak through it."""
 
 
+class ProviderFailure(ModelResponseError):
+    """The provider call failed, or answered without usable text (null, empty or non-text content). This is a provider
+    failure, never a model answer: it can not be read as "yes", "not adequate" or any other reply.
+
+    kind: call_failed | null_content | empty_content | non_text_content. The message never quotes the provider's reply."""
+
+    def __init__(self, kind: str, message: str):
+        super().__init__(message)
+        self.kind = kind
+
+
+# Pauses before each re-ask when the provider answered 200 but with unusable content (null / empty / non-text).
+# Requests that raise are left to the client's own retry policy (max_retries in the provider registry).
+CONTENT_RETRY_DELAYS = (1.0, 3.0)
+
+
 class AbstractAgent(abc.ABC):
     
     def __init__(
@@ -44,6 +60,56 @@ class AbstractAgent(abc.ABC):
     # to be implemented in the child class
     def _send_message(self, user_message: str, temperature = 0) -> str:
         pass
+
+    @staticmethod
+    def _require_text(content) -> str:
+        """The provider's content as text, or ProviderFailure. Null, empty, non-text and the legacy error sentinel are
+        failures, so None can never travel on as an answer (or into the conversation memory)."""
+        if content is None:
+            raise ProviderFailure("null_content", "the provider returned null content")
+        if not isinstance(content, str):
+            raise ProviderFailure("non_text_content", f"the provider returned non-text content ({type(content).__name__})")
+        if not content.strip():
+            raise ProviderFailure("empty_content", "the provider returned empty content")
+        if content.strip() == PROVIDER_ERROR_TEXT:
+            raise ProviderFailure("call_failed", "the provider call failed")
+        return content
+
+    def _send_message_strict(self, user_message: str, temperature = 0) -> str:
+        """Provider call that either returns usable text or raises ProviderFailure. Subclasses with a real provider
+        override it (validation plus bounded re-asks); the default validates whatever _send_message returned."""
+        return self._require_text(self._send_message(user_message, temperature))
+
+    def _chat_strict(self, user_message: str, call) -> str:
+        """Shared by the real agents. `call()` returns the provider's raw content (and may raise). Content that is
+        unusable although the call succeeded is re-asked up to len(CONTENT_RETRY_DELAYS) more times; then the failure is
+        raised. The conversation memory only ever receives text (a failed turn is recorded as an empty assistant turn,
+        which keeps user/assistant alternation, exactly as a raised error always did)."""
+        self.memory.append({"role": "user", "content": user_message})
+        failure = None
+        for attempt in range(len(CONTENT_RETRY_DELAYS) + 1):
+            if attempt:
+                sleep(CONTENT_RETRY_DELAYS[attempt - 1])
+            try:
+                content = call()
+            except Exception:
+                traceback.print_exc()
+                self.memory.append({"role": "assistant", "content": ''})
+                raise ProviderFailure("call_failed", "the provider call failed") from None
+            try:
+                text = self._require_text(content)
+            except ProviderFailure as exc:
+                failure = exc
+                continue
+            self.memory.append({"role": "assistant", "content": text})
+            return text
+        self.memory.append({"role": "assistant", "content": ''})
+        raise failure
+
+    def query_text(self, user_message: str, temperature = 0) -> str:
+        """STRICT text contract: non-empty text, or ProviderFailure. Use it wherever the reply is read as text (it is
+        searched, concatenated or stored); legacy query(format='str') can hand back the error sentinel instead."""
+        return self._send_message_strict(user_message, temperature)
     
     def _process_json_response(self, response: str) -> Dict[str, Any]:
         try:
@@ -112,11 +178,7 @@ class AbstractAgent(abc.ABC):
         """
         expect = tuple(expect) if isinstance(expect, (tuple, list)) else (expect,)
         wanted = " or ".join(t.__name__ for t in expect)
-        text = self._send_message(user_message, temperature)
-        if not isinstance(text, str) or not text.strip():
-            raise ModelResponseError("the model returned no reply")
-        if text.strip() == PROVIDER_ERROR_TEXT:
-            raise ModelResponseError("the model call failed (provider error)")
+        text = self._send_message_strict(user_message, temperature)       # ProviderFailure (a ModelResponseError) if unusable
         body = self._unfence(text)
         try:
             value = json.loads(body)
@@ -151,16 +213,17 @@ class OllmaAgent(AbstractAgent):
         super().__init__(task, model_name)
         self._client = OllamaClient(host=host) if host else None
 
-    def _send_message(self, user_message: str, temperature = 0.3) -> str:
-        self.memory.append({"role": "user", "content": user_message})
-        try:
+    def _send_message_strict(self, user_message: str, temperature = 0.3) -> str:
+        def call():
             send = self._client.chat if self._client else chat
             response = send(model=self.model, messages=self.memory, options={'temperature': temperature})
-            assistant_response = response['message']['content']
-            self.memory.append({"role": "assistant", "content": assistant_response})
-            return assistant_response
-        except Exception:
-            traceback.print_exc()
+            return response['message']['content']
+        return self._chat_strict(user_message, call)
+
+    def _send_message(self, user_message: str, temperature = 0.3) -> str:
+        try:
+            return self._send_message_strict(user_message, temperature)
+        except ProviderFailure:
             return PROVIDER_ERROR_TEXT
     
 
@@ -202,19 +265,22 @@ class GPTAgent(AbstractAgent):
             params['temperature'] = self.resolved.temperature_value
         return params
 
-    def _send_message(self, user_message, temperature=0):
-        try:
-            user_message = user_message[:10000]
-            self.memory.append({"role": "user", "content": user_message})
-            chat_completion = self._client.chat.completions.create(
+    def _send_message_strict(self, user_message, temperature=0):
+        user_message = user_message[:10000]
+
+        def call():
+            completion = self._client.chat.completions.create(
                 messages=self._truncate_history(self.memory),
                 model=self.model,
                 **self._request_params(temperature)
             )
-            reply = chat_completion.choices[0].message.content
-            self.memory.append({"role": "assistant", "content": reply})
-            return reply
-        except Exception:
-            traceback.print_exc()
-            self.memory.append({"role": "assistant", "content": ''})
+            choices = getattr(completion, 'choices', None)
+            return choices[0].message.content if choices else None       # no choices counts as no content
+        return self._chat_strict(user_message, call)
+
+    def _send_message(self, user_message, temperature=0):
+        """Legacy contract (query() with format 'str'/'json'/'dict'): the error sentinel on any provider failure."""
+        try:
+            return self._send_message_strict(user_message, temperature)
+        except ProviderFailure:
             return PROVIDER_ERROR_TEXT

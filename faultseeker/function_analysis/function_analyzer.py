@@ -14,7 +14,7 @@ from faultseeker.prompts.function_analysis import (
     VulnerabilityAnalysisPrompts,
     LocalTaskPrompts,
 )
-from faultseeker.utils.agent import ModelResponseError
+from faultseeker.utils.agent import ModelResponseError, ProviderFailure
 from faultseeker.utils.utils import build_agent
 
 
@@ -76,6 +76,7 @@ class FunctionAnalyzer:
         self.children_call_memo_single = {}
         self.children_call_memo = {}
         self.repeated_patterns = []
+        self.ranking_problem = ''             # why the ranking reply was unusable ('' when it was fine)
         self.examined_function_memo = []      # identities ('function@address', lower-case) analyzed successfully
         self.failed_function_memo = {}        # identity -> number of failed attempts (history; never cleared)
         self.attempted_function_memo = []     # identities whose analysis was attempted at least once
@@ -353,7 +354,7 @@ class FunctionAnalyzer:
         processing_prompt = self.function_prompts.function_call_info_processing.format(
             selected_task = json.dumps(self.current_task)
         )
-        self.processing_result = self.processing_agent.query(processing_prompt, format='str')
+        self.processing_result = self.processing_agent.query_text(processing_prompt)
         logging.info(f"Processing result: {self.processing_result}")
 
     def _select_task(self):
@@ -369,6 +370,8 @@ class FunctionAnalyzer:
             try:
                 task = self.generation_agent.query_json(message, expect=dict)
                 break
+            except ProviderFailure:
+                raise                                        # a provider failure is not a formatting problem: no reformat requests
             except ModelResponseError as exc:
                 problem = str(exc)
         if task is None:
@@ -383,17 +386,17 @@ class FunctionAnalyzer:
             current_understanding = self.understanding_result,
             task_completed = self.processing_result
         )
-        result = self.reasoning_agent.query(prompt, format='str')
+        result = self.reasoning_agent.query_text(prompt)
         self.task_tree = result
         logging.info(f"Task tree: {self.task_tree}")
 
     def _update_current_understanding(self, is_init=False):
         if is_init:
             understanding_prompt = self.function_prompts.function_call_organization_function_call.format(function_call_info_summary=json.dumps(self.function_call_info_summary))
-            self.understanding_result = self.organization_agent.query(understanding_prompt, format='str')
+            self.understanding_result = self.organization_agent.query_text(understanding_prompt)
         else:
             understanding_prompt = self.function_prompts.function_call_organization_function_call.format(function_call_info_summary=json.dumps(self.function_call_info_summary))
-            self.understanding_result = self.organization_agent.query(understanding_prompt, format='str')
+            self.understanding_result = self.organization_agent.query_text(understanding_prompt)
         logging.info(f"Current understanding: {self.understanding_result}")
 
     def _update_potentially_vulnerable_function(self):
@@ -486,7 +489,7 @@ class FunctionAnalyzer:
             current_understanding = self.understanding_result,
             function_call_info_summary = json.dumps(self.function_call_info_summary)
         )
-        result = self.reasoning_agent.query(prompt, format='str')
+        result = self.reasoning_agent.query_text(prompt)
         self.task_tree = result
         logging.info(f"Function call info summary: {json.dumps(self.function_call_info_summary)}")
         logging.info(f"Current understanding: {self.understanding_result}")
@@ -514,10 +517,15 @@ class FunctionAnalyzer:
                 if i%3 == 0:
                     check_prompt = self.function_prompts.check_analysis_adequacy
                     check_prompt += "Current understanding:" + self.understanding_result
-                    result = self.organization_agent.query(check_prompt, format='str')
+                    result = self.organization_agent.query_text(check_prompt)
                     if 'yes' in result.lower():
                         completed = True
                         break
+            except ProviderFailure as exc:
+                # The provider gave no usable text (already re-asked by the agent). That is neither "adequate" nor "not
+                # adequate": the candidate stops here, as a provider failure, instead of burning the iteration cap.
+                last_error, stopped = exc, 'provider'
+                break
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
                 if self.potentially_vulnerable_functions:
@@ -526,8 +534,9 @@ class FunctionAnalyzer:
             if i > 30:
                 break
         if not completed:
-            reason = (f"iteration limit ({i}) reached without an adequacy confirmation" if stopped == 'iteration limit'
-                      else "stopped by an error without an adequacy confirmation")
+            reason = {'iteration limit': f"iteration limit ({i}) reached without an adequacy confirmation",
+                      'provider': "stopped by a provider failure without an adequacy confirmation",
+                      }.get(stopped, "stopped by an error without an adequacy confirmation")
             detail = f"{reason} after {completed_steps} completed step(s)"
             if last_error is not None:
                 detail += f"; last error {type(last_error).__name__}: {last_error}"
@@ -615,7 +624,14 @@ class FunctionAnalyzer:
             current_understanding=json.dumps(self.understanding_result),
             potentially_vulnerable_functions=json.dumps(self.potentially_vulnerable_functions)
         )
-        self.ranked_result = self.agent.query(prompt_text)
+        self.ranking_problem = ''
+        try:
+            self.ranked_result = self.agent.query_json(prompt_text, expect=(list, dict))
+        except ModelResponseError as exc:
+            # No usable ranking is not a failed analysis: the analyzed candidates still go into the report, unranked, and
+            # the report says why (results.normalize shows ranking_problem).
+            self.ranked_result = []
+            self.ranking_problem = scrub_error(f"{type(exc).__name__}: {exc}", 160)
 
     def _narrowing_reply(self, prompt, current_count):
         """Names from a narrowing reply, or None when the reply is unusable. Narrowing is an optimisation: an unusable
@@ -843,8 +859,10 @@ class FunctionAnalyzer:
         head = (f"Stage 2 (Function Analysis) incomplete: {len(failed)} of {total} attempted candidate(s) failed "
                 f"and were not recovered: ")
         parts, used = [], len(head)
+        # Few failures get more room for the real reason; many get a short one each. Total stays within the worker's 500.
+        room = max(70, min(200, (430 - len(head)) // len(failed) - len(failed[0][0]) - 4))
         for n, (identity, detail) in enumerate(failed):
-            piece = f"{identity} ({detail[:70]})"
+            piece = f"{identity} ({detail[:room]})"
             if parts and used + len(piece) + 2 > 440:
                 parts.append(f"and {len(failed) - n} more")
                 break
@@ -865,7 +883,7 @@ class FunctionAnalyzer:
             current_understanding = self.understanding_result,
             function_call_info_summary = json.dumps(self.function_call_info_summary)
         )
-        result = self.reasoning_agent.query(prompt, format='str')
+        result = self.reasoning_agent.query_text(prompt)
         self.task_tree = result
 
         logging.info(f"Function call info summary: {json.dumps(self.function_call_info_summary)}")
@@ -882,9 +900,11 @@ class FunctionAnalyzer:
                 if i > 0:
                     check_prompt = self.function_prompts.check_analysis_adequacy_alt
                     check_prompt += "Current understanding:" + self.understanding_result
-                    result = self.organization_agent.query(check_prompt, format='str')
+                    result = self.organization_agent.query_text(check_prompt)
                     if 'yes' in result.lower():
                         break
+            except ProviderFailure:
+                raise                      # never swallowed: it would leave the transaction understanding silently short
             except Exception:
                 if self.potentially_vulnerable_functions:
                     break
@@ -966,6 +986,7 @@ class FunctionAnalyzer:
         result = {
             'duration': time.time() - start_time,
             "ranked_result": self.ranked_result,
+            'ranking_problem': self.ranking_problem,
             'potentially_vulnerable_functions': self.potentially_vulnerable_functions,
             "transaction_understanding": self.understanding_result,
             'functions_to_be_inspected': self.functions_to_be_inspected,

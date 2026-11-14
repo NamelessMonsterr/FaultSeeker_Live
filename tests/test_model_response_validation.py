@@ -145,7 +145,7 @@ def test_select_task_retries_non_object_replies_then_accepts_a_valid_task(monkey
     assert a.current_task["task_description"] == "inspect the function" and a.generation_agent.requests == 3
 
 
-@pytest.mark.parametrize("reply", ['["inspect the function"]', "Inspect the function.", "An error occurred."])
+@pytest.mark.parametrize("reply", ['["inspect the function"]', "Inspect the function."])
 def test_select_task_gives_up_after_four_replies_without_fabricating_a_task(monkeypatch, reply):
     a = make_analyzer(monkeypatch, reply)
     with pytest.raises(ModelResponseError) as err:
@@ -153,6 +153,15 @@ def test_select_task_gives_up_after_four_replies_without_fabricating_a_task(monk
     assert a.generation_agent.requests == 4, "the original request plus three reformat requests, as before"
     assert a.current_task == "", "no task is invented"
     assert "no usable task after 4 model replies" in str(err.value) and len(str(err.value)) < 300
+
+
+def test_select_task_stops_at_once_on_a_provider_failure_instead_of_asking_to_reformat(monkeypatch):
+    """A provider failure is not a formatting problem: no reformat requests, and the error keeps its type."""
+    from faultseeker.utils.agent import ProviderFailure
+    a = make_analyzer(monkeypatch, "An error occurred.")
+    with pytest.raises(ProviderFailure):
+        a._select_task()
+    assert a.generation_agent.requests == 1 and a.current_task == ""
 
 
 @pytest.mark.parametrize("reply", ['{"task_selected": 1}', '{"task_description": ["a"]}', '{"task_description": ""}'])
@@ -295,7 +304,7 @@ def no_secrets(text):
         assert secret not in text
 
 
-@pytest.mark.parametrize("scenario,queries", [("tasklist", 4), ("taskstring", 4), ("taskoutage", 4), ("taskmissing", 1), ("tasktype", 1)])
+@pytest.mark.parametrize("scenario,queries", [("tasklist", 4), ("taskstring", 4), ("taskmissing", 1), ("tasktype", 1)])
 def test_unusable_task_output_fails_the_candidate_through_the_existing_path(tmp_path, monkeypatch, scenario, queries):
     p, state = pipeline(tmp_path, monkeypatch, scenario)
     with pytest.raises(RuntimeError) as err:
@@ -308,6 +317,15 @@ def test_unusable_task_output_fails_the_candidate_through_the_existing_path(tmp_
     a = p.function_analyzer
     assert a.examined_function_memo == [] and list(a.unresolved_failures) == [f"foo@{fakes.A}"]
     assert state.processing_prompts == [], "no task was fabricated, so nothing reached the processing step"
+
+
+def test_a_provider_outage_at_task_selection_fails_the_candidate_at_once_with_its_real_type(tmp_path, monkeypatch):
+    p, state = pipeline(tmp_path, monkeypatch, "taskoutage")
+    with pytest.raises(RuntimeError) as err:
+        analyze(p)
+    assert "ProviderFailure" in str(err.value) and "provider call failed" in str(err.value)
+    assert state.task_queries == 1, "no reformat requests for a provider failure"
+    no_secrets(str(err.value))
 
 
 def test_task_output_that_becomes_valid_after_reformat_requests_completes(tmp_path, monkeypatch):
@@ -362,7 +380,7 @@ def exposed(c, run_id):
     return "\n".join(texts)
 
 
-@pytest.mark.parametrize("scenario", ["tasklist", "taskstring", "taskmissing", "tasktype", "taskoutage", "infolist", "infotext"])
+@pytest.mark.parametrize("scenario", ["tasklist", "taskstring", "taskmissing", "tasktype", "taskoutage", "infolist", "infotext"])   # taskoutage: provider failure
 def test_api_malformed_model_output_ends_failed_with_analysis_incomplete_and_no_result(make_client, scenario):
     c, run_id, run = run_scenario(make_client, scenario)
     assert run["state"] == "failed", run

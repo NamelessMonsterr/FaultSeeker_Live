@@ -145,6 +145,7 @@ class FaultSeekerPipeline:
             # Main analysis results
             'ranked_suspicious_functions': analysis_result.get('ranked_result', []),
             'potentially_vulnerable_functions': analysis_result.get('potentially_vulnerable_functions', []),
+            'ranking_problem': analysis_result.get('ranking_problem', ''),
             'transaction_understanding': analysis_result.get('transaction_understanding', ''),
 
             # Metadata

@@ -595,6 +595,9 @@ class RunManager:
         if "Stage 1" in message:
             return {"code": "no_forensics", "message": "Transaction data could not be collected.",
                     "hint": "Check the network selection and RPC connection, and that the transaction succeeded."}
+        if err.get("type") == "ProviderFailure":
+            return {"code": "provider_failed", "message": message,
+                    "hint": "The model provider failed or returned an empty answer. Check its availability, quota and key, then run again."}
         if err.get("type") == "FunctionAnalysisIncomplete" or "Stage 2 (Function Analysis) incomplete" in message:
             return {"code": "analysis_incomplete", "message": message,
                     "hint": "Some functions could not be analyzed, usually a model or provider problem. Check the provider "
