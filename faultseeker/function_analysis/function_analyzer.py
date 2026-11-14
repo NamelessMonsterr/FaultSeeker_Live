@@ -14,6 +14,7 @@ from faultseeker.prompts.function_analysis import (
     VulnerabilityAnalysisPrompts,
     LocalTaskPrompts,
 )
+from faultseeker.utils.agent import ModelResponseError
 from faultseeker.utils.utils import build_agent
 
 
@@ -220,86 +221,134 @@ class FunctionAnalyzer:
                         function_calls.extend(self._retrieve_function_call_by_depth(call['depth'],function_name=function_name,get_children=True))
         return function_calls
 
+    # -- model-supplied structures: validate before use ----------------------------------------------------------
+    _ADDRESS = re.compile(r'^0x[0-9a-fA-F]{40}$')
+
+    @classmethod
+    def _is_address(cls, value):
+        """0x followed by exactly 40 hex digits. Required before any model-influenced contract lookup."""
+        return isinstance(value, str) and bool(cls._ADDRESS.match(value.strip()))
+
+    @classmethod
+    def _call_ref(cls, entry, legacy_order):
+        """(function, address) from one model-supplied reference, or None when it is malformed.
+
+        Supported forms: {"function": f, "address": a} (also "function_name"), and a 2-item list/tuple of strings. In a
+        pair the address is the element that looks like one; if neither (or both) does, `legacy_order` decides
+        ('address_first' or 'function_first'). Plain strings, numbers and other shapes are rejected, never indexed.
+        """
+        if isinstance(entry, dict):
+            function, address = entry.get('function', entry.get('function_name')), entry.get('address')
+        elif isinstance(entry, (list, tuple)) and len(entry) == 2:
+            first, second = entry
+            if cls._is_address(first) and not cls._is_address(second):
+                address, function = first, second
+            elif cls._is_address(second) and not cls._is_address(first):
+                function, address = first, second
+            elif legacy_order == 'address_first':
+                address, function = first, second
+            else:
+                function, address = first, second
+        else:
+            return None
+        if isinstance(function, str) and function.strip() and isinstance(address, str) and address.strip():
+            return function.strip(), address.strip()
+        return None
+
+    @staticmethod
+    def _entries(value):
+        """The list of entries in a model-supplied section: a list/tuple as is, a lone dict as one entry, else none
+        (in particular a string is never iterated character by character)."""
+        if isinstance(value, (list, tuple)):
+            return list(value)
+        if isinstance(value, dict):
+            return [value]
+        return []
+
+    def _same_function_next_address(self, function_name, address):
+        """Existing rule: if the next high-count child entry is the same function on another contract, use that one."""
+        children = self.function_call_info_summary.get('high_appreance_count_children_calls') or {}
+        key = f'{function_name}::{address}'
+        if key in children:
+            key_list = list(children.keys())
+            index = key_list.index(key)
+            if index + 1 < len(key_list):
+                next_function_name, _, next_address = key_list[index + 1].partition('::')
+                if next_function_name == function_name and self._is_address(next_address):
+                    return next_address
+        return address
+
     def _retrieve_additional_info(self, additional_info):
         prompt = self.function_prompts.retrieve_additional_info
         prompt += f"Current available information:{self.function_call_info_summary}\n"
         prompt += f"Additional information to be reorganized:{additional_info}"
-        formatted_additional_info = self.generation_agent.query(prompt)
+        # The reply as a whole must be a JSON object (else ModelResponseError: the step fails and the loop handles it);
+        # individual malformed entries inside it are optional pieces and are skipped.
+        formatted_additional_info = self.generation_agent.query_json(prompt, expect=dict)
         output = {}
-        if 'function_call' in formatted_additional_info:
-            function_call = []
-            for f in formatted_additional_info['function_call']:
-                function_call.extend(self._retrieve_function_calls(f))
-            if function_call:
-                output['function_call'] = function_call
-        if 'children_calls' in formatted_additional_info:
-            children_call = {}
-            for function_call in formatted_additional_info['children_calls']:
-                if isinstance(function_call, dict):
-                    function_name = function_call['function']
-                    address = function_call['address']
-                else:
-                    function_name = function_call[0]
-                    address = function_call[1]
-                children_call[f'{function_name}::{address}'] = self._retrieve_children_calls(function_name, address)
-            if children_call:
-                output['children_calls (i.e., for {k:v}, v is the children calls of k)'] = children_call
-        if 'source_code' in formatted_additional_info:
-            source_code = {}
-            if isinstance(formatted_additional_info['source_code'], dict):
-                function_name = formatted_additional_info['source_code']['function_name']
-                address = formatted_additional_info['source_code']['address']
-                if f'{function_name}::{address}' in self.function_call_info_summary['high_appreance_count_children_calls']:
-                    key_list = list(self.function_call_info_summary['high_appreance_count_children_calls'].keys())
-                    index = key_list.index(f'{function_name}::{address}')
-                    if index + 1 < len(key_list):
-                        next_key = key_list[index + 1]
-                        next_function_name = next_key.split('::')[0]
-                        next_address = next_key.split('::')[1]
-                        if next_function_name == function_name:
-                            address = next_address
-                retrieved_source_code = self._retrieve_source_code(address, function_name)
-                source_code[f'{function_name}_{address}'] = retrieved_source_code if retrieved_source_code else 'no source code found, proceed to other analysis for other functions'
-            else:
-                for temp in formatted_additional_info['source_code']:
-                    if isinstance(temp, dict):
-                        function_name = temp['function']
-                        address = temp['address']
-                    else:
-                        function_name = temp[1]
-                        address = temp[0]
-                    if f'{function_name}::{address}' in self.function_call_info_summary['high_appreance_count_children_calls']:
-                        key_list = list(self.function_call_info_summary['high_appreance_count_children_calls'].keys())
-                        index = key_list.index(f'{function_name}::{address}')
-                        if index + 1 < len(key_list):
-                            next_key = key_list[index + 1]
-                            next_function_name = next_key.split('::')[0]
-                            next_address = next_key.split('::')[1]
-                            if next_function_name == function_name:
-                                address = next_address
-                    retrieved_source_code = self._retrieve_source_code(address, function_name)
-                    source_code[f'{function_name}_{address}'] = retrieved_source_code if retrieved_source_code else 'no source code found, proceed to other analysis'
-            if source_code:
-                output['source_code'] = source_code
-        if 'balance_change' in formatted_additional_info:
-            balance_change = {}
-            for address in formatted_additional_info['balance_change']:
-                address = address.lower()
-                if address in self.fundflow_analysis['balance_change']:
-                    balance_change[address] = deepcopy(self.fundflow_analysis['balance_change'][address])
-                for addr in self.fundflow_analysis['balance_change']:
-                    if addr != address:
-                        if address in self.fundflow_analysis['balance_change'][addr]:
-                            balance_change[addr] = deepcopy(self.fundflow_analysis['balance_change'][addr])
-            if balance_change:
-                output['balance_change'] = balance_change
+        function_call = []
+        for entry in self._entries(formatted_additional_info.get('function_call')):
+            ref = self._call_ref(entry, 'address_first')
+            if ref:
+                function_call.extend(self._retrieve_function_calls({'function': ref[0], 'address': ref[1]}))
+        if function_call:
+            output['function_call'] = function_call
+        children_call = {}
+        for entry in self._entries(formatted_additional_info.get('children_calls')):
+            ref = self._call_ref(entry, 'function_first')
+            if ref:
+                children_call[f'{ref[0]}::{ref[1]}'] = self._retrieve_children_calls(ref[0], ref[1])
+        if children_call:
+            output['children_calls (i.e., for {k:v}, v is the children calls of k)'] = children_call
+        raw_source = formatted_additional_info.get('source_code')
+        source_code = {}
+        for entry in self._entries(raw_source):
+            ref = self._call_ref(entry, 'address_first')
+            if not ref or not self._is_address(ref[1]):
+                continue                                   # malformed entry or not a real address: never look it up
+            function_name, address = ref[0], self._same_function_next_address(ref[0], ref[1])
+            retrieved_source_code = self._retrieve_source_code(address, function_name)
+            fallback = ('no source code found, proceed to other analysis for other functions'
+                        if isinstance(raw_source, dict) else 'no source code found, proceed to other analysis')
+            source_code[f'{function_name}_{address}'] = retrieved_source_code if retrieved_source_code else fallback
+        if source_code:
+            output['source_code'] = source_code
+        raw_balance = formatted_additional_info.get('balance_change')
+        balance_change = {}
+        for address in ([raw_balance] if isinstance(raw_balance, str) else self._entries(raw_balance) if not isinstance(raw_balance, dict) else []):
+            if not isinstance(address, str):
+                continue
+            address = address.lower()
+            if address in self.fundflow_analysis['balance_change']:
+                balance_change[address] = deepcopy(self.fundflow_analysis['balance_change'][address])
+            for addr in self.fundflow_analysis['balance_change']:
+                if addr != address:
+                    if address in self.fundflow_analysis['balance_change'][addr]:
+                        balance_change[addr] = deepcopy(self.fundflow_analysis['balance_change'][addr])
+        if balance_change:
+            output['balance_change'] = balance_change
         return output
 
+    @staticmethod
+    def _normalize_task(task):
+        """Validates a model-selected task in place and returns it; raises ModelResponseError when a REQUIRED part is
+        wrong. Required: a JSON object with a non-empty string task_description (or description). Optional and skipped
+        when malformed: additional_information (anything but text, a list or an object becomes empty)."""
+        if not isinstance(task, dict):
+            raise ModelResponseError(f"the selected task is not a JSON object (got {type(task).__name__})")
+        description = task.get('description')
+        if not (isinstance(description, str) and description.strip()):
+            description = task.get('task_description')
+        if not (isinstance(description, str) and description.strip()):
+            raise ModelResponseError("the selected task has no usable task_description: it must be a non-empty string "
+                                     f"(got {type(task.get('task_description', task.get('description'))).__name__})")
+        task['task_description'] = description
+        if not isinstance(task.get('additional_information'), (str, list, dict)):
+            task['additional_information'] = ''
+        return task
+
     def _perform_task(self):
-        if 'description' in self.current_task:
-            self.current_task['task_description'] = self.current_task['description']
-        if 'additional_information' not in self.current_task:
-            self.current_task['additional_information'] = ''
+        self._normalize_task(self.current_task)
         self.current_task['additional_information'] = self._retrieve_additional_info(str(self.current_task['additional_information'])+ self.current_task['task_description'])
         processing_prompt = self.function_prompts.function_call_info_processing.format(
             selected_task = json.dumps(self.current_task)
@@ -313,14 +362,21 @@ class FunctionAnalyzer:
             function_call_info_summary = self.function_call_info_summary,
             current_understanding = self.understanding_result
         )
-        self.current_task = self.generation_agent.query(task_selection_prompt)
-        count = 0
-        while (not isinstance(self.current_task, dict)) and (count < 3):
-            self.current_task = self.generation_agent.query('The task is not in standard JSON format. Please reformat the task into a standard JSON format.')
-            count += 1
+        # The original request plus up to 3 reformat requests, as before; each reply must be a JSON object.
+        task, problem = None, ''
+        for attempt in range(4):
+            message = task_selection_prompt if attempt == 0 else 'The task is not in standard JSON format. Please reformat the task into a standard JSON format.'
+            try:
+                task = self.generation_agent.query_json(message, expect=dict)
+                break
+            except ModelResponseError as exc:
+                problem = str(exc)
+        if task is None:
+            raise ModelResponseError(f"no usable task after 4 model replies: {problem}")
+        self.current_task = self._normalize_task(task)       # missing/mistyped required fields are an error, not a guess
         logging.info(f"Selected task: {self.current_task}")
 
-            
+
     def _update_task_tree(self):
         prompt = self.task_prompts.update_task_tree.format(
             task_tree = self.task_tree,
@@ -346,7 +402,11 @@ class FunctionAnalyzer:
         prompt += "Current task:" + json.dumps(self.current_task)
         prompt += 'Analysis result of current task:' + json.dumps(self.processing_result)
         prompt += 'The following function calls have been confirmed to be vulnerable, if it is in the provided information, please add it to the returned JSON with the predefined format: ' + str(self.cheatsheet)
-        result = self.organization_agent.query(prompt)
+        result = self.organization_agent.query_json(prompt, expect=(dict, list))
+        if isinstance(result, list):
+            if result:
+                raise ModelResponseError("expected a JSON object of potentially vulnerable functions, got a non-empty list")
+            result = {}
         logging.info(f"Vulnerable function: {result}")
         for key in result:
             try:
@@ -476,7 +536,9 @@ class FunctionAnalyzer:
     def _retrieve_source_code(self, address, function_name):
         output = []
         output_memo = []
-        address = address.lower()
+        if not self._is_address(address) or not isinstance(function_name, str):
+            return output                                  # garbage never reaches the downloader
+        address = address.strip().lower()
         contract_info = self.contract_info
         if address not in self.contract_info:
             contract_info = ContractDownloader(self.analysis_result.chain,[address]).run()
@@ -555,6 +617,18 @@ class FunctionAnalyzer:
         )
         self.ranked_result = self.agent.query(prompt_text)
 
+    def _narrowing_reply(self, prompt, current_count):
+        """Names from a narrowing reply, or None when the reply is unusable. Narrowing is an optimisation: an unusable
+        reply (text, wrong type, empty) is ignored and the larger candidate list is kept, so nothing is dropped by a
+        garbled answer and an unparsed string is never iterated as if it were a list of functions."""
+        try:
+            reply = self.agent.query_json(prompt, expect=(list, dict))
+        except ModelResponseError as exc:
+            print(f"         narrowing reply ignored ({exc}); keeping all {current_count} candidates")
+            return None
+        names = [n for n in (list(reply) if isinstance(reply, dict) else reply) if isinstance(n, str) and n.strip()]
+        return names or None
+
     def _review_function_calls(self):
         self.examined_function_memo = []
         self.failed_function_memo = {}
@@ -574,8 +648,8 @@ class FunctionAnalyzer:
                 function_call_to_be_inspected = json.dumps(function_call_to_be_inspected_summary),
                 balance_change = json.dumps(self.fundflow_analysis['balance_change'])
             )
-            selected_functions_new = self.agent.query(prompt)
-            if len(selected_functions_new) < len(selected_functions):
+            selected_functions_new = self._narrowing_reply(prompt, len(selected_functions))
+            if selected_functions_new is not None and len(selected_functions_new) < len(selected_functions):
                 selected_functions = selected_functions_new
         selected_functions_with_created_contract_in_params = list(self.address_calls_with_created_contract_in_params.keys())
         count = 0
@@ -590,8 +664,8 @@ class FunctionAnalyzer:
             prompt = self.function_prompts.narrow_down_functions_with_created_contracts.format(
                 function_call_to_be_inspected = json.dumps(function_call_to_be_inspected_summary),
             )
-            selected_functions_new = self.agent.query(prompt)
-            if len(selected_functions_new) < len(selected_functions_with_created_contract_in_params):
+            selected_functions_new = self._narrowing_reply(prompt, len(selected_functions_with_created_contract_in_params))
+            if selected_functions_new is not None and len(selected_functions_new) < len(selected_functions_with_created_contract_in_params):
                 selected_functions_with_created_contract_in_params = selected_functions_new
         
         self._prepare_children_call_memo(selected_functions)

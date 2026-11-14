@@ -1,4 +1,6 @@
 import abc
+import ast
+import json
 from typing import Dict, List, Any, Union
 import traceback
 from ollama import Client as OllamaClient, chat
@@ -8,6 +10,15 @@ from faultseeker.providers import ProviderConfigError, ResolvedModel, load_regis
 from time import sleep
 from datetime import datetime
 
+
+
+PROVIDER_ERROR_TEXT = "An error occurred."      # what _send_message returns when the provider call itself failed
+
+
+class ModelResponseError(ValueError):
+    """The model's reply is unusable under the JSON contract (provider failure, not JSON, or the wrong JSON shape).
+
+    The message describes the problem and never quotes the reply, so nothing the model echoed can leak through it."""
 
 
 class AbstractAgent(abc.ABC):
@@ -81,7 +92,47 @@ class AbstractAgent(abc.ABC):
             return self._process_dict_response(response)
 
 
+    @staticmethod
+    def _unfence(text: str) -> str:
+        for marker in ('```json', '```solidity', '```python'):
+            if marker in text:
+                text = text.split(marker)[1]
+                if '```' in text:
+                    text = text.split('```')[0]
+                break
+        return text.strip('```').strip('\n').strip()
+
+    def query_json(self, user_message: str, temperature=0, expect=(dict, list)):
+        """STRICT JSON contract: returns a parsed value whose type is in `expect`, or raises ModelResponseError.
+
+        Never returns raw text, never guesses a structure out of plain lines, never uses eval(). A JSON document is
+        parsed with json.loads, then (models often answer with Python literals such as single quotes or tuples) with
+        ast.literal_eval. A provider failure, an empty reply, unparsable text, or a value of another type is an error.
+        Callers decide whether to retry, skip the optional piece or fail the candidate; none can mistake text for data.
+        """
+        expect = tuple(expect) if isinstance(expect, (tuple, list)) else (expect,)
+        wanted = " or ".join(t.__name__ for t in expect)
+        text = self._send_message(user_message, temperature)
+        if not isinstance(text, str) or not text.strip():
+            raise ModelResponseError("the model returned no reply")
+        if text.strip() == PROVIDER_ERROR_TEXT:
+            raise ModelResponseError("the model call failed (provider error)")
+        body = self._unfence(text)
+        try:
+            value = json.loads(body)
+        except ValueError:
+            try:
+                value = ast.literal_eval(body)
+            except (ValueError, SyntaxError, MemoryError, RecursionError, TypeError):
+                raise ModelResponseError(f"the model reply is not valid JSON (expected {wanted}, {len(text)} characters)") from None
+        if not isinstance(value, expect):
+            raise ModelResponseError(f"the model reply has the wrong JSON type: expected {wanted}, got {type(value).__name__}")
+        return value
+
     def query(self, user_message: str, temperature = 0, format='json') -> str:
+        """Legacy, lenient: with format='json' the reply may come back as raw text or a list of lines when it cannot be
+        parsed. Use query_json() wherever the result is consumed as a structure; keep this only for callers that
+        check the type themselves."""
         result = self._send_message(user_message, temperature)
         if format == 'str':
             return result
@@ -110,7 +161,7 @@ class OllmaAgent(AbstractAgent):
             return assistant_response
         except Exception:
             traceback.print_exc()
-            return "An error occurred."
+            return PROVIDER_ERROR_TEXT
     
 
 
@@ -166,4 +217,4 @@ class GPTAgent(AbstractAgent):
         except Exception:
             traceback.print_exc()
             self.memory.append({"role": "assistant", "content": ''})
-            return "An error occurred."
+            return PROVIDER_ERROR_TEXT
