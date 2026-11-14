@@ -1,5 +1,6 @@
 import abc
 import ast
+from contextvars import ContextVar
 import json
 from typing import Dict, List, Any, Union
 import traceback
@@ -35,6 +36,13 @@ class ProviderFailure(ModelResponseError):
 # Pauses before each re-ask when the provider answered 200 but with unusable content (null / empty / non-text).
 # Requests that raise are left to the client's own retry policy (max_retries in the provider registry).
 CONTENT_RETRY_DELAYS = (1.0, 3.0)
+
+# Scoped to the current execution context: a strict single-request operation
+# must not trigger nested content retries in any real provider agent.
+_STRICT_SINGLE_PROVIDER_REQUEST = ContextVar(
+    "faultseeker_strict_single_provider_request",
+    default=False,
+)
 
 
 class AbstractAgent(abc.ABC):
@@ -81,28 +89,44 @@ class AbstractAgent(abc.ABC):
         return self._require_text(self._send_message(user_message, temperature))
 
     def _chat_strict(self, user_message: str, call) -> str:
-        """Shared by the real agents. `call()` returns the provider's raw content (and may raise). Content that is
-        unusable although the call succeeded is re-asked up to len(CONTENT_RETRY_DELAYS) more times; then the failure is
-        raised. The conversation memory only ever receives text (a failed turn is recorded as an empty assistant turn,
-        which keeps user/assistant alternation, exactly as a raised error always did)."""
+        """Shared strict provider call with bounded, optionally suppressed content retries.
+
+        Ordinary calls retain the existing CONTENT_RETRY_DELAYS behavior.
+        Structured single-request calls suppress nested retries without changing
+        conversation-memory behavior or affecting concurrent execution contexts.
+        """
         self.memory.append({"role": "user", "content": user_message})
         failure = None
-        for attempt in range(len(CONTENT_RETRY_DELAYS) + 1):
+
+        retry_count = (
+            0
+            if _STRICT_SINGLE_PROVIDER_REQUEST.get()
+            else len(CONTENT_RETRY_DELAYS)
+        )
+
+        for attempt in range(retry_count + 1):
             if attempt:
                 sleep(CONTENT_RETRY_DELAYS[attempt - 1])
+
             try:
                 content = call()
             except Exception:
                 traceback.print_exc()
                 self.memory.append({"role": "assistant", "content": ''})
-                raise ProviderFailure("call_failed", "the provider call failed") from None
+                raise ProviderFailure(
+                    "call_failed",
+                    "the provider call failed"
+                ) from None
+
             try:
                 text = self._require_text(content)
             except ProviderFailure as exc:
                 failure = exc
                 continue
+
             self.memory.append({"role": "assistant", "content": text})
             return text
+
         self.memory.append({"role": "assistant", "content": ''})
         raise failure
 
@@ -178,17 +202,88 @@ class AbstractAgent(abc.ABC):
         """
         expect = tuple(expect) if isinstance(expect, (tuple, list)) else (expect,)
         wanted = " or ".join(t.__name__ for t in expect)
-        text = self._send_message_strict(user_message, temperature)       # ProviderFailure (a ModelResponseError) if unusable
-        body = self._unfence(text)
-        try:
-            value = json.loads(body)
-        except ValueError:
+
+        failure_message = None
+        for attempt in range(len(CONTENT_RETRY_DELAYS) + 1):
+            if attempt:
+                sleep(CONTENT_RETRY_DELAYS[attempt - 1])
+                retry_message = (
+                    user_message
+                    + "\n\nYour previous reply did not satisfy the required JSON response "
+                    + f"contract. Reply again with only valid JSON or a Python literal "
+                    + f"whose top-level type is {wanted}. Do not include commentary "
+                    + "or code fences. Preserve the requested task and do not invent "
+                    + "missing information."
+                )
+            else:
+                retry_message = user_message
+
+            # Keep ProviderFailure behavior unchanged; only structured parsing/type
+            # failures below are eligible for these re-asks.
+            text = self._send_message_strict(retry_message, temperature)
+            body = self._unfence(text)
+
             try:
+                value = json.loads(body)
+            except ValueError:
+                try:
+                    value = ast.literal_eval(body)
+                except (ValueError, SyntaxError, MemoryError, RecursionError, TypeError):
+                    failure_message = (
+                        f"the model reply is not valid JSON "
+                        f"(expected {wanted}, {len(text)} characters)"
+                    )
+                    continue
+
+            if not isinstance(value, expect):
+                failure_message = (
+                    f"the model reply has the wrong JSON type: expected {wanted}, "
+                    f"got {type(value).__name__}"
+                )
+                continue
+
+            return value
+
+        raise ModelResponseError(
+            "the model reply remained unusable after "
+            f"{len(CONTENT_RETRY_DELAYS) + 1} attempts "
+            f"(expected {wanted}; {failure_message or 'invalid structured reply'})"
+        ) from None
+
+    def query_json_once(self, user_message: str, temperature=0, expect=(dict, list)):
+        """Perform exactly one provider request and strictly parse its structured reply.
+
+        No content retries, parsing retries, or type retries are performed here.
+        The caller owns the aggregate retry budget.
+        """
+        expect = tuple(expect) if isinstance(expect, (tuple, list)) else (expect,)
+        wanted = " or ".join(t.__name__ for t in expect)
+
+        token = _STRICT_SINGLE_PROVIDER_REQUEST.set(True)
+        try:
+            text = self._send_message_strict(user_message, temperature)
+        finally:
+            _STRICT_SINGLE_PROVIDER_REQUEST.reset(token)
+
+        body = self._unfence(text)
+
+        try:
+            try:
+                value = json.loads(body)
+            except ValueError:
                 value = ast.literal_eval(body)
-            except (ValueError, SyntaxError, MemoryError, RecursionError, TypeError):
-                raise ModelResponseError(f"the model reply is not valid JSON (expected {wanted}, {len(text)} characters)") from None
+        except (ValueError, SyntaxError, MemoryError, RecursionError, TypeError):
+            raise ModelResponseError(
+                f"the model reply is not valid structured data "
+                f"(expected {wanted}, {len(text)} characters)"
+            ) from None
+
         if not isinstance(value, expect):
-            raise ModelResponseError(f"the model reply has the wrong JSON type: expected {wanted}, got {type(value).__name__}")
+            raise ModelResponseError(
+                f"the model reply has the wrong JSON type: expected {wanted}, "
+                f"got {type(value).__name__}"
+            )
+
         return value
 
     def query(self, user_message: str, temperature = 0, format='json') -> str:

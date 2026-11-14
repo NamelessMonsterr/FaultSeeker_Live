@@ -19,7 +19,7 @@ try:
     from faultseeker.core.config import FaultSeekerConfig
     from faultseeker.core.pipeline import FaultSeekerPipeline
     import faultseeker.function_analysis.function_analyzer as fa
-    from faultseeker.function_analysis.function_analyzer import FunctionAnalyzer
+    from faultseeker.function_analysis.function_analyzer import FunctionAnalyzer, MAX_TASK_SELECTION_ATTEMPTS
     from faultseeker.utils.agent import AbstractAgent, ModelResponseError
     from tests import pipeline_fakes as fakes
 except ImportError as exc:
@@ -117,8 +117,9 @@ def test_the_legacy_query_still_returns_text_for_callers_that_check_the_type_the
 
 @pytest.mark.parametrize("task", [
     [], ["inspect"], "inspect the function", 7, None,
-    {}, {"task_selected": 1}, {"task_description": ""}, {"task_description": "   "}, {"task_description": 5},
-    {"task_description": ["a", "b"]}, {"description": None, "task_description": None}, {"description": 3},
+    {}, {"task_selected": 1}, {"task_description": ""}, {"task_description": "   "},
+    {"task_description": 5}, {"task_description": ["a", "b"]},
+    {"description": None, "task_description": None}, {"description": 3},
 ])
 def test_normalize_task_rejects_malformed_required_parts(task):
     with pytest.raises(ModelResponseError):
@@ -127,54 +128,119 @@ def test_normalize_task_rejects_malformed_required_parts(task):
 
 @pytest.mark.parametrize("task,expected_info", [
     ({"task_description": "look"}, ""),
-    ({"description": "look"}, ""),                                     # the supported alias
+    ({"description": "look"}, ""),
     ({"description": "look", "task_description": "ignored"}, ""),
     ({"task_description": "look", "additional_information": "src"}, "src"),
     ({"task_description": "look", "additional_information": ["a"]}, ["a"]),
-    ({"task_description": "look", "additional_information": 12}, ""),    # optional and malformed: skipped
+    ({"task_description": "look", "additional_information": 12}, ""),
     ({"task_description": "look", "additional_information": None}, ""),
 ])
 def test_normalize_task_accepts_the_supported_forms(task, expected_info):
     out = FunctionAnalyzer._normalize_task(dict(task))
-    assert out["task_description"] == "look" and out["additional_information"] == expected_info
+    assert out["task_description"] == "look"
+    assert out["additional_information"] == expected_info
 
 
 def test_select_task_retries_non_object_replies_then_accepts_a_valid_task(monkeypatch):
     a = make_analyzer(monkeypatch, '["not an object"]', "still prose", GOOD_TASK)
+
     a._select_task()
-    assert a.current_task["task_description"] == "inspect the function" and a.generation_agent.requests == 3
+
+    assert a.current_task["task_description"] == "inspect the function"
+    assert a.generation_agent.requests == 3
 
 
-@pytest.mark.parametrize("reply", ['["inspect the function"]', "Inspect the function."])
-def test_select_task_gives_up_after_four_replies_without_fabricating_a_task(monkeypatch, reply):
+@pytest.mark.parametrize("reply", [
+    '["inspect the function"]',
+    "Inspect the function.",
+])
+def test_select_task_gives_up_after_four_replies_without_fabricating_a_task(
+    monkeypatch, reply
+):
     a = make_analyzer(monkeypatch, reply)
-    with pytest.raises(ModelResponseError) as err:
+
+    with pytest.raises(fa.CandidateIncomplete) as err:
         a._select_task()
-    assert a.generation_agent.requests == 4, "the original request plus three reformat requests, as before"
+
+    assert a.generation_agent.requests == 4, (
+        "the original request plus three reformat requests; "
+        "one structured request per selection attempt"
+    )
     assert a.current_task == "", "no task is invented"
-    assert "no usable task after 4 model replies" in str(err.value) and len(str(err.value)) < 300
+    assert err.value.retryable is True
+    assert "no usable task after 4 model requests" in str(err.value)
+    assert len(str(err.value)) < 300
 
 
-def test_select_task_stops_at_once_on_a_provider_failure_instead_of_asking_to_reformat(monkeypatch):
-    """A provider failure is not a formatting problem: no reformat requests, and the error keeps its type."""
+def test_select_task_uses_one_aggregate_four_request_budget_not_twelve(monkeypatch):
+    # Every response is unparseable. query_json_once must prevent the
+    # three internal query_json retries from multiplying four selection attempts.
+    a = make_analyzer(monkeypatch, "not JSON")
+
+    with pytest.raises(fa.CandidateIncomplete) as err:
+        a._select_task()
+
+    assert a.generation_agent.requests == MAX_TASK_SELECTION_ATTEMPTS == 4
+    assert err.value.retryable is True
+    assert a.current_task == ""
+
+
+def test_select_task_stops_at_once_on_a_provider_failure_instead_of_asking_to_reformat(
+    monkeypatch,
+):
+    """A provider failure is not a formatting problem: no reformat requests."""
     from faultseeker.utils.agent import ProviderFailure
+
     a = make_analyzer(monkeypatch, "An error occurred.")
+
     with pytest.raises(ProviderFailure):
         a._select_task()
-    assert a.generation_agent.requests == 1 and a.current_task == ""
+
+    assert a.generation_agent.requests == 1
+    assert a.current_task == ""
 
 
-@pytest.mark.parametrize("reply", ['{"task_selected": 1}', '{"task_description": ["a"]}', '{"task_description": ""}'])
-def test_select_task_rejects_a_valid_object_with_bad_required_fields(monkeypatch, reply):
+@pytest.mark.parametrize("reply", [
+    '{"task_selected": 1}',
+    '{"task_description": ["a"]}',
+    '{"task_description": ""}',
+])
+def test_select_task_retries_valid_objects_with_bad_required_fields(
+    monkeypatch, reply
+):
+    # A syntactically valid object with an invalid required field consumes
+    # one selection attempt, just like an unparseable structured response.
+    a = make_analyzer(monkeypatch, reply, GOOD_TASK)
+
+    a._select_task()
+
+    assert a.generation_agent.requests == 2
+    assert a.current_task["task_description"] == "inspect the function"
+
+
+@pytest.mark.parametrize("reply", [
+    '{"task_selected": 1}',
+    '{"task_description": ["a"]}',
+    '{"task_description": ""}',
+])
+def test_select_task_exhausts_budget_on_repeated_invalid_required_fields(
+    monkeypatch, reply
+):
     a = make_analyzer(monkeypatch, reply)
-    with pytest.raises(ModelResponseError, match="task_description"):
+
+    with pytest.raises(fa.CandidateIncomplete) as err:
         a._select_task()
-    assert a.generation_agent.requests == 1, "a well-formed object is not 'reformatted'; its missing field is the error"
+
+    assert a.generation_agent.requests == MAX_TASK_SELECTION_ATTEMPTS == 4
+    assert a.current_task == ""
+    assert err.value.retryable is True
+    assert "task_description" in str(err.value)
 
 
 def test_perform_task_raises_a_clear_error_not_a_typeerror_for_a_list_task(monkeypatch):
     a = make_analyzer(monkeypatch, "{}")
-    a.current_task = ["inspect the function"]                  # the exact shape from the live failure
+    a.current_task = ["inspect the function"]
+
     with pytest.raises(ModelResponseError):
         a._perform_task()
 
@@ -304,27 +370,62 @@ def no_secrets(text):
         assert secret not in text
 
 
-@pytest.mark.parametrize("scenario,queries", [("tasklist", 4), ("taskstring", 4), ("taskmissing", 1), ("tasktype", 1)])
-def test_unusable_task_output_fails_the_candidate_through_the_existing_path(tmp_path, monkeypatch, scenario, queries):
+@pytest.mark.parametrize("scenario,queries,reason", [
+    (
+        "tasklist", 8,
+        "Four malformed top-level replies per attempt, across two real candidate attempts.",
+    ),
+    (
+        "taskstring", 8,
+        "Four unparseable replies per attempt; query_json_once makes one request per selection attempt.",
+    ),
+    (
+        "taskmissing", 8,
+        "Four objects missing required task_description per attempt; validation consumes one selection attempt each.",
+    ),
+    (
+        "tasktype", 8,
+        "Four objects with the wrong task_description type per attempt; validation consumes one selection attempt each.",
+    ),
+])
+def test_unusable_task_output_fails_the_candidate_through_the_existing_path(
+    tmp_path, monkeypatch, scenario, queries, reason
+):
     p, state = pipeline(tmp_path, monkeypatch, scenario)
+
     with pytest.raises(RuntimeError) as err:
         analyze(p)
+
     message = str(err.value)
-    assert "Stage 2 (Function Analysis) incomplete" in message and f"foo@{fakes.A}" in message
-    assert "ModelResponseError" in message and "TypeError" not in message
+    assert "Stage 2 (Function Analysis) incomplete" in message
+    assert f"foo@{fakes.A}" in message
+    assert "CandidateIncomplete" in message
+    assert "TypeError" not in message
     no_secrets(message)
-    assert state.task_queries == queries
+
+    assert state.task_queries == queries, reason
     a = p.function_analyzer
-    assert a.examined_function_memo == [] and list(a.unresolved_failures) == [f"foo@{fakes.A}"]
-    assert state.processing_prompts == [], "no task was fabricated, so nothing reached the processing step"
+    assert a.examined_function_memo == []
+    assert list(a.unresolved_failures) == [f"foo@{fakes.A}"]
+    assert a.failed_function_memo[f"foo@{fakes.A}"] == 2
+    assert state.processing_prompts == [], (
+        "no valid task was selected, so nothing reached the processing step"
+    )
 
 
-def test_a_provider_outage_at_task_selection_fails_the_candidate_at_once_with_its_real_type(tmp_path, monkeypatch):
+def test_a_provider_outage_at_task_selection_fails_the_candidate_at_once_with_its_real_type(
+    tmp_path, monkeypatch
+):
     p, state = pipeline(tmp_path, monkeypatch, "taskoutage")
+
     with pytest.raises(RuntimeError) as err:
         analyze(p)
-    assert "ProviderFailure" in str(err.value) and "provider call failed" in str(err.value)
-    assert state.task_queries == 1, "no reformat requests for a provider failure"
+
+    assert "ProviderFailure" in str(err.value)
+    assert "provider call failed" in str(err.value)
+    assert state.task_queries == 1
+    assert p.function_analyzer.examined_function_memo == []
+    assert p.function_analyzer.failed_function_memo[f"foo@{fakes.A}"] == 1
     no_secrets(str(err.value))
 
 
@@ -357,6 +458,8 @@ def test_mixed_valid_and_invalid_additional_info_entries_use_only_the_valid_ones
 
 @pytest.mark.parametrize("scenario", ["infolist", "infotext"])
 def test_a_wrong_shaped_additional_info_reply_never_completes_the_candidate(tmp_path, monkeypatch, scenario):
+    import faultseeker.utils.agent as agent_module
+    monkeypatch.setattr(agent_module, "CONTENT_RETRY_DELAYS", (0, 0))     # fast e2e: delays only, counts unchanged
     p, state = pipeline(tmp_path, monkeypatch, scenario)
     with pytest.raises(RuntimeError) as err:
         analyze(p)
@@ -365,7 +468,234 @@ def test_a_wrong_shaped_additional_info_reply_never_completes_the_candidate(tmp_
     assert p.function_analyzer.examined_function_memo == []
 
 
+# ------------------------------------------------------------------------------------------ defect 3: attempt isolation / retry propagation
+
+
+def _prepare_candidate_runner(a):
+    """Supply the complete mutable state and history fields used by _run_candidate."""
+    a.task_tree = "baseline task tree"
+    a.function_call_info_summary = {
+        "function": "foo",
+        "calls": [],
+        "high_appreance_count_children_calls": {},
+    }
+    a.current_task = "baseline current task"
+    a.processing_result = "baseline processing result"
+    a.understanding_result = "baseline understanding"
+    a.potentially_vulnerable_functions = {}
+    a.children_call_memo_single = {}
+    a.children_call_memo = {}
+    a.repeated_patterns = []
+
+    a.examined_function_memo = []
+    a.failed_function_memo = {}
+    a.attempted_function_memo = []
+    a.unresolved_failures = {}
+
+
+def test_candidate_retry_starts_from_clean_state_and_retains_history(monkeypatch):
+    from faultseeker.function_analysis.function_analyzer import CandidateIncomplete
+
+    a = make_analyzer(monkeypatch, GOOD_TASK)
+    _prepare_candidate_runner(a)
+    identity = f"foo@{fakes.A}"
+
+    a.attempted_function_memo.append("prior-attempt")
+    a.failed_function_memo["prior-failure"] = 1
+    a.unresolved_failures["prior-failure"] = "prior unresolved detail"
+
+    calls = []
+
+    def attempt():
+        calls.append({
+            "task_tree": a.task_tree,
+            "function_call_info_summary": a.function_call_info_summary.copy(),
+            "current_task": a.current_task,
+            "processing_result": a.processing_result,
+            "understanding_result": a.understanding_result,
+            "potentially_vulnerable_functions": a.potentially_vulnerable_functions.copy(),
+            "children_call_memo_single": a.children_call_memo_single.copy(),
+            "children_call_memo": a.children_call_memo.copy(),
+            "repeated_patterns": list(a.repeated_patterns),
+        })
+
+        assert a.attempted_function_memo == ["prior-attempt", identity]
+        assert a.failed_function_memo == {"prior-failure": 1}
+        assert a.unresolved_failures == {
+            "prior-failure": "prior unresolved detail"
+        }
+
+        if len(calls) == 1:
+            a.potentially_vulnerable_functions["partial"] = {"finding": "must not leak"}
+            a.task_tree = "partial task tree"
+            a.processing_result = "partial processing result"
+            a.children_call_memo["partial"] = ["partial"]
+            raise CandidateIncomplete("retry this candidate", retryable=True)
+
+        assert a.potentially_vulnerable_functions == {}
+        assert a.task_tree == "baseline task tree"
+        assert a.processing_result == "baseline processing result"
+        assert a.children_call_memo == {}
+        a.potentially_vulnerable_functions["complete"] = {"finding": "valid"}
+        a.task_tree = "successful task tree"
+
+    a._function_analysis_init = attempt
+
+    assert a._run_candidate([identity], "foo") is None
+    assert len(calls) == 2
+
+    # Both attempts began from the original baseline.
+    assert calls[0]["task_tree"] == calls[1]["task_tree"] == "baseline task tree"
+    assert calls[0]["processing_result"] == calls[1]["processing_result"] == "baseline processing result"
+    assert calls[0]["potentially_vulnerable_functions"] == calls[1]["potentially_vulnerable_functions"] == {}
+    assert calls[0]["children_call_memo"] == calls[1]["children_call_memo"] == {}
+
+    # The successful attempt is retained; history is preserved and updated.
+    assert a.task_tree == "successful task tree"
+    assert a.potentially_vulnerable_functions == {"complete": {"finding": "valid"}}
+    assert a.examined_function_memo == [identity]
+    assert a.attempted_function_memo == ["prior-attempt", identity]
+    assert a.failed_function_memo == {"prior-failure": 1}
+    assert a.unresolved_failures == {"prior-failure": "prior unresolved detail"}
+
+
+def test_total_candidate_failure_restores_baseline_and_records_both_attempts(monkeypatch):
+    from faultseeker.function_analysis.function_analyzer import CandidateIncomplete
+
+    a = make_analyzer(monkeypatch, GOOD_TASK)
+    _prepare_candidate_runner(a)
+    identity = f"foo@{fakes.A}"
+    baseline = a._capture_candidate_attempt_state()
+    calls = []
+
+    def attempt():
+        calls.append(True)
+        a.potentially_vulnerable_functions[f"partial-{len(calls)}"] = {
+            "finding": "must not leak"
+        }
+        a.task_tree = f"partial task tree {len(calls)}"
+        a.processing_result = f"partial processing result {len(calls)}"
+        raise CandidateIncomplete("still incomplete", retryable=True)
+
+    a._function_analysis_init = attempt
+
+    detail = a._run_candidate([identity], "foo")
+
+    assert len(calls) == 2
+    assert a._capture_candidate_attempt_state() == baseline
+    assert a.potentially_vulnerable_functions == {}
+    assert a.failed_function_memo == {identity: 2}
+    assert a.unresolved_failures == {identity: detail}
+    assert a.attempted_function_memo == [identity]
+    assert a.examined_function_memo == []
+
+
+def _configure_real_step_loop(a, monkeypatch, select_task):
+    """Configure the production _function_analysis_init loop with deterministic step methods."""
+    a.function_prompts = SimpleNamespace(
+        function_analysis_init_prompt="initial prompt",
+        check_analysis_adequacy="adequacy prompt",
+    )
+    a.reasoning_agent = ScriptAgent("initial task tree")
+    a.organization_agent = ScriptAgent("no")
+    a._temp_check = lambda: False
+    a._update_current_understanding = lambda **kwargs: None
+    a._select_task = select_task
+    a._perform_task = lambda: None
+    a._update_task_tree = lambda: None
+    a._update_potentially_vulnerable_function = lambda: None
+
+
+def test_selection_exhaustion_remains_retryable_through_the_real_step_loop(monkeypatch):
+    from faultseeker.function_analysis.function_analyzer import CandidateIncomplete
+
+    a = make_analyzer(monkeypatch, GOOD_TASK)
+
+    def exhausted():
+        raise CandidateIncomplete("selection attempts exhausted", retryable=True)
+
+    _configure_real_step_loop(a, monkeypatch, exhausted)
+
+    with pytest.raises(CandidateIncomplete) as err:
+        a._function_analysis_init()
+
+    assert err.value.retryable is True
+    assert "CandidateIncomplete" in str(err.value)
+    assert "selection attempts exhausted" in str(err.value)
+
+
+def test_plain_iteration_limit_is_not_retryable_through_the_real_step_loop(monkeypatch):
+    from faultseeker.function_analysis.function_analyzer import CandidateIncomplete
+
+    a = make_analyzer(monkeypatch, GOOD_TASK)
+    _configure_real_step_loop(a, monkeypatch, lambda: None)
+
+    with pytest.raises(CandidateIncomplete) as err:
+        a._function_analysis_init()
+
+    assert err.value.retryable is False
+    assert "iteration limit (31) reached" in str(err.value)
+
+
+def test_provider_failure_at_selection_is_terminal_and_not_retried(monkeypatch):
+    from faultseeker.function_analysis.function_analyzer import CandidateIncomplete
+    from faultseeker.utils.agent import ProviderFailure
+
+    a = make_analyzer(monkeypatch, GOOD_TASK)
+    _prepare_candidate_runner(a)
+    calls = []
+
+    def provider_failure():
+        calls.append(True)
+        raise ProviderFailure("call_failed", "provider call failed")
+
+    _configure_real_step_loop(a, monkeypatch, provider_failure)
+
+    identity = f"foo@{fakes.A}"
+    a._run_candidate([identity], "foo")
+
+    assert len(calls) == 1
+    assert a.failed_function_memo == {identity: 1}
+    assert identity in a.unresolved_failures
+    assert "CandidateIncomplete" in a.unresolved_failures[identity]
+    assert "ProviderFailure" in a.unresolved_failures[identity]
+    assert a.examined_function_memo == []
+
+
+def test_null_content_through_chat_strict_aborts_selection_after_one_provider_call(monkeypatch):
+    from faultseeker.utils.agent import ProviderFailure
+
+    class ChatStrictNullAgent(AbstractAgent):
+        """Test agent whose strict provider path is the production _chat_strict implementation."""
+
+        def __init__(self):
+            super().__init__("", "chat-strict-null-test")
+            self.provider_calls = 0
+
+        def _send_message(self, user_message, temperature=0):
+            raise AssertionError("_send_message must not bypass the _chat_strict path")
+
+        def _send_message_strict(self, user_message, temperature=0):
+            return self._chat_strict(user_message, self._return_null)
+
+        def _return_null(self):
+            self.provider_calls += 1
+            return None
+
+    a = make_analyzer(monkeypatch, GOOD_TASK)
+    agent = ChatStrictNullAgent()
+    a.generation_agent = a.agent = agent
+
+    with pytest.raises(ProviderFailure) as err:
+        a._select_task()
+
+    assert err.value.kind == "null_content"
+    assert agent.provider_calls == 1
+    assert agent.memory[-1] == {"role": "assistant", "content": ""}
+
+
 # ------------------------------------------------------------------------------------------ real worker / API
+
 
 def run_scenario(make_client, scenario):
     c = make_client(FAULTSEEKER_WORKER_MODULE="tests.pipeline_fake_worker")
@@ -381,7 +711,14 @@ def exposed(c, run_id):
 
 
 @pytest.mark.parametrize("scenario", ["tasklist", "taskstring", "taskmissing", "tasktype", "taskoutage", "infolist", "infotext"])   # taskoutage: provider failure
-def test_api_malformed_model_output_ends_failed_with_analysis_incomplete_and_no_result(make_client, scenario):
+def test_api_malformed_model_output_ends_failed_with_analysis_incomplete_and_no_result(
+    make_client, monkeypatch, scenario
+):
+    # These worker/API scenarios may exercise ordinary query_json content retries.
+    # Zeroing the delays keeps the end-to-end test fast without changing retry counts.
+    import faultseeker.utils.agent as agent_module
+    monkeypatch.setattr(agent_module, "CONTENT_RETRY_DELAYS", (0, 0))
+
     c, run_id, run = run_scenario(make_client, scenario)
     assert run["state"] == "failed", run
     assert run["error"]["code"] == "analysis_incomplete" and f"foo@{fakes.A}" in run["error"]["message"]
@@ -393,7 +730,14 @@ def test_api_malformed_model_output_ends_failed_with_analysis_incomplete_and_no_
 
 
 @pytest.mark.parametrize("scenario", ["taskretryok", "srcstrings", "srcmixed"])
-def test_api_recoverable_or_skippable_malformed_output_still_completes(make_client, scenario):
+def test_api_recoverable_or_skippable_malformed_output_still_completes(
+    make_client, monkeypatch, scenario
+):
+    # These worker/API scenarios may exercise ordinary query_json content retries.
+    # Zeroing the delays keeps the end-to-end test fast without changing retry counts.
+    import faultseeker.utils.agent as agent_module
+    monkeypatch.setattr(agent_module, "CONTENT_RETRY_DELAYS", (0, 0))
+
     c, run_id, run = run_scenario(make_client, scenario)
     assert run["state"] == "completed", run
     assert c.get(f"/api/runs/{run_id}/result").status_code == 200

@@ -38,6 +38,90 @@
     }
     return n;
   }
+
+  function appendSafeMarkdownInline(parent, source) {
+    const text = String(source ?? '');
+    const token = /\*\*([^*\n]+)\*\*|(?<!\*)\*([^*\n]+)\*(?!\*)|`([^`\n]+)`/g;
+    let offset = 0;
+    let match;
+
+    while ((match = token.exec(text)) !== null) {
+      if (match.index > offset) {
+        parent.append(document.createTextNode(text.slice(offset, match.index)));
+      }
+
+      let node;
+      if (match[1] !== undefined) {
+        node = document.createElement('strong');
+        node.textContent = match[1];
+      } else if (match[2] !== undefined) {
+        node = document.createElement('em');
+        node.textContent = match[2];
+      } else {
+        node = document.createElement('code');
+        node.textContent = match[3];
+      }
+
+      parent.append(node);
+      offset = token.lastIndex;
+    }
+
+    if (offset < text.length) {
+      parent.append(document.createTextNode(text.slice(offset)));
+    }
+  }
+
+  function safeMarkdown(source) {
+    const root = document.createElement('div');
+    root.className = 'safe-markdown';
+
+    const text = String(source ?? '');
+    if (!text.trim()) return root;
+
+    const lines = text.replace(/\r\n?/g, '\n').split('\n');
+    let paragraph = [];
+    let list = null;
+
+    function flushParagraph() {
+      if (!paragraph.length) return;
+      const p = document.createElement('p');
+      appendSafeMarkdownInline(p, paragraph.join(' '));
+      root.append(p);
+      paragraph = [];
+    }
+
+    function endList() {
+      list = null;
+    }
+
+    for (const line of lines) {
+      const listMatch = /^\s*[-*]\s+(.+?)\s*$/.exec(line);
+
+      if (listMatch) {
+        flushParagraph();
+        if (!list) {
+          list = document.createElement('ul');
+          root.append(list);
+        }
+        const item = document.createElement('li');
+        appendSafeMarkdownInline(item, listMatch[1]);
+        list.append(item);
+        continue;
+      }
+
+      if (!line.trim()) {
+        flushParagraph();
+        endList();
+        continue;
+      }
+
+      endList();
+      paragraph.push(line.trim());
+    }
+
+    flushParagraph();
+    return root;
+  }
   const clear = (node) => { while (node.firstChild) node.removeChild(node.firstChild); };
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const shortHash = (x) => (x && x.length > 20 ? `${x.slice(0, 10)}…${x.slice(-8)}` : x || '');
@@ -588,7 +672,7 @@
           h('button', { type: 'button', class: 'quiet', 'aria-label': `Copy address of ${f.function}`, onclick: (e) => copy(f.address, e.currentTarget), text: 'Copy' }))));
     if (evidence.length) {
       const d = h('details', { class: 'evidence' }, h('summary', { text: `Evidence (${evidence.length})` }),
-        h('ul', null, evidence.map((x) => h('li', { text: x }))));
+        h('ul', null, evidence.map((x) => h('li', null, safeMarkdown(x)))));
       if (top) d.open = true;
       node.append(d);
     } else {
@@ -650,7 +734,7 @@
       left.append(h('p', { class: 'empty', text: 'The analysis did not point at any functions for this transaction.' }));
     }
     const right = h('section', { class: 'panel understanding' }, h('div', { class: 'section-heading' }, h('h2', { text: 'Transaction understanding' })));
-    right.append(data.understanding ? h('p', { text: data.understanding }) : h('p', { class: 'empty', text: 'No narrative was produced for this transaction.' }));
+    right.append(data.understanding && data.understanding.trim() ? safeMarkdown(data.understanding) : h('p', { class: 'empty', text: 'No narrative was produced for this transaction.' }));
     box.append(h('div', { class: 'report-grid' }, left, right));
 
     if (data.candidates && data.candidates.length) {

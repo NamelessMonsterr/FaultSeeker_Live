@@ -18,8 +18,30 @@ from faultseeker.utils.agent import ModelResponseError, ProviderFailure
 from faultseeker.utils.utils import build_agent
 
 
+# Maximum number of model requests permitted for one task-selection operation.
+# Includes the initial request and all formatting/structured-response retries.
+MAX_TASK_SELECTION_ATTEMPTS = 4
+
+
+_CANDIDATE_ATTEMPT_STATE_FIELDS = (
+    "task_tree",
+    "function_call_info_summary",
+    "current_task",
+    "processing_result",
+    "understanding_result",
+    "potentially_vulnerable_functions",
+    "children_call_memo_single",
+    "children_call_memo",
+    "repeated_patterns",
+)
+
+
 class CandidateIncomplete(RuntimeError):
     """A candidate's task loop ended without an explicit completion signal (iteration limit, or stopped by an error)."""
+
+    def __init__(self, message, retryable=False):
+        super().__init__(message)
+        self.retryable = bool(retryable)
 
 
 class FunctionAnalysisIncomplete(RuntimeError):
@@ -336,17 +358,28 @@ class FunctionAnalyzer:
         wrong. Required: a JSON object with a non-empty string task_description (or description). Optional and skipped
         when malformed: additional_information (anything but text, a list or an object becomes empty)."""
         if not isinstance(task, dict):
-            raise ModelResponseError(f"the selected task is not a JSON object (got {type(task).__name__})")
+            raise ModelResponseError(
+                f"the selected task is not a JSON object (got {type(task).__name__})"
+            )
+
         description = task.get('description')
         if not (isinstance(description, str) and description.strip()):
             description = task.get('task_description')
+
         if not (isinstance(description, str) and description.strip()):
-            raise ModelResponseError("the selected task has no usable task_description: it must be a non-empty string "
-                                     f"(got {type(task.get('task_description', task.get('description'))).__name__})")
+            raise ModelResponseError(
+                "the selected task has no usable task_description: "
+                "it must be a non-empty string "
+                f"(got {type(task.get('task_description', task.get('description'))).__name__})"
+            )
+
         task['task_description'] = description
+
         if not isinstance(task.get('additional_information'), (str, list, dict)):
             task['additional_information'] = ''
+
         return task
+
 
     def _perform_task(self):
         self._normalize_task(self.current_task)
@@ -359,26 +392,51 @@ class FunctionAnalyzer:
 
     def _select_task(self):
         task_selection_prompt = self.function_prompts.function_call_task_selection.format(
-            task_tree = self.task_tree,
-            function_call_info_summary = self.function_call_info_summary,
-            current_understanding = self.understanding_result
+            task_tree=self.task_tree,
+            function_call_info_summary=self.function_call_info_summary,
+            current_understanding=self.understanding_result
         )
-        # The original request plus up to 3 reformat requests, as before; each reply must be a JSON object.
-        task, problem = None, ''
-        for attempt in range(4):
-            message = task_selection_prompt if attempt == 0 else 'The task is not in standard JSON format. Please reformat the task into a standard JSON format.'
+
+        problem = ''
+        for attempt in range(MAX_TASK_SELECTION_ATTEMPTS):
+            message = (
+                task_selection_prompt
+                if attempt == 0
+                else (
+                    "The previous task selection was unusable. "
+                    "Please reformat the task into a standard JSON object "
+                    "with a non-empty task_description. Preserve the original "
+                    "requested task and do not invent missing information."
+                )
+            )
+
             try:
-                task = self.generation_agent.query_json(message, expect=dict)
-                break
+                # One model request per iteration; no nested query_json retries.
+                task = self.generation_agent.query_json_once(
+                    message,
+                    expect=dict
+                )
+
+                # Validate each reply before accepting it. Invalid required fields
+                # consume one selection attempt just like malformed structured data.
+                task = self._normalize_task(task)
+
             except ProviderFailure:
-                raise                                        # a provider failure is not a formatting problem: no reformat requests
+                # Transport/provider failures are not formatting failures.
+                raise
+
             except ModelResponseError as exc:
                 problem = str(exc)
-        if task is None:
-            raise ModelResponseError(f"no usable task after 4 model replies: {problem}")
-        self.current_task = self._normalize_task(task)       # missing/mistyped required fields are an error, not a guess
-        logging.info(f"Selected task: {self.current_task}")
+                continue
 
+            self.current_task = task
+            logging.info(f"Selected task: {self.current_task}")
+            return
+
+        raise CandidateIncomplete(
+            f"no usable task after {MAX_TASK_SELECTION_ATTEMPTS} model requests: {problem}",
+            retryable=True
+        ) from None
 
     def _update_task_tree(self):
         prompt = self.task_prompts.update_task_tree.format(
@@ -413,26 +471,36 @@ class FunctionAnalyzer:
         logging.info(f"Vulnerable function: {result}")
         for key in result:
             try:
-                evidence = ''
-                confidence_score = ''
-                if isinstance(result[key],list) or isinstance(result[key],tuple):
-                    evidence = result[key][0]
-                    confidence_score = result[key][1]
-                elif isinstance(result[key],dict):
-                    evidence = result[key]['evidence']
-                    confidence_score = result[key]['confidence_score']
-                if evidence and confidence_score:
-                    if key not in self.potentially_vulnerable_functions:
-                        self.potentially_vulnerable_functions[key] = {
-                            'confidence_score': [confidence_score],
-                            'evidence': [evidence],
-                            'depth': self._get_function_call_depth(key),
-                        }
-                    else:
-                        self.potentially_vulnerable_functions[key]['confidence_score'].append(confidence_score)
-                        self.potentially_vulnerable_functions[key]['evidence'].append(evidence)
+                value = result[key]
+
+                if isinstance(value, (list, tuple)):
+                    if len(value) != 2:
+                        raise ValueError("expected two evidence fields")
+                    evidence, confidence_score = value
+                elif isinstance(value, dict):
+                    evidence = value['evidence']
+                    confidence_score = value['confidence_score']
+                else:
+                    raise TypeError("unsupported evidence value shape")
+
+                if not evidence or not confidence_score:
+                    raise ValueError("evidence or confidence score is missing")
+
+                if key not in self.potentially_vulnerable_functions:
+                    self.potentially_vulnerable_functions[key] = {
+                        'confidence_score': [confidence_score],
+                        'evidence': [evidence],
+                        'depth': self._get_function_call_depth(key),
+                    }
+                else:
+                    self.potentially_vulnerable_functions[key]['confidence_score'].append(confidence_score)
+                    self.potentially_vulnerable_functions[key]['evidence'].append(evidence)
+
             except Exception:
-                pass
+                logging.warning(
+                    "Skipping malformed potentially-vulnerable-function entry; "
+                    "evidence or confidence data could not be processed."
+                )
     
     def _update_children_call_memo(self, function_call, function_name=''):
         for i in function_call:
@@ -504,43 +572,70 @@ class FunctionAnalyzer:
         completed_steps, last_error, completed, stopped = 0, None, False, 'iteration limit'
         while True:
             i += 1
-            self._select_task()
             try:
+                self._select_task()
                 self._perform_task()
                 self._update_current_understanding()
                 self._update_task_tree()
                 self._update_potentially_vulnerable_function()
                 completed_steps += 1
+
                 if self._temp_check():
                     completed = True
                     break
-                if i%3 == 0:
+
+                if i % 3 == 0:
                     check_prompt = self.function_prompts.check_analysis_adequacy
                     check_prompt += "Current understanding:" + self.understanding_result
                     result = self.organization_agent.query_text(check_prompt)
                     if 'yes' in result.lower():
                         completed = True
                         break
+
             except ProviderFailure as exc:
                 # The provider gave no usable text (already re-asked by the agent). That is neither "adequate" nor "not
                 # adequate": the candidate stops here, as a provider failure, instead of burning the iteration cap.
                 last_error, stopped = exc, 'provider'
                 break
+
+            except CandidateIncomplete as exc:
+                last_error, stopped = exc, 'error'
+                break
+
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
                 if self.potentially_vulnerable_functions:
                     stopped = 'error'          # the pre-existing early exit once something was found: still not complete
                     break
+
             if i > 30:
                 break
+
         if not completed:
-            reason = {'iteration limit': f"iteration limit ({i}) reached without an adequacy confirmation",
-                      'provider': "stopped by a provider failure without an adequacy confirmation",
-                      }.get(stopped, "stopped by an error without an adequacy confirmation")
+            reason = {
+                'iteration limit': f"iteration limit ({i}) reached without an adequacy confirmation",
+                'provider': "stopped by a provider failure without an adequacy confirmation",
+            }.get(stopped, "stopped by an error without an adequacy confirmation")
+
             detail = f"{reason} after {completed_steps} completed step(s)"
             if last_error is not None:
                 detail += f"; last error {type(last_error).__name__}: {last_error}"
-            raise CandidateIncomplete(detail) from None         # no chaining: the raw provider text stays out of tracebacks
+
+            # ProviderFailure subclasses ModelResponseError, but provider outages
+            # are terminal and must never make a candidate retryable.
+            if isinstance(last_error, ProviderFailure):
+                retryable = False
+            elif isinstance(last_error, CandidateIncomplete):
+                retryable = last_error.retryable
+            elif isinstance(last_error, ModelResponseError):
+                retryable = True
+            else:
+                retryable = False
+
+            raise CandidateIncomplete(
+                detail,
+                retryable=retryable
+            ) from None  # no chaining: the raw provider text stays out of tracebacks
 
     def _retrieve_source_code(self, address, function_name):
         output = []
@@ -825,31 +920,89 @@ class FunctionAnalyzer:
         return (identity not in self.examined_function_memo
                 and self.failed_function_memo.get(identity, 0) < self.MAX_CANDIDATE_ATTEMPTS)
 
-    def _run_candidate(self, identities, label):
-        """Runs the analysis of the current candidate and records the outcome per identity.
+    def _capture_candidate_attempt_state(self):
+        """Capture an isolated baseline of mutable per-candidate analysis state."""
+        return {
+            field: deepcopy(getattr(self, field))
+            for field in _CANDIDATE_ATTEMPT_STATE_FIELDS
+        }
 
-        Success is recorded only after the analysis returned, and clears any earlier unresolved failure of that identity.
-        A failure is recorded with an attempt count and a bounded, redacted detail, and is returned as text so the caller
-        can move on; it is NOT forgotten: run() fails Stage 2 if any attempted identity is still unresolved at the end.
+
+    def _restore_candidate_attempt_state(self, state):
+        """Restore mutable per-candidate state without changing failure/success history."""
+        for field, value in state.items():
+            setattr(self, field, deepcopy(value))
+
+
+    def _run_candidate(self, identities, label):
+        """Run a candidate with bounded real attempts and isolated per-attempt state.
+
+        Retry only explicitly retryable CandidateIncomplete failures. ProviderFailure
+        remains terminal. Failed attempts leave no partial findings or other mutable
+        candidate state behind. Attempt/history memos persist across attempts.
+        A failure is recorded with a bounded, redacted detail and is NOT forgotten:
+        run() fails Stage 2 if any attempted identity is still unresolved at the end.
         """
         for identity in identities:
             if identity not in self.attempted_function_memo:
                 self.attempted_function_memo.append(identity)
-        try:
-            self._function_analysis_init()
-        except Exception as exc:  # noqa: BLE001 - model/tool failures are per-candidate
-            detail = scrub_error(f"{type(exc).__name__}: {exc}")
-            for identity in identities:
-                self.failed_function_memo[identity] = self.failed_function_memo.get(identity, 0) + 1
-                self.unresolved_failures[identity] = detail
-            print(f"         ✗ Analysis of {label} failed ({detail}); it will not be retried more than "
-                  f"{self.MAX_CANDIDATE_ATTEMPTS} times in total.")
-            return detail
+
+        baseline = self._capture_candidate_attempt_state()
+        last_detail = "candidate analysis did not complete"
+        attempts_used = 0
+
+        for attempt in range(self.MAX_CANDIDATE_ATTEMPTS):
+            attempts_used += 1
+
+            # Every attempt starts from the same pre-attempt baseline, not from
+            # partial state left by a previous failed attempt.
+            self._restore_candidate_attempt_state(baseline)
+
+            try:
+                self._function_analysis_init()
+
+            except ProviderFailure as exc:
+                # Provider failures are terminal and must never trigger another attempt.
+                last_detail = scrub_error(f"{type(exc).__name__}: {exc}")
+                break
+
+            except Exception as exc:  # noqa: BLE001 - model/tool failures are per-candidate
+                last_detail = scrub_error(f"{type(exc).__name__}: {exc}")
+
+                retryable = (
+                    isinstance(exc, CandidateIncomplete)
+                    and exc.retryable
+                )
+
+                if retryable and attempt + 1 < self.MAX_CANDIDATE_ATTEMPTS:
+                    continue
+
+                break
+
+            else:
+                # Success: retain this attempt's state and clear earlier unresolved failures.
+                for identity in identities:
+                    self.unresolved_failures.pop(identity, None)
+                    if identity not in self.examined_function_memo:
+                        self.examined_function_memo.append(identity)
+                return None
+
+        # Restore the original state after total failure. In particular, findings
+        # produced during an unsuccessful attempt must not leak into later candidates.
+        self._restore_candidate_attempt_state(baseline)
+
         for identity in identities:
-            self.unresolved_failures.pop(identity, None)
-            if identity not in self.examined_function_memo:
-                self.examined_function_memo.append(identity)
-        return None
+            self.failed_function_memo[identity] = (
+                self.failed_function_memo.get(identity, 0) + attempts_used
+            )
+            self.unresolved_failures[identity] = last_detail
+
+        print(
+            f"         ✗ Analysis of {label} failed ({last_detail}); "
+            f"{attempts_used} attempt(s) used "
+            f"(maximum {self.MAX_CANDIDATE_ATTEMPTS})."
+        )
+        return last_detail
 
     def _raise_if_unresolved_failures(self):
         """Fail closed: attempted candidates that never recovered mean the analysis is incomplete, whatever else succeeded."""
@@ -891,8 +1044,8 @@ class FunctionAnalyzer:
         logging.info(f"Task tree: {self.task_tree}")
 
         for i in range(5):
-            self._select_task()
             try:
+                self._select_task()
                 self._perform_task()
                 self._update_current_understanding()
                 self._update_task_tree()
@@ -905,10 +1058,11 @@ class FunctionAnalyzer:
                         break
             except ProviderFailure:
                 raise                      # never swallowed: it would leave the transaction understanding silently short
+            except CandidateIncomplete:
+                raise                      # candidate-level failure must propagate
             except Exception:
                 if self.potentially_vulnerable_functions:
                     break
-    
     def run(self, forensics_result, txn_seq: dict, txn_info: dict, ranking_result: RankingResult) -> dict:
         """
         Run function analysis using forensics results from Stage 1 and ranking results.

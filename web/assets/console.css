@@ -286,3 +286,9 @@ footer { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wr
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* safe-markdown: bounded renderer output (paragraphs, emphasis, code, lists) */
+.safe-markdown { display: grid; gap: 10px; font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+.safe-markdown p { white-space: pre-wrap; }
+.safe-markdown ul { list-style: disc; padding-left: 20px; display: grid; gap: 4px; }
+.safe-markdown code { font-family: var(--mono); font-size: 13px; background: var(--line); padding: 1px 5px; border-radius: 4px; }

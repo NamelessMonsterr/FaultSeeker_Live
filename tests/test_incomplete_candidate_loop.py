@@ -2,10 +2,13 @@
 
 A candidate's task loop may only mark the candidate examined when it ended with an explicit completion signal (the
 adequacy check). Iteration exhaustion, or termination by an exception, stays incomplete even after earlier steps
-succeeded or a finding was recorded. Incomplete candidates use the normal failure machinery (max 2 attempts,
-redacted bounded detail, cleared by a completed retry, Stage 2 raises FunctionAnalysisIncomplete).
+succeeded or a finding was recorded. Incomplete candidates use the normal failure machinery (max 2 total attempts per candidate, redacted bounded detail, per-attempt mutable state rollback, cleared by a completed retry, Stage 2 raises
+FunctionAnalysisIncomplete). Findings and other mutable state produced by a failed attempt must not leak into later
+candidates or the final analyzer state.
 OFFLINE: the model provider and Stage 1 are fakes (tests/pipeline_fakes.py); everything else is production code.
 """
+
+
 import os
 
 import pytest
@@ -59,17 +62,25 @@ def test_A_iteration_cap_after_one_successful_step_is_incomplete(tmp_path, monke
 # --------------------------------------------------------------------------- B: a finding, then the next step raises
 
 def test_B_exception_after_a_recorded_finding_is_incomplete(tmp_path, monkeypatch):
+    # The "finding" fixture records a finding during step 1, then raises ProviderDown
+    # during the next step. The failed candidate attempt must roll that finding back.
     p, state = pipeline(tmp_path, monkeypatch, "finding")
     with pytest.raises(RuntimeError) as err:
         analyze(p)
+
     message = str(err.value)
     assert "Stage 2 (Function Analysis) incomplete" in message and ID_FOO in message
     assert "stopped by an error" in message
     assert_no_secrets(message)
+
     a = p.function_analyzer
-    assert a.potentially_vulnerable_functions, "reproduction check: a finding had been recorded before the error"
-    assert a.examined_function_memo == [] and list(a.unresolved_failures) == [ID_FOO]
-    assert state.attempts["foo"] == 1 and state.proc_failed == 1, "the error ended the loop at once (no further calls)"
+    assert a.potentially_vulnerable_functions == {}, (
+        "the finding recorded during the failed attempt must be rolled back"
+    )
+    assert a.examined_function_memo == []
+    assert list(a.unresolved_failures) == [ID_FOO]
+    assert state.attempts["foo"] == 1
+    assert state.proc_failed == 1, "ProviderDown is terminal; the candidate must not be retried"
 
 
 # --------------------------------------------------------------------------- retry / mixed / legitimate outcomes

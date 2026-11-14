@@ -46,10 +46,32 @@ class FunctionRanker:
         ]
 
     @staticmethod
-    def _call_identity(call: dict) -> str:
-        """'function@address' for one call of a repeated pattern. The address is normalized; the function name is not
-        (Solidity names are case-sensitive)."""
-        return f"{call.get('function') or ''}@{(call.get('address') or '').lower()}"
+    def _canonical_address(address) -> str:
+        """Return a canonical EVM address when the input is a 40-hex address.
+
+        The optional 0x prefix and hex letter case do not affect identity.
+        Invalid or non-address values are not repaired or given a fabricated
+        prefix; they are only lower-cased, preserving the existing address
+        normalization behavior.
+        """
+        value = str(address or "")
+        hex_value = value[2:] if value[:2].lower() == "0x" else value
+
+        if len(hex_value) == 40 and all(
+            character in "0123456789abcdefABCDEF"
+            for character in hex_value
+        ):
+            return f"0x{hex_value.lower()}"
+
+        return value.lower()
+
+    @classmethod
+    def _call_identity(cls, call: dict) -> str:
+        """'function@address' identity; function names remain case-sensitive."""
+        return (
+            f"{call.get('function') or ''}@"
+            f"{cls._canonical_address(call.get('address'))}"
+        )
 
     def rank(self, forensics_result, tx_analysis: dict) -> RankingResult:
         """
@@ -111,20 +133,21 @@ class FunctionRanker:
                 }
                 address_calls_with_created_contract_in_params_memo[key] = []
 
-            if call['address'] not in address_list:
-                address_list.append(call['address'])
+            normalized_address = self._canonical_address(call['address'])
+            if normalized_address not in address_list:
+                address_list.append(normalized_address)
 
             if str(call['depth']) not in address_calls_with_created_contract_in_params_memo[key]:
                 address_calls_with_created_contract_in_params_memo[key].append(str(call['depth']))
                 address_calls_with_created_contract_in_params[key]['count'] += 1
                 address_calls_with_created_contract_in_params[key]['calls'].append({
                     'gas': call['gas'],
-                    'address': call['address'],
+                    'address': normalized_address,
                     'params': call['params'] if len(call['params']) < 200 else f"{call['params'][:200]}...",
                     'depth': call['depth']
                 })
-                if call['address'] not in address_calls_with_created_contract_in_params[key]['address']:
-                    address_calls_with_created_contract_in_params[key]['address'].append(call['address'])
+                if normalized_address not in address_calls_with_created_contract_in_params[key]['address']:
+                    address_calls_with_created_contract_in_params[key]['address'].append(normalized_address)
 
         # Process functions to be inspected
         for _, value in forensics_result.functions_to_be_inspected.items():
@@ -133,7 +156,9 @@ class FunctionRanker:
                     if call['function'].lower() in self.extended_filtered_functions:
                         continue
 
-                    key = call['function'] + '_' + call['address']
+                    normalized_address = self._canonical_address(call['address'])
+                    key = f"{call['function']}_{normalized_address}"
+
                     if key not in functions_to_be_inspected:
                         functions_to_be_inspected[key] = {
                             'count': 0,
@@ -141,8 +166,8 @@ class FunctionRanker:
                         }
                         function_call_memo[key] = []
 
-                    if call['address'] not in address_list:
-                        address_list.append(call['address'])
+                    if normalized_address not in address_list:
+                        address_list.append(normalized_address)
 
                     if str(call['depth']) not in function_call_memo[key]:
                         function_call_memo[key].append(str(call['depth']))
@@ -160,9 +185,16 @@ class FunctionRanker:
                 function_name, _, address = function_call.rpartition('::')
                 if function_name.lower() in self.extended_filtered_functions:
                     continue
-                if address and address.lower() not in [a.lower() for a in address_list]:
-                    address_list.append(address)
-                function_call_key = function_call.replace('::', '_')
+
+                normalized_address = self._canonical_address(address) if address else ""
+                if normalized_address and normalized_address not in address_list:
+                    address_list.append(normalized_address)
+
+                if address:
+                    function_call_key = f"{function_name}_{normalized_address}"
+                else:
+                    function_call_key = function_call.replace('::', '_')
+
                 function_call_value = {
                     'count': len(tx_analysis['function_call_loc_memo'][function_call]),
                     'calls': [
@@ -174,7 +206,15 @@ class FunctionRanker:
                         for call in tx_analysis['function_call_loc_memo'][function_call]
                     ]
                 }
-                functions_to_be_inspected[function_call_key] = function_call_value
+
+                if function_call_key in functions_to_be_inspected:
+                    # The fallback can encounter equivalent keys under different
+                    # address spellings. Merge evidence without inventing calls.
+                    existing = functions_to_be_inspected[function_call_key]
+                    existing['count'] += function_call_value['count']
+                    existing['calls'].extend(function_call_value['calls'])
+                else:
+                    functions_to_be_inspected[function_call_key] = function_call_value
 
         # Sort functions by count (descending)
         functions_to_be_inspected = sorted(
@@ -218,3 +258,5 @@ class FunctionRanker:
                     current_depth = len(call['depth'])
 
         return current_depth
+
+

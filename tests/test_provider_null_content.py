@@ -267,3 +267,57 @@ def test_api_null_content_that_recovers_completes(make_client):
     c, run_id, run = run_scenario(make_client, "nullcheckonce")
     assert run["state"] == "completed", run
     assert c.get(f"/api/runs/{run_id}/result").status_code == 200
+
+
+def test_query_json_composed_retries_exhausted_on_unparseable_content(monkeypatch):
+    a = gpt(
+        monkeypatch,
+        None, None, "not json",
+        None, None, "still not json",
+        None, None, "never json",
+    )
+
+    with pytest.raises(ModelResponseError):
+        a.query_json("return structured data")
+
+    assert len(a._client.calls) == 9
+    assert all(
+        isinstance(message["content"], str)
+        for call in a._client.calls
+        for message in call
+        if message["role"] in ("user", "assistant")
+    )
+    assert all(
+        isinstance(message["content"], str)
+        for message in a.memory
+        if message["role"] in ("user", "assistant")
+    )
+    assert not any(
+        not isinstance(message["content"], str)
+        for message in a.memory
+    )
+
+
+def test_query_json_null_content_failure_is_terminal_across_outer_reasks(monkeypatch):
+    a = gpt(monkeypatch, "not json", "nope", None)
+
+    with pytest.raises(ProviderFailure) as exc_info:
+        a.query_json("return structured data")
+
+    assert exc_info.value.kind == "null_content"
+    assert len(a._client.calls) == 5
+    assert all(
+        isinstance(message["content"], str)
+        for call in a._client.calls
+        for message in call
+        if message["role"] in ("user", "assistant")
+    )
+    assert all(
+        isinstance(message["content"], str)
+        for message in a.memory
+        if message["role"] in ("user", "assistant")
+    )
+    assert not any(
+        not isinstance(message["content"], str)
+        for message in a.memory
+    )

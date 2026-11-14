@@ -440,6 +440,189 @@ try {
   ok(x.$('results').querySelectorAll('img, script, b').length === 0 && !x.w.__pwned, 'no injected elements or script execution');
   ok(x.$('results').textContent.includes(evil), 'markup shown as literal text');
   x.close();
+  // ======================================================================================
+  section('safe markdown renders the supported subset as DOM elements');
+  const markdownCapture = {
+    kind: 'capture',
+    transaction_hash: hash('abcd'),
+    chain: 'eth',
+    timestamp: '',
+    duration: null,
+    understanding: [
+      'A **bold** word and an *italic* word with `inline code`.',
+      '',
+      '- First list item',
+      '* Second list item',
+    ].join('\n'),
+    warnings: [],
+    ranking: [{
+      rank: 1,
+      function: 'exampleFunction',
+      address: '0x' + 'a'.repeat(40),
+      evidence: ['Evidence with **bold**, *italic*, and `code`.'],
+    }],
+    candidates: [],
+    stats: {},
+  };
+  const markdownPage = await openPage('#capture', {
+    fetchImpl: (url, o) => (
+      url.pathname === '/api/capture'
+        ? Promise.resolve(new Response(JSON.stringify(markdownCapture), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }))
+        : fetch(url, o)
+    ),
+  });
+
+  const understanding = await until(() => markdownPage.$('results').querySelector('.understanding .safe-markdown'));
+  ok(!!understanding, 'capture understanding rendered');
+  ok(understanding?.querySelector('strong')?.textContent === 'bold', 'bold syntax renders as strong');
+  ok(understanding?.querySelector('em')?.textContent === 'italic', 'italic syntax renders as em');
+  ok(understanding?.querySelector('code')?.textContent === 'inline code', 'inline code syntax renders as code');
+  ok(
+    understanding?.querySelectorAll('ul > li').length === 2 &&
+      understanding.querySelector('ul > li')?.textContent === 'First list item',
+    'simple unordered-list lines render as list items',
+  );
+
+  const evidence = markdownPage.$('results').querySelector('.finding .evidence ul');
+  ok(!!evidence?.querySelector('strong'), 'evidence bold syntax renders as strong');
+  ok(!!evidence?.querySelector('em'), 'evidence italic syntax renders as em');
+  ok(!!evidence?.querySelector('code'), 'evidence inline code syntax renders as code');
+  markdownPage.close();
+
+  // ======================================================================================
+  section('HTML and javascript URLs remain visible literal text');
+  const hostileText = '<img src=x onerror="window.__pwned=1"> <script>window.__pwned=2</script> [click](javascript:window.__pwned=3)';
+  const hostileCapture = {
+    kind: 'capture',
+    transaction_hash: hash('abcd'),
+    chain: 'eth',
+    timestamp: '',
+    duration: null,
+    understanding: hostileText,
+    warnings: [],
+    ranking: [{
+      rank: 1,
+      function: 'exampleFunction',
+      address: '',
+      evidence: [hostileText],
+    }],
+    candidates: [],
+    stats: {},
+  };
+  const hostilePage = await openPage('#capture', {
+    fetchImpl: (url, o) => (
+      url.pathname === '/api/capture'
+        ? Promise.resolve(new Response(JSON.stringify(hostileCapture), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }))
+        : fetch(url, o)
+    ),
+  });
+
+  const hostileUnderstanding = await until(() => hostilePage.$('results').querySelector('.understanding .safe-markdown'));
+  ok(!!hostileUnderstanding, 'hostile capture understanding rendered');
+  ok(hostileUnderstanding?.textContent.includes('<img src=x'), 'HTML image tag remains visible text');
+  ok(hostileUnderstanding?.textContent.includes('<script>'), 'HTML script tag remains visible text');
+  ok(hostileUnderstanding?.textContent.includes('javascript:'), 'javascript URL remains visible text');
+  ok(
+    hostileUnderstanding?.querySelectorAll('img, script, a').length === 0,
+    'hostile understanding creates no image, script, or link elements',
+  );
+  ok(
+    hostileUnderstanding?.innerHTML.includes('<script') === false &&
+      hostileUnderstanding?.innerHTML.includes('<img') === false,
+    'understanding DOM contains no injected script or image markup',
+  );
+  ok(!hostilePage.w.__pwned, 'hostile text executes no script');
+  const hostileEvidence = hostilePage.$('results').querySelector('.finding .evidence');
+  ok(hostileEvidence?.textContent.includes('<img src=x'), 'evidence HTML remains visible text');
+  ok(hostileEvidence?.textContent.includes('javascript:'), 'evidence javascript URL remains visible text');
+  ok(
+    hostileEvidence?.querySelectorAll('img, script, a').length === 0,
+    'evidence creates no image, script, or link elements',
+  );
+  hostilePage.close();
+
+  // ======================================================================================
+  section('safe markdown preserves multiple narrative paragraphs');
+  const paragraphsCapture = {
+    kind: 'capture',
+    transaction_hash: hash('abcd'),
+    chain: 'eth',
+    timestamp: '',
+    duration: null,
+    understanding: 'First paragraph.\n\nSecond paragraph.\n\nThird paragraph.',
+    warnings: [],
+    ranking: [],
+    candidates: [],
+    stats: {},
+  };
+  const paragraphsPage = await openPage('#capture', {
+    fetchImpl: (url, o) => (
+      url.pathname === '/api/capture'
+        ? Promise.resolve(new Response(JSON.stringify(paragraphsCapture), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }))
+        : fetch(url, o)
+    ),
+  });
+
+  const paragraphs = await until(() => {
+    const container = paragraphsPage.$('results').querySelector('.understanding .safe-markdown');
+    return container?.querySelectorAll(':scope > p').length === 3 ? container : null;
+  });
+  ok(!!paragraphs, 'three blank-line-separated paragraphs render as three paragraphs');
+  ok(
+    Array.from(paragraphs?.querySelectorAll(':scope > p') || []).map((p) => p.textContent).join('|') ===
+      'First paragraph.|Second paragraph.|Third paragraph.',
+    'paragraph text and order are preserved',
+  );
+  paragraphsPage.close();
+
+  // ======================================================================================
+  section('empty and whitespace-only understanding uses the empty-state fallback');
+  for (const emptyUnderstanding of ['', '   \n \t\n']) {
+    const emptyCapture = {
+      kind: 'capture',
+      transaction_hash: hash('abcd'),
+      chain: 'eth',
+      timestamp: '',
+      duration: null,
+      understanding: emptyUnderstanding,
+      warnings: [],
+      ranking: [],
+      candidates: [],
+      stats: {},
+    };
+    const emptyPage = await openPage('#capture', {
+      fetchImpl: (url, o) => (
+        url.pathname === '/api/capture'
+          ? Promise.resolve(new Response(JSON.stringify(emptyCapture), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            }))
+          : fetch(url, o)
+      ),
+    });
+
+    const emptyPanel = await until(() => emptyPage.$('results').querySelector('.understanding'));
+    ok(!!emptyPanel, 'empty understanding panel rendered');
+    ok(
+      emptyPanel?.querySelector('.safe-markdown') === null,
+      'empty understanding does not create a safe-markdown container',
+    );
+    ok(
+      emptyPanel?.querySelector('.empty')?.textContent === 'No narrative was produced for this transaction.',
+      'empty understanding displays the existing empty-state fallback',
+    );
+    emptyPage.close();
+  }
+
 } catch (err) {
   console.error('\nTEST HARNESS ERROR:', err);
   failures++;

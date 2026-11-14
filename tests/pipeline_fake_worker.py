@@ -9,6 +9,12 @@ def main():
     h = sys.argv[sys.argv.index("--hash") + 1]
     scenario = {v: k for k, v in fakes.HASH_PREFIX.items()}[h[2:6]]
     fakes.install(scenario, setattr)
+
+    # Keep API subprocess tests fast by removing retry sleeps only.
+    # Retry counts and retry/exhaustion semantics are unchanged.
+    import faultseeker.utils.agent as agent_module
+    agent_module.CONTENT_RETRY_DELAYS = (0, 0)
+
     from faultseeker.server import worker
     return worker.main()
 

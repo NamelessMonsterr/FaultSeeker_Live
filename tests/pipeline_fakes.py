@@ -87,7 +87,7 @@ def names_in(prompt):
 
 REFORMAT = "The task is not in standard JSON format."
 INFO_MARK = "Understand and translate the required additional information"
-PVF_MARK = "Based on the current understanding of the transaction, please decide if any function"
+PVF_MARK = "function implementation is potentially vulnerable"  # matches both the old and the evidence-grounded prompt wording
 GOOD_TASK = json.dumps({"task_selected": 1, "task_description": "inspect the function", "information": "", "additional_information": ""})
 
 # Model-reply fixtures (raw TEXT, exactly what a provider would send back): scenario -> {"task": [replies], "info": reply}.
