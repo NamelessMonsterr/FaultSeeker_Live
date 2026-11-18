@@ -2,6 +2,7 @@ import json
 from copy import deepcopy
 from faultseeker.data_collection.txn_sequencer import TransactionSequencer
 from faultseeker.data_collection.txn_info_collector import TransactionInfoCollector
+from faultseeker.forensics.contracts import ask_list, is_flagged, parse_roles
 from faultseeker.forensics.trace_analyzer import TraceAnalyzer
 from faultseeker.forensics.fund_flow_analyzer import FundFlowAnalyzer
 from faultseeker.prompts.forensics.address_classification_prompts import AddressClassificationPrompts
@@ -73,12 +74,13 @@ class AddressClassifier:
             address_call_summary['function_calls'] = list(self.address_to_be_inspected[addr]['function_calls'].keys())
             address_call_summary['address'] = addr
             addr_prompt = self.prompts.identify_role_of_address + 'The address call information is as follows:' + json.dumps(address_call_summary)
-            addr_result = self.agent.query(addr_prompt, format='dict')
+            # Typed contract: a list of role strings. A provider failure or an unusable reply raises (it is never a classification);
+            # an explicit [] leaves the address unclassified, as before. 'unknown'/'vulnerable' match in any letter case.
+            addr_result = parse_roles(ask_list(self.agent, addr_prompt, "address role classification"))
             if addr_result:
-                if 'unknown' not in addr_result:
-                    if 'vulnerable' not in addr_result:
-                        self.address_inspected[addr] = address_call_summary
-                        self.address_inspected[addr]['role'] = addr_result
+                if not is_flagged(addr_result):
+                    self.address_inspected[addr] = address_call_summary
+                    self.address_inspected[addr]['role'] = addr_result
                 self.address_to_be_inspected[addr]['role'] = addr_result
 
         for addr in self.address_inspected:

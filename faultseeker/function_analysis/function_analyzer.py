@@ -14,7 +14,10 @@ from faultseeker.prompts.function_analysis import (
     VulnerabilityAnalysisPrompts,
     LocalTaskPrompts,
 )
-from faultseeker.utils.agent import ModelResponseError, ProviderFailure
+from faultseeker.utils.agent import AbstractAgent, ModelResponseError, ProviderFailure, fit_prompt
+from faultseeker.utils.evidence import normalize_confidence, normalize_evidence
+from faultseeker.utils.identity import IdentityError, resolve_identity
+from faultseeker.utils.solidity_selectors import function_matches_selector, is_bare_selector
 from faultseeker.utils.utils import build_agent
 
 
@@ -33,6 +36,7 @@ _CANDIDATE_ATTEMPT_STATE_FIELDS = (
     "children_call_memo_single",
     "children_call_memo",
     "repeated_patterns",
+    "verdict_rejections",
 )
 
 
@@ -103,6 +107,7 @@ class FunctionAnalyzer:
         self.failed_function_memo = {}        # identity -> number of failed attempts (history; never cleared)
         self.attempted_function_memo = []     # identities whose analysis was attempted at least once
         self.unresolved_failures = {}         # identity -> bounded, redacted error; removed when a retry succeeds
+        self.evidence_gaps = {}               # identity -> what the analysis had to do without (e.g. no function source code)
 
     def _get_function_call_depth(self, function_call):
         temp = function_call.rsplit('_',1)
@@ -457,51 +462,180 @@ class FunctionAnalyzer:
             self.understanding_result = self.organization_agent.query_text(understanding_prompt)
         logging.info(f"Current understanding: {self.understanding_result}")
 
+    _VERDICT_KEY = re.compile(r'^.+_0x[0-9a-fA-F]{40}$')
+
+    def _candidate_context(self):
+        """[(identifier, has_source)] for the candidate(s) of the analysis in progress: `<function>_<address>` exactly as the
+        model is told to key its verdict, and whether that function's source code is in the analysis context."""
+        s = self.function_call_info_summary if isinstance(self.function_call_info_summary, dict) else {}
+        out = []
+        if isinstance(s.get('pattern'), list):
+            related = s.get('function_call_related_info') or {}
+            for f in s['pattern']:
+                if isinstance(f, dict) and f.get('function') and f.get('address'):
+                    info = related.get(f"{f['function']}::{f['address']}") or {}
+                    out.append((f"{f['function']}_{f['address']}", bool(info.get('function_source_code'))))
+        elif s.get('function'):
+            if s.get('address'):
+                out.append((f"{s['function']}_{s['address']}", bool(s.get('function_source_code'))))
+            for address, info in (s.get('address_related_info') or {}).items():
+                out.append((f"{s['function']}_{address}", bool(isinstance(info, dict) and info.get('function_source_code'))))
+        seen, unique = set(), []
+        for identifier, has_source in out:
+            if identifier not in seen:
+                seen.add(identifier)
+                unique.append((identifier, has_source))
+        return unique
+
+    def _record_evidence_gaps(self):
+        for identifier, has_source in self._candidate_context():
+            if not has_source:
+                function, _, address = identifier.rpartition('_')
+                gaps = self.evidence_gaps.setdefault(self._identity(function, address), [])
+                if 'no function source code' not in gaps:
+                    gaps.append('no function source code')
+
+    def _resolve_verdict_key(self, key, context):
+        """The identifier of THE ONE allowed identity a model-supplied key names, or ValueError.
+
+        `context` is the list of (identifier, has_source) the analysis allows: the candidates of this analysis and the
+        trace-backed functions its context shows. Whatever spelling is used (complete, abbreviated, decorated) the key must
+        resolve to exactly one of them (see utils.identity): function-name case is preserved, only the address is
+        case-insensitive, and an abbreviation shared by several identities is ambiguous, never guessed."""
+        try:
+            return resolve_identity(key, [identifier for identifier, _ in context])
+        except IdentityError as exc:
+            raise ValueError({"malformed": "the key is not <function>_<address>",
+                              "too_short": "the abbreviated address is too short to identify anything",
+                              "ambiguous": "ambiguous abbreviation"}.get(exc.kind, "not a candidate of this analysis")) from None
+
+    def _verdict_allowed(self):
+        """[(identifier, has_source)] a verdict may name: this analysis's candidates, plus functions its context shows that the
+        trace backs (a child call listed in the analysis context that exists in the transaction's call memo)."""
+        allowed = list(self._candidate_context())
+        summary = self.function_call_info_summary if isinstance(self.function_call_info_summary, dict) else {}
+        memo = (getattr(self, 'tx_analysis', None) or {}).get('function_call_loc_memo') or {}
+        for key in (summary.get('high_appreance_count_children_calls') or {}):
+            name, sep, address = str(key).partition('::')
+            if sep and name and self._is_address(address) and str(key).lower() in memo:
+                identifier = f"{name}_{address.lower()}"
+                if identifier not in [i for i, _ in allowed]:
+                    allowed.append((identifier, False))
+        return allowed
+
+    def _note_rejection(self, reason):
+        rejections = self.__dict__.setdefault('verdict_rejections', {})
+        rejections[reason] = rejections.get(reason, 0) + 1
+
+    @staticmethod
+    def _confidence(value):
+        """A usable confidence score as a float, or None: finite and in (0, 1]. Zero means no support."""
+        return normalize_confidence(value)
+
+    @staticmethod
+    def _adequacy_verdict(reply):
+        """True ONLY for an explicit completion response: exactly Yes (any case, optional final . or !) or a JSON object
+        {"adequate": true}. Everything else, including text that merely contains 'yes', is not completion."""
+        if not isinstance(reply, str):
+            return False
+        text = reply.strip()
+        if re.fullmatch(r'(?i)yes[.!]?', text):
+            return True
+        try:
+            value = json.loads(AbstractAgent._unfence(text))
+        except ValueError:
+            return False
+        return isinstance(value, dict) and value.get('adequate') is True
+
     def _update_potentially_vulnerable_function(self):
-        prompt = self.vulnerability_prompts.update_potentially_vulnerable_function
-        prompt += "Current understanding:" + self.understanding_result
-        prompt += "Current task:" + json.dumps(self.current_task)
-        prompt += 'Analysis result of current task:' + json.dumps(self.processing_result)
-        prompt += 'The following function calls have been confirmed to be vulnerable, if it is in the provided information, please add it to the returned JSON with the predefined format: ' + str(self.cheatsheet)
-        result = self.organization_agent.query_json(prompt, expect=(dict, list))
+        instructions = self.vulnerability_prompts.update_potentially_vulnerable_function
+        context = self._candidate_context()
+        allowed = self._verdict_allowed()
+        if context:
+            instructions += "\nCandidate function identifiers for this analysis (use exactly these strings as keys): " + ", ".join(i for i, _ in context)
+            extra = [i for i, _ in allowed[len(context):]]
+            if extra:
+                instructions += "\nFunctions shown in the trace context that may also be named: " + ", ".join(extra)
+            missing = [i for i, has in context if not has]
+            instructions += ("\nFunction source code in the analysis context: "
+                             + ("available for every candidate. " if not missing else
+                                "NOT available for " + ", ".join(missing) + " (judge only from the supplied trace facts; missing source "
+                                "is not evidence that the function is safe). "))
+        tail = ('The following function calls have been confirmed to be vulnerable, if it is in the provided information, please add it to the returned JSON with the predefined format: '
+                + str(self.cheatsheet))
+        # Required: the instructions, the candidate identifiers and the closing contract. Compactable: the analysis evidence, which is
+        # shortened at its middle (head and tail kept, visibly marked) only when the request would exceed the input limit.
+        fitted = fit_prompt(instructions, [("current understanding", "Current understanding:" + self.understanding_result),
+                                           ("current task", "Current task:" + json.dumps(self.current_task)),
+                                           ("analysis result", 'Analysis result of current task:' + json.dumps(self.processing_result))],
+                            tail)
+        if fitted.shortened:
+            gaps = self.__dict__.setdefault('evidence_gaps', {})
+            for identifier, _ in context:
+                function, _, address = identifier.rpartition('_')
+                entry = gaps.setdefault(self._identity(function, address), [])
+                if self._INPUT_LIMIT_GAP not in entry:
+                    entry.append(self._INPUT_LIMIT_GAP)
+        result = self.organization_agent.query_json(fitted.text, expect=(dict, list))
         if isinstance(result, list):
             if result:
                 raise ModelResponseError("expected a JSON object of potentially vulnerable functions, got a non-empty list")
             result = {}
         logging.info(f"Vulnerable function: {result}")
-        for key in result:
+        accepted, ignored, seen = 0, 0, set()
+        for raw_key in result:
             try:
-                value = result[key]
-
+                value = result[raw_key]
+                try:
+                    key = self._resolve_verdict_key(raw_key, allowed)
+                except ValueError as exc:
+                    self._note_rejection(str(exc))
+                    raise
+                if key in seen:
+                    self._note_rejection("duplicate entry for the same function")
+                    raise ValueError("duplicate")
                 if isinstance(value, (list, tuple)):
-                    if len(value) != 2:
-                        raise ValueError("expected two evidence fields")
-                    evidence, confidence_score = value
+                    if len(value) < 2:
+                        self._note_rejection("evidence or confidence missing")
+                        raise ValueError("expected evidence and a confidence score")
+                    evidence, confidence_score = value[0], value[1]      # extra elements (e.g. a labelled hypothesis) are ignored
                 elif isinstance(value, dict):
-                    evidence = value['evidence']
-                    confidence_score = value['confidence_score']
+                    if 'evidence' not in value or 'confidence_score' not in value:
+                        self._note_rejection("evidence or confidence missing")
+                        raise KeyError("evidence/confidence_score")
+                    evidence, confidence_score = value['evidence'], value['confidence_score']
                 else:
+                    self._note_rejection("unsupported value shape")
                     raise TypeError("unsupported evidence value shape")
+                texts, _ = normalize_evidence(evidence)
+                confidence_score = self._confidence(confidence_score)
+                if not texts or confidence_score is None:
+                    self._note_rejection("unusable evidence or confidence")
+                    raise ValueError("evidence or confidence score is missing or unsupported")
 
-                if not evidence or not confidence_score:
-                    raise ValueError("evidence or confidence score is missing")
-
+                seen.add(key)
                 if key not in self.potentially_vulnerable_functions:
                     self.potentially_vulnerable_functions[key] = {
                         'confidence_score': [confidence_score],
-                        'evidence': [evidence],
+                        'evidence': list(texts),
                         'depth': self._get_function_call_depth(key),
                     }
                 else:
                     self.potentially_vulnerable_functions[key]['confidence_score'].append(confidence_score)
-                    self.potentially_vulnerable_functions[key]['evidence'].append(evidence)
-
+                    self.potentially_vulnerable_functions[key]['evidence'].extend(texts)
+                accepted += 1
             except Exception:
-                logging.warning(
-                    "Skipping malformed potentially-vulnerable-function entry; "
-                    "evidence or confidence data could not be processed."
-                )
-    
+                ignored += 1
+        if result and not accepted:
+            # The model named function(s) but nothing was usable. That must not read as "analyzed and clean": fail the step
+            # (the candidate loop retries it, and an unrecovered candidate fails Stage 2 as before).
+            raise ModelResponseError(f"the verdict named {ignored} function(s) but none had a usable <function>_<address> key, "
+                                     "evidence and confidence score")
+        if ignored:
+            print(f"         {ignored} verdict entr{'y' if ignored == 1 else 'ies'} without a usable key, evidence or confidence ignored")
+
+    _INPUT_LIMIT_GAP = 'verdict input shortened to fit the model input limit'
+
     def _update_children_call_memo(self, function_call, function_name=''):
         for i in function_call:
             if (i['function'] == function_name) and (i['call_type'] == 'delegatecall'):
@@ -564,7 +698,7 @@ class FunctionAnalyzer:
         logging.info(f"Task tree: {self.task_tree}")
 
         # Why the loop ended decides whether the candidate is done. Only an explicit completion signal counts:
-        #   - the adequacy check answering yes (the model confirms the analysis is sufficient), or
+        #   - the adequacy check giving an explicit completion response (_adequacy_verdict: exactly Yes, or {"adequate": true}), or
         #   - _temp_check() returning True (the hook's own "finished" signal; it is a constant False today).
         # Running out of iterations, or being stopped by an error, is NOT completion, however many steps succeeded or
         # whatever was found on the way.
@@ -588,7 +722,7 @@ class FunctionAnalyzer:
                     check_prompt = self.function_prompts.check_analysis_adequacy
                     check_prompt += "Current understanding:" + self.understanding_result
                     result = self.organization_agent.query_text(check_prompt)
-                    if 'yes' in result.lower():
+                    if self._adequacy_verdict(result):
                         completed = True
                         break
 
@@ -637,6 +771,12 @@ class FunctionAnalyzer:
                 retryable=retryable
             ) from None  # no chaining: the raw provider text stays out of tracebacks
 
+    @staticmethod
+    def _source_entries_for_selector(by_name, selector):
+        """The parsed functions of one contract whose signature hashes to `selector` (empty when none can be proven)."""
+        return [info for infos in by_name.values() for info in infos
+                if isinstance(info.get('content'), str) and function_matches_selector(info['content'], selector)]
+
     def _retrieve_source_code(self, address, function_name):
         output = []
         output_memo = []
@@ -647,13 +787,17 @@ class FunctionAnalyzer:
         if address not in self.contract_info:
             contract_info = ContractDownloader(self.analysis_result.chain,[address]).run()
         if address in contract_info:
-            if function_name in contract_info[address]:
-                source_code_list = contract_info[address][function_name]
-                for source_code in source_code_list:
-                    if source_code['start_line'] != source_code['end_line']:
-                        if source_code['content'] not in output_memo:
-                            output_memo.append(source_code['content'])
-                            output.append({'path':source_code['path'],'source_code':source_code['content']})
+            by_name = contract_info[address]
+            source_code_list = by_name.get(function_name)
+            if source_code_list is None and is_bare_selector(function_name):
+                # The trace shows an unresolved call as a bare 4-byte selector, while the downloaded source is indexed by function
+                # name: match them by the selector each function's signature hashes to (exact, never a guess).
+                source_code_list = self._source_entries_for_selector(by_name, function_name)
+            for source_code in source_code_list or []:
+                if source_code['start_line'] != source_code['end_line']:
+                    if source_code['content'] not in output_memo:
+                        output_memo.append(source_code['content'])
+                        output.append({'path':source_code['path'],'source_code':source_code['content']})
         return output
 
     def _retrieve_related_info(self, address, function_name):
@@ -740,8 +884,87 @@ class FunctionAnalyzer:
         names = [n for n in (list(reply) if isinstance(reply, dict) else reply) if isinstance(n, str) and n.strip()]
         return names or None
 
+    def _resolve_selection(self, names, resolve):
+        """(valid keys in the model's order without duplicates, number of rejected names). `resolve(name)` returns the candidate
+        key a name stands for or None; names that are not candidates, and repeats, are rejected, never analyzed."""
+        valid, rejected = [], 0
+        for name in names:
+            key = resolve(name)
+            if key is None or key in valid:
+                rejected += 1
+            else:
+                valid.append(key)
+        return valid, rejected
+
+    def _apply_narrowing(self, current, names, resolve):
+        """The selection after a narrowing reply: the validated subset when it is non-empty and actually smaller, else the
+        current selection unchanged (an unusable or fully invalid reply is ignored and counted, never trusted)."""
+        if names is None:
+            self.selection_replies_ignored += 1
+            return current
+        valid, rejected = self._resolve_selection(names, resolve)
+        self.selection_rejected += rejected
+        if not valid:
+            self.selection_replies_ignored += 1
+            return current
+        return valid if len(valid) < len(current) else current
+
+    def _candidate_universe(self):
+        """identities (function@address) of every candidate this analysis could examine, before any narrowing."""
+        universe = set()
+        for key in self.functions_to_be_inspected:
+            name, address = self._split_function_key(key)
+            universe.add(self._identity(name, address))
+        for function, info in self.address_calls_with_created_contract_in_params.items():
+            for address in info.get('address', []):
+                universe.add(self._identity(function, address))
+        for pattern in self.repeated_patterns:
+            for f in pattern.get('pattern', []):
+                if f.get('function'):
+                    universe.add(self._identity(f['function'], f['address']))
+        return universe
+
+    def _compute_coverage(self, selected_inspected, selected_created):
+        universe = self._candidate_universe()
+        selected = set()
+        for pattern in self.repeated_patterns:
+            for f in pattern.get('pattern', []):
+                if f.get('function'):
+                    selected.add(self._identity(f['function'], f['address']))
+        for key in selected_inspected:
+            name, address = self._split_function_key(key)
+            selected.add(self._identity(name, address))
+        for function in selected_created:
+            for address in self.address_calls_with_created_contract_in_params[function].get('address', []):
+                selected.add(self._identity(function, address))
+        omitted = sorted(universe - selected)
+        failed = sorted(i for i in self.unresolved_failures if i in selected)
+        analyzed = [i for i in selected if i in self.examined_function_memo]
+        limited = bool(omitted or failed)
+        self._coverage = {
+            'status': 'no_candidates' if not universe else ('limited' if limited else 'complete'),
+            'limited': limited, 'candidates': len(universe), 'selected': len(selected), 'analyzed': len(analyzed),
+            'omitted': omitted, 'failed': failed, 'selection_rejected': self.selection_rejected,
+            'selection_replies_ignored': self.selection_replies_ignored,
+        }
+
+    def coverage_report(self):
+        """What the analysis covered: candidates / selected / analyzed / omitted (not selected, never analyzed) / failed.
+        status: no_candidates (nothing to analyze), complete, or limited (some candidates were omitted or failed). An omitted
+        candidate is not analyzed and says nothing about whether it is safe."""
+        cov = getattr(self, '_coverage', None)
+        if cov is None:
+            return {'status': 'no_candidates', 'limited': False, 'candidates': 0, 'selected': 0, 'analyzed': 0, 'omitted': [],
+                    'failed': [], 'selection_rejected': 0, 'selection_replies_ignored': 0}
+        return deepcopy(cov)
+
     def _review_function_calls(self):
+        self.selection_rejected = 0
+        self.selection_replies_ignored = 0
+        self._coverage = None
+        self.verdict_rejections = {}
         self.examined_function_memo = []
+        self.evidence_gaps = {}
         self.failed_function_memo = {}
         self.attempted_function_memo = []
         self.unresolved_failures = {}
@@ -759,9 +982,10 @@ class FunctionAnalyzer:
                 function_call_to_be_inspected = json.dumps(function_call_to_be_inspected_summary),
                 balance_change = json.dumps(self.fundflow_analysis['balance_change'])
             )
-            selected_functions_new = self._narrowing_reply(prompt, len(selected_functions))
-            if selected_functions_new is not None and len(selected_functions_new) < len(selected_functions):
-                selected_functions = selected_functions_new
+            by_canonical = {self._canonical_key(k): k for k in self.functions_to_be_inspected}
+            selected_functions = self._apply_narrowing(
+                selected_functions, self._narrowing_reply(prompt, len(selected_functions)),
+                lambda n: (n if n in self.functions_to_be_inspected else by_canonical.get(self._canonical_key(n))) if isinstance(n, str) else None)
         selected_functions_with_created_contract_in_params = list(self.address_calls_with_created_contract_in_params.keys())
         count = 0
         while (len(selected_functions_with_created_contract_in_params) > 5) and (count < 3):
@@ -775,11 +999,18 @@ class FunctionAnalyzer:
             prompt = self.function_prompts.narrow_down_functions_with_created_contracts.format(
                 function_call_to_be_inspected = json.dumps(function_call_to_be_inspected_summary),
             )
-            selected_functions_new = self._narrowing_reply(prompt, len(selected_functions_with_created_contract_in_params))
-            if selected_functions_new is not None and len(selected_functions_new) < len(selected_functions_with_created_contract_in_params):
-                selected_functions_with_created_contract_in_params = selected_functions_new
+            created = self.address_calls_with_created_contract_in_params
+            selected_functions_with_created_contract_in_params = self._apply_narrowing(
+                selected_functions_with_created_contract_in_params,
+                self._narrowing_reply(prompt, len(selected_functions_with_created_contract_in_params)),
+                lambda n: n if n in created else (self._split_function_key(n)[0] if self._split_function_key(n)[0] in created else None))
         
         self._prepare_children_call_memo(selected_functions)
+        coverage_inspected = [f for f in selected_functions if f in self.functions_to_be_inspected]
+        coverage_created = [f if f in self.address_calls_with_created_contract_in_params else self._split_function_key(f)[0]
+                            for f in selected_functions_with_created_contract_in_params
+                            if f in self.address_calls_with_created_contract_in_params
+                            or self._split_function_key(f)[0] in self.address_calls_with_created_contract_in_params]
 
         total_functions = len(self.repeated_patterns) + len(selected_functions_with_created_contract_in_params) + len(selected_functions)
         current = 0
@@ -905,6 +1136,7 @@ class FunctionAnalyzer:
                     'potentially_vulnerable_functions': self.potentially_vulnerable_functions,
                     'current_understanding': self.understanding_result
                 }
+        self._compute_coverage(coverage_inspected, coverage_created)
 
     # -- candidate identity and outcomes -----------------------------------------------------------------------
     MAX_CANDIDATE_ATTEMPTS = 2
@@ -922,6 +1154,7 @@ class FunctionAnalyzer:
 
     def _capture_candidate_attempt_state(self):
         """Capture an isolated baseline of mutable per-candidate analysis state."""
+        self.__dict__.setdefault('verdict_rejections', {})
         return {
             field: deepcopy(getattr(self, field))
             for field in _CANDIDATE_ATTEMPT_STATE_FIELDS
@@ -985,6 +1218,7 @@ class FunctionAnalyzer:
                     self.unresolved_failures.pop(identity, None)
                     if identity not in self.examined_function_memo:
                         self.examined_function_memo.append(identity)
+                self._record_evidence_gaps()
                 return None
 
         # Restore the original state after total failure. In particular, findings
@@ -1054,7 +1288,7 @@ class FunctionAnalyzer:
                     check_prompt = self.function_prompts.check_analysis_adequacy_alt
                     check_prompt += "Current understanding:" + self.understanding_result
                     result = self.organization_agent.query_text(check_prompt)
-                    if 'yes' in result.lower():
+                    if self._adequacy_verdict(result):
                         break
             except ProviderFailure:
                 raise                      # never swallowed: it would leave the transaction understanding silently short
@@ -1141,6 +1375,9 @@ class FunctionAnalyzer:
             'duration': time.time() - start_time,
             "ranked_result": self.ranked_result,
             'ranking_problem': self.ranking_problem,
+            'evidence_gaps': {k: list(v) for k, v in self.evidence_gaps.items()},
+            'coverage': self.coverage_report(),
+            'verdict_rejections': dict(self.verdict_rejections),
             'potentially_vulnerable_functions': self.potentially_vulnerable_functions,
             "transaction_understanding": self.understanding_result,
             'functions_to_be_inspected': self.functions_to_be_inspected,

@@ -21,6 +21,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import sys
@@ -378,6 +379,8 @@ class RunManager:
                 run.result_ready = True
             elif event == "error":
                 run.worker_error = payload
+                # The detail belongs in the (redacted, bounded) technical log; only a sanitized summary is published.
+                self._log(run, f"worker error {str(payload.get('type', ''))[:80]}: {str(payload.get('message', ''))[:500]}")
             return
         self._log(run, line)
         stripped = line.strip()
@@ -445,9 +448,12 @@ class RunManager:
             raise
         except Exception as exc:  # noqa: BLE001
             started = run.proc is not None
-            run.worker_error = {"type": type(exc).__name__,
-                                "message": (f"Lost the worker's output stream: {exc}" if started
-                                            else f"Could not start the analysis worker: {exc}")}
+            run.worker_error = {"type": type(exc).__name__, "supervisor": True,
+                                "message": ("Lost the worker's output stream." if started else "Could not start the analysis worker.")}
+            try:
+                self._log(run, f"worker supervision error {type(exc).__name__}: {exc}")
+            except Exception:    # noqa: BLE001 - logging must never block finalization
+                pass
             await self._kill(run)   # never leave a worker running once the run is finished
         finally:
             try:
@@ -540,11 +546,7 @@ class RunManager:
         log.error("finalizing run %s failed: %s: %s", run.id, type(exc).__name__, exc)
         if run.state in FINAL_STATES:
             return                                           # the outcome was already decided; keep it
-        detail = f"{type(exc.__cause__ or exc).__name__}: {exc.__cause__ or exc}"[:200]
-        try:
-            detail = run.redactor.clean(detail)
-        except Exception:    # noqa: BLE001
-            detail = type(exc).__name__
+        detail = self._safe_type(type(exc.__cause__ or exc).__name__)       # the type only; the text is in the server log above
         if isinstance(exc, ResultProcessingError):
             code, message = "result_processing_failed", f"The analysis finished but its result could not be processed ({detail})."
         else:
@@ -566,6 +568,12 @@ class RunManager:
             (self._dir(run.id) / "events.jsonl").write_text("\n".join(json.dumps(e) for e in run.events), encoding="utf-8")
         except Exception as exc:  # noqa: BLE001
             log.error("could not store events of run %s: %s", run.id, exc)
+
+    @staticmethod
+    def _safe_type(value) -> str:
+        """An exception class name that is safe to publish; anything else is replaced."""
+        text = str(value or "")
+        return text if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,60}", text) else "unexpected error"
 
     def _classify_failure(self, run: Run, rc) -> dict:
         err = run.worker_error or {}
@@ -602,8 +610,21 @@ class RunManager:
             return {"code": "analysis_incomplete", "message": message,
                     "hint": "Some functions could not be analyzed, usually a model or provider problem. Check the provider "
                             "key, quota and availability, then run again."}
-        if message:
+        if err.get("supervisor"):                      # our own fixed text, no exception text in it
             return {"code": "pipeline_error", "message": message, "hint": "See the technical logs for the full trace."}
+        if err.get("type") == "ForensicsModelError":
+            return {"code": "forensics_model_failed",
+                    "message": "Transaction forensics could not use a model reply, so the analysis stopped instead of guessing.",
+                    "hint": "The model answered in a form the pipeline cannot read. See the technical logs, then run again or try another model."}
+        if err.get("type") == "InputLimitExceeded":
+            return {"code": "input_too_large",
+                    "message": "A model request was larger than the supported input limit, so the analysis stopped instead of sending a cut request.",
+                    "hint": "Try a smaller transaction. See the technical logs for which request was too large."}
+        if message or err.get("type"):
+            # Generic worker error: only the exception type (made safe) is published; the raw text stays in the technical log.
+            return {"code": "pipeline_error",
+                    "message": f"The analysis stopped because of an internal error ({self._safe_type(err.get('type'))}).",
+                    "hint": "See the technical logs for the full trace."}
         return {"code": "worker_crashed",
                 "message": f"The analysis worker stopped unexpectedly (exit code {rc}).",
                 "hint": "See the technical logs, then run again."}

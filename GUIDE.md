@@ -359,23 +359,50 @@ FAULTSEEKER_TEST_FOUNDRY_DIRS=/f/1.4.4:/f/1.5.1:/f/1.9.0 python -m pytest tests 
 ./scripts/run_all_tests.sh                                  # Python suite, then the browser suite (cd tests/ui && npm install first run)
 ```
 
-### Results of the final verification (fresh unzip of the delivered build)
+### Results
+
+**Fresh results for this revision (evidence-fix build, run offline from the unzipped tree; nothing here is a live ETH/BSC result):**
 
 | Run | Conditions | Result |
 |---|---|---|
-| 1 | Python 3.12.3, full requirements (incl. `getSourceCode`), real Foundry **1.4.4 + 1.5.1 + 1.9.0** (1.9.0 tarball checksum matches the Dockerfile pin) | **261 passed, 0 failed, 0 skipped** |
-| 2 | Python 3.12.3, full requirements, **no Foundry on PATH** | 248 passed, 0 failed, 5 skipped (4 Foundry integration + 1 `cast sig` oracle) |
-| 3 | Python 3.12.3, **minimal packages** (fastapi, uvicorn, httpx, pytest), no Foundry | 154 passed, 0 failed, 12 skipped (each names its missing dependency), 1 third-party deprecation warning |
-| 4 | Browser suite: Node v22, jsdom 31, server on Python 3.12.3, local fake providers | **148 checks passed, 0 failed** |
+| Python suite | Python **3.11.15** (uv-managed; Render's version), full `requirements.txt` + `requirements-dev.txt`, **no Foundry** on PATH. `python -m pytest tests -q -p no:cacheprovider -rs` | **745 passed, 0 failed, 5 skipped**. Skips: 4 in `test_cast_integration.py` (Foundry `cast` + `anvil` not installed) and 1 in `test_selectors.py:34` (`cast` not installed) |
+| Browser suite | Node v22.23.4, jsdom 31, server on Python 3.11.15 with the fake worker and local fake providers. `cd tests/ui && npm test` | **242 checks passed, 0 failed** |
+| Real browser, one scenario | Headless Chromium 153 (npm `@sparticuz/chromium`) against the real server and fake worker, run `5e5e…` (junk model output, limited coverage), desktop 1280x900 and mobile 390x844 | Rendered and inspected by eye. It found a real defect (a long identifier in the warning banner overflowed the mobile viewport by 35 px); fixed in `console.css`, re-measured at 0 px on both widths. The *empty-report* wording for limited coverage and no candidates is covered by jsdom only, not by a screenshot |
 
-**Not re-run for this revision:** Python 3.11 (Render's version) was not available in the build environment, so the earlier Python 3.11
-runs were not repeated; the code uses only the standard library plus packages already required, but that is not a test result.
-New in this revision: `test_rpc_collection.py` (14 tests) and a local fake JSON-RPC node/Sourcify (`tests/fake_rpc.py`).
-The key proof is `test_collection_works_with_explorers_blocked_and_never_touches_them`: a `curl` stand-in that answers like Cloudflare and
-records every call is on PATH, collection succeeds for `eth` and `bsc` from the fake node, and the `curl` log stays empty.
-`test_real_worker_collects_over_rpc_when_explorers_are_blocked` shows the same through the real worker and pipeline.
+The Foundry integration tests (`test_cast_integration.py`) were **not run** here: Foundry is unavailable, so real-`cast` behaviour was not re-verified in this revision.
+
+**Baseline for comparison (the November 15 ZIP, re-run here on Python 3.11.15):** 528 passed, 5 skipped (same five skips), 221 jsdom checks.
+The new regressions were written first and run against that baseline: the six new files collected 213 tests, **150 failed and 63 passed** (the passing ones are guards, e.g. valid keys still accepted, a 10,000-character prompt still sent whole).
+
+**Historical claims (not re-verified in this revision; kept only as history).** An earlier revision recorded: Python 3.12.3 with real Foundry 1.4.4 + 1.5.1 + 1.9.0 =
+261 passed / 0 skipped; Python 3.12.3 without Foundry = 248 passed / 5 skipped; minimal packages = 154 passed / 12 skipped; browser suite = 148 checks.
+Those counts describe an older tree and are superseded by the table above. The RPC-only revision added `test_rpc_collection.py` and a fake JSON-RPC node/Sourcify
+(`tests/fake_rpc.py`); its key proof, `test_collection_works_with_explorers_blocked_and_never_touches_them`, still exists and still passes.
+
+**Old assertions that were changed (not weakened silently).** Requirement 1 reverses three behaviours that older tests had encoded, so those assertions were rewritten to the new rule:
+function names were matched case-insensitively when ranking (`test_ranking_contract.py`, `test_results.py`); a ranked full key that was not a finding was shown with empty evidence
+(`test_results.py`, `test_ranking_contract.py`); a model finding with a key that is not `<function>_<address>` was promoted as an unranked candidate (`test_results.py`).
+Two other tests only changed their *setup* because the old setup gave the model a key that is not a candidate of its context (`test_evidence_to_verdict.py`, `test_model_response_validation.py`); their assertions are unchanged.
 
 Key package versions are whatever pip resolved on the build date; they were not pinned for this run.
+
+### Touched state machines and invariants
+
+These flows were implicit (flags, list lengths, substring tests). They are now explicit; each invariant has a test.
+
+| Machine | States and transitions | Invariants |
+|---|---|---|
+| **Candidate selection** (`_review_function_calls`) | universe → selected → {analyzed, failed}; universe − selected = omitted. A narrowing reply is applied only if, after validation, it is non-empty and smaller | Selection names must resolve to a candidate (function name exact, address case-insensitive); unknown names and repeats are rejected and counted; the model's order is kept; an unusable or fully invalid reply is ignored (nothing is dropped); an omitted candidate is never in `examined_function_memo` |
+| **Coverage** (`coverage_report`, raw `coverage`, report `coverage`) | `no_candidates` / `complete` / `limited` (omitted or failed candidates) | Genuinely empty input reads differently from a limited analysis; an empty report with `limited` coverage is **not** a clean result in the API warnings and in the UI |
+| **Candidate loop and completion** (`_function_analysis_init`) | init → steps → adequacy check → complete \| iteration limit \| provider failure (terminal) | Only an explicit response completes a candidate: exactly `Yes` (any case, optional final `.`/`!`) or `{"adequate": true}`. "not yet, yes later", a quoted yes, malformed text and an empty reply never complete it; the attempt bound (31 iterations, a check every third) and rollback are unchanged |
+| **Verdict acceptance** (`_update_potentially_vulnerable_function`) | per entry: resolve identity → validate evidence → validate confidence → accepted \| rejected(reason); per step: some accepted \| nothing named \| everything rejected (error, retried by the candidate loop) | A key must resolve **uniquely** to a candidate of this analysis or to a trace-backed function the analysis context shows (child call present in the transaction's call memo); abbreviations and decorated spellings use the same rule; evidence must normalize to readable text; confidence must be finite and in (0, 1]; the same function twice in one reply counts once; rejections are counted per reason and roll back with a failed attempt |
+| **Model input** (`GPTAgent`, `fit_prompt`) | prompt ≤ `MAX_PROMPT_CHARS` (10,000) → sent whole; over → refused as `InputLimitExceeded`; the verdict prompt is fitted first | Nothing is silently cut. Required text (instructions, candidate identifiers, closing contract) is never shortened; analysis evidence keeps its head and tail with a visible marker, and the candidate gets an `evidence_gaps` entry that the report states. `InputLimitExceeded` is a `ProviderFailure`: terminal, no retry; routing, parameters and retry budgets are unchanged |
+| **Stage 1 model replies** (`forensics/contracts.py`) | reply → typed value \| `ProviderFailure` \| `ForensicsModelError` | No `eval` anywhere (a test scans the package); an explicit `[]` of victims is valid, a provider failure or unusable reply is never "no victims" or a clean classification; `unknown`/`vulnerable` match in any letter case; one `query_json` per operation, no loop around it |
+| **Ranking** (`normalize`) | raw ranked entries → resolved to an accepted finding \| dropped (reason); ranking usable \| unranked fallback | A ranked key must resolve uniquely to an accepted finding (never invents one); optional ranking failure keeps valid findings (shown unranked) |
+| **Report** (`normalize`) | raw finding → accepted (valid identity + readable evidence) \| rejected | Raw objects, confidence fields, provider error sentinels and malformed values are never shown; junk is never promoted; rejected verdict entries, unusable evidence, limited coverage and shortened verdict input are surfaced as warnings |
+| **Worker error publication** (`runs.py`) | worker error → classified code | Generic worker errors publish a fixed sentence plus a sanitized exception type; the raw text goes only to the redacted technical log |
+
+Other implicit machines exist (run lifecycle, key validation, sessions, progress stages, capture/replay) and were **not** audited in this revision.
 
 ### What kind of test each is
 * **Real tools, local only:** `test_cast_integration.py` starts a local `anvil` chain and runs real `cast` (1.4.4, 1.5.1, 1.9.0) on real
@@ -399,6 +426,12 @@ Key package versions are whatever pip resolved on the build date; they were not 
 | `test_rpc_collection.py` | Collection over RPC with explorers blocked, token-transfer shape and fund-flow arithmetic, ws→http, retries, reverted / pending / unknown hash, no URL in errors, the flagged explorer fallback, Sourcify and `getCode` source paths, real worker end to end |
 | `test_pipeline_patches.py` | Replayer environment isolation (no keys, empty HOME, offline flag), explorer/`getCode` changes, Stage 1 failure, real worker with registry models |
 | `test_runs.py`, `test_api.py`, `test_security.py`, `test_progress.py`, `test_results.py`, `test_chains_presets.py`, `test_worker.py`, `test_cli.py` | Run lifecycle, failure classification (including every provider failure), API behaviour, validation and redaction, progress parsing against the pipeline's printed lines, result normalization, networks and frontend contract, worker protocol, the original CLI |
+| `test_identity_membership.py` | Verdict and ranking keys resolve uniquely to a candidate / accepted finding: unknown full keys, empty context, address case, function-name case, ambiguous abbreviations, decorated forms, duplicates, trace-backed functions |
+| `test_selection_completion.py` | Narrowing validation, prioritization, selected/analyzed/omitted/failed bookkeeping, coverage in the pipeline result, explicit completion responses and look-alikes |
+| `test_forensics_safe_parsing.py` | No `eval`/`exec`; hostile model text never executes; actual victim and role caller paths with local fake agents; provider and unusable replies fail closed within the existing retry budget |
+| `test_evidence_report_contract.py` | Readable evidence, junk never promoted, rejection and coverage warnings, confidence finiteness and range, evidence-type validation |
+| `test_input_limit.py` | Real `GPTAgent` path with a fake transport: a prompt over 10,000 characters with a tail marker is never silently cut; the verdict prompt keeps identifiers and both ends of the evidence; routing, parameters, retries unchanged |
+| `test_worker_error_publication.py` | Generic worker errors are sanitized in the API; detail only in the technical log |
 | `tests/ui/ui.test.mjs` | Console behaviour in jsdom: setup, networks, presets, provider-aware key hints, invalid / **unreachable** / outage key checks, full run to report, every failure type, capture, routing, busy/cancel, **access protection with a cookie jar** (sign-in, wrong code, sign-out, expired session, rate-limit message), unreachable server, untrusted text never interpreted as HTML |
 
 ### What the tests do **not** prove
@@ -407,7 +440,9 @@ Key package versions are whatever pip resolved on the build date; they were not 
 * The Docker image could not be built here (no Docker). Its Foundry download, checksum and extraction were executed as written, and the
   entrypoint was syntax-checked; the full build, Render's behaviour and the free plan's memory use are untested.
 * Online signature lookups in cast were not testable offline ([section 8](#8-foundry-versions-and-trace-handling)).
-* The browser suite runs in jsdom, not a real browser: layout, real cookie handling and navigation were not seen by eye.
+* The browser suite runs in jsdom, not a real browser: only the one scenario in the Results table was inspected in a real browser; other layouts, real cookie handling and navigation were not seen by eye.
+* **Fake-model tests do not show exploit detection.** They prove how the pipeline treats replies, not that a real model finds a known exploit; no live ETH/BSC run was made.
+* The 10,000-character input limit is the pre-existing value, now explicit. Requests that exceed it end as `InputLimitExceeded` instead of being cut; a per-model limit would need a registry schema change and was not made.
 
 ---
 

@@ -343,10 +343,11 @@ def test_update_potentially_vulnerable_function_rejects_text_and_accepts_an_empt
     a = make_analyzer(monkeypatch, "{}")
     a.vulnerability_prompts = SimpleNamespace(update_potentially_vulnerable_function="p")
     a.cheatsheet, a.processing_result, a.current_task, a.potentially_vulnerable_functions = "", "", {}, {}
-    for good in ("{}", "[]", '{"foo_0xa": ["evidence", 0.9]}'):
+    a.function_call_info_summary = {"function": "foo", "address": "0x" + "a" * 40}     # the candidate the verdict may name
+    for good in ("{}", "[]", '{"foo_0x' + 'a' * 40 + '": ["evidence", 0.9]}'):
         a.organization_agent = ScriptAgent(good)
         a._update_potentially_vulnerable_function()
-    assert "foo_0xa" in a.potentially_vulnerable_functions
+    assert "foo_0x" + "a" * 40 in a.potentially_vulnerable_functions     # keys must now carry a full address (see test_evidence_to_verdict)
     for bad in ("An error occurred.", "no findings", '["foo_0xa"]'):
         a.organization_agent = ScriptAgent(bad)
         with pytest.raises(ModelResponseError):

@@ -27,17 +27,21 @@ def test_ranking_joined_with_evidence_and_split_into_name_and_address():
 
 def test_case_insensitive_matching_duplicates_and_unranked_candidates():
     out = results.normalize(raw(
-        ranked_suspicious_functions=[f"Mint_{A.upper().replace('0X', '0x')}", f"mint_{A}"],
+        ranked_suspicious_functions=[f"mint_{A.upper().replace('0X', '0x')}", f"mint_{A}", f"Mint_{A}"],
         potentially_vulnerable_functions={f"mint_{A}": ["e"], f"burn_{A}": ["b"]}))
+    # address case is normalized and the duplicate collapses; Mint (a different function name) is not mint
     assert len(out["ranking"]) == 1 and out["ranking"][0]["evidence"] == ["e"]
+    assert any("1 ranking entry was not valid function names" in w for w in out["warnings"])
     assert [c["function"] for c in out["candidates"]] == ["burn"]
 
 
 def test_dict_and_object_rankings_are_accepted():
     out = results.normalize(raw(ranked_suspicious_functions={f"a_{A}": 1, f"b_{A}": 2},
                                 potentially_vulnerable_functions={f"a_{A}": ["x"]}))
-    assert [r["function"] for r in out["ranking"]] == ["a", "b"] and out["ranking"][1]["evidence"] == []
-    out = results.normalize(raw(ranked_suspicious_functions=[{"function": f"c_{A}"}, {"nothing": 1}]))
+    # b is not an accepted finding: it is no longer ranked with empty evidence (identity membership at the report boundary)
+    assert [r["function"] for r in out["ranking"]] == ["a"] and out["ranking"][0]["evidence"] == ["x"]
+    assert any("1 ranking entry was not valid function names" in w and "'b_" in w for w in out["warnings"])
+    out = results.normalize(raw(ranked_suspicious_functions=[{"function": f"c_{A}"}, {"nothing": 1}], potentially_vulnerable_functions={f"c_{A}": ["e"]}))
     assert [r["function"] for r in out["ranking"]] == ["c"]
 
 
@@ -57,8 +61,8 @@ def test_model_error_count_adds_a_warning_and_odd_inputs_do_not_crash():
     out = results.normalize({"potentially_vulnerable_functions": ["not", "a", "dict"], "transaction_understanding": 5})
     assert out["ranking"] == [] and out["understanding"] == "" and out["transaction_hash"] == ""
     out = results.normalize(raw(potentially_vulnerable_functions={"no_address_key": {"a": 1}, "plain": None}))
-    assert {r["function"] for r in out["ranking"]} == {"no_address_key", "plain"}   # unranked, so promoted
-    assert all(r["address"] == "" and r["unranked"] for r in out["ranking"])
+    assert out["ranking"] == [] and out["candidates"] == []          # junk is not promoted into findings (it used to be)
+    assert any("identifier" in w for w in out["warnings"])
     json.dumps(out)
 
 

@@ -662,7 +662,8 @@
   }
 
   function findingNode(f, chain, { top = false, rank } = {}) {
-    const evidence = f.evidence || [];
+    // The server always sends a list of strings; a bare string is accepted and anything else is treated as no evidence.
+    const evidence = Array.isArray(f.evidence) ? f.evidence : (typeof f.evidence === 'string' && f.evidence.trim() ? [f.evidence] : []);
     const node = h('li', { class: 'finding', dataset: { top: top ? 'true' : 'false' } },
       h('span', { class: 'rank', 'aria-label': `Rank ${rank}`, text: String(rank) }),
       h('div', null,
@@ -679,6 +680,21 @@
       node.append(h('p', { class: 'no-evidence', text: 'No evidence text was returned for this function.' }));
     }
     return node;
+  }
+
+  // Coverage (server-normalized): how many candidate functions were analyzed, and what an empty report can mean.
+  const isCount = (n) => Number.isInteger(n) && n >= 0;
+  function coverageFact(c) {
+    if (!c || !isCount(c.candidates) || !isCount(c.analyzed)) return null;
+    if (c.status === 'no_candidates') return ['Coverage', 'No candidate functions'];
+    return ['Coverage', `${c.analyzed} of ${c.candidates} candidates analyzed${c.limited ? ' (limited)' : ''}`];
+  }
+  function emptyRankingText(c) {
+    if (c && c.status === 'no_candidates') return 'No candidate functions were found in this transaction, so nothing was analyzed.';
+    if (c && c.limited === true && isCount(c.analyzed) && isCount(c.omitted_count)) {
+      return `No function was flagged among the ${c.analyzed} analyzed. ${c.omitted_count} candidate${c.omitted_count === 1 ? ' was' : 's were'} not analyzed, so this is not a clean result.`;
+    }
+    return 'The analysis did not point at any functions for this transaction.';
   }
 
   function renderReport(data, opts = {}) {
@@ -721,6 +737,7 @@
       ['Completed', data.timestamp ? fmtDate(data.timestamp) : (run.finished_at ? fmtDate(run.finished_at) : '—')],
       !capture ? ['Duration', fmtDuration(data.duration)] : null,
       stats.functions_to_inspect != null ? ['Functions inspected', String(stats.functions_to_inspect)] : null,
+      coverageFact(data.coverage),
     ].filter(Boolean);
     box.append(h('dl', { class: 'facts' }, facts.map(([k, v]) => h('div', { class: 'fact' }, h('dt', { text: k }), h('dd', null, v)))));
 
@@ -731,10 +748,11 @@
     if (ranking.length) {
       left.append(h('ol', { class: 'finding-list' }, ranking.map((f, i) => findingNode(f, chain, { top: i === 0 && !f.unranked, rank: f.rank || i + 1 }))));
     } else {
-      left.append(h('p', { class: 'empty', text: 'The analysis did not point at any functions for this transaction.' }));
+      left.append(h('p', { class: 'empty', dataset: { coverage: (data.coverage && data.coverage.status) || '' }, text: emptyRankingText(data.coverage) }));
     }
     const right = h('section', { class: 'panel understanding' }, h('div', { class: 'section-heading' }, h('h2', { text: 'Transaction understanding' })));
-    right.append(data.understanding && data.understanding.trim() ? safeMarkdown(data.understanding) : h('p', { class: 'empty', text: 'No narrative was produced for this transaction.' }));
+    const narrative = typeof data.understanding === 'string' ? data.understanding : '';
+    right.append(narrative.trim() ? safeMarkdown(narrative) : h('p', { class: 'empty', text: 'No narrative was produced for this transaction.' }));
     box.append(h('div', { class: 'report-grid' }, left, right));
 
     if (data.candidates && data.candidates.length) {

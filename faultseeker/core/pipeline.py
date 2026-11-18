@@ -146,6 +146,9 @@ class FaultSeekerPipeline:
             'ranked_suspicious_functions': analysis_result.get('ranked_result', []),
             'potentially_vulnerable_functions': analysis_result.get('potentially_vulnerable_functions', []),
             'ranking_problem': analysis_result.get('ranking_problem', ''),
+            'evidence_gaps': analysis_result.get('evidence_gaps', {}),
+            'coverage': analysis_result.get('coverage', {}),
+            'verdict_rejections': analysis_result.get('verdict_rejections', {}),
             'transaction_understanding': analysis_result.get('transaction_understanding', ''),
 
             # Metadata

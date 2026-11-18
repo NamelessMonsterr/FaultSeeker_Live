@@ -1,5 +1,6 @@
 import json
 from time import time
+from faultseeker.forensics.contracts import ask_list, parse_victims
 from faultseeker.prompts.forensics.fund_flow_prompts import FundFlowPrompts
 from faultseeker.utils.utils import build_agent
 
@@ -49,9 +50,10 @@ class FundFlowAnalyzer:
         
     def _identify_victims(self):
         prompt_text = self.prompts.identify_victims.format(balance_change_summary=json.dumps(self.balance_change))
-        result = self.agent.query(prompt_text)
-        if isinstance(result, list):
-            self.potential_victim = [address for address in result if address and (address in self.balance_change) and (address != '0x0000000000000000000000000000000000000000')]
+        # Typed contract: a JSON/Python-literal list. A provider failure or an unusable reply raises (the stage fails); it is
+        # never read as "no victims". An explicit [] is a valid answer.
+        reply = ask_list(self.agent, prompt_text, "victim identification")
+        self.potential_victim = parse_victims(reply, self.balance_change)
     
     def _identify_attackers(self):
         self.potential_attacker.append(self.txn_info['address_info']['from_address'])

@@ -12,7 +12,7 @@ import time
 
 MARK = "##FS##"
 BY_PREFIX = {"fa11": "cast_fail", "dead": "auth_fail", "bad0": "bad_rank", "0bad": "crash",
-             "9a07": "quota", "e8e8": "explorer_fail", "7c7c": "rpc_collect_fail", "7e7e": "reverted", "1c1c": "analysis_incomplete", "0000": "empty", "4a49": "hang"}
+             "9a07": "quota", "e8e8": "explorer_fail", "7c7c": "rpc_collect_fail", "5e5e": "junk_report", "7e7e": "reverted", "1c1c": "analysis_incomplete", "0000": "empty", "4a49": "hang"}
 ADDR = "0xc342774492b54ce5f8ac662113ed702fc1b34972"
 
 
@@ -51,6 +51,13 @@ def main():
         say("cast exited with code 1: error sending request for url (" + os.environ.get("FAULTSEEKER_RPC_URL", "") + ")")
         say("      → Collecting transaction info...")
         marker({"event": "error", "type": "RuntimeError", "message": "Stage 1 (Forensics) failed to produce results"})
+        sys.exit(1)
+    if mode in ("pipeline_error", "pipeline_error_oddtype", "forensics_model", "input_limit"):
+        say("      → Reviewing function calls...")
+        say("Traceback (most recent call last): KeyError: internal detail /srv/faultseeker/internal.py")
+        marker({"event": "error", "type": {"pipeline_error": "KeyError", "pipeline_error_oddtype": "Bad Type <script>alert(1)</script>",
+                                           "forensics_model": "ForensicsModelError", "input_limit": "InputLimitExceeded"}[mode],
+                "message": "internal detail /srv/faultseeker/internal.py token=abcd1234efgh model said {'junk': 1} SECRET-REPLY-TEXT"})
         sys.exit(1)
     if mode == "explorer_fail":
         say("Explorer page did not report a successful transaction (status: unknown). blocked?")
@@ -125,6 +132,28 @@ def main():
     with open(os.path.join(os.path.dirname(out), "env.json"), "w") as fh:
         json.dump(report, fh)
 
+    if mode == "junk_report":
+        # Raw model output as the pipeline can really deliver it: object evidence with confidence fields, error sentinels, a ranked key
+        # that is no finding, junk findings, rejected verdict entries and limited coverage.
+        result = {
+            "transaction_hash": txn, "chain": chain,
+            "ranked_suspicious_functions": [f"mint_{ADDR}", f"ghost_{ADDR}", "An error occurred."],
+            "potentially_vulnerable_functions": {
+                f"mint_{ADDR}": [{"evidence": "Signature not bound to the caller", "confidence_score": 0.9, "error": "x"},
+                                 {"zzz": {"deep": 1}}, "An error occurred."],
+                f"burn_{ADDR}": [{"observation": "burn without allowance check", "hypothesis": "missing approval", "confidence": 0.4}],
+                f"junk_{ADDR}": [5, None, {"foo": 1}],
+                "no_address_key": ["orphan evidence"]},
+            "transaction_understanding": "The attacker minted tokens.", "duration": 1.2, "timestamp": "2026-11-06T10:00:00",
+            "verdict_rejections": {"not a candidate of this analysis": 2},
+            "coverage": {"status": "limited", "limited": True, "candidates": 6, "selected": 2, "analyzed": 2,
+                         "omitted": [f"f{i}@{ADDR}" for i in range(4)], "failed": [], "selection_rejected": 1, "selection_replies_ignored": 0},
+            "_debug": {"functions_to_inspect_count": 6}}
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "w") as fh:
+            json.dump(result, fh)
+        marker({"event": "result"})
+        return
     if mode == "bad_rank":
         ranked = ["An error occurred."]
     elif mode == "empty":

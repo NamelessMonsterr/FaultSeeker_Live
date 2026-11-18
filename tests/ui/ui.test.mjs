@@ -20,6 +20,7 @@ async function until(fn, ms = 20000, step = 80) {
   while (Date.now() - t < ms) { try { const v = fn(); if (v) return v; } catch { /* keep polling */ } await sleep(step); }
   return null;
 }
+const VULN_ADDR = '0x45e15d1e4f92f28a916f4f2971ad9adc278e148b';
 const hash = (prefix, fill = '1') => '0x' + prefix + fill.repeat(64 - prefix.length);
 const GOOD_KEY = 'good-key-' + 'k'.repeat(30);          // the fake providers accept keys that start with "good-"
 const CODEX_KEY = 'good-codex-' + 'c'.repeat(24);
@@ -621,6 +622,138 @@ try {
       'empty understanding displays the existing empty-state fallback',
     );
     emptyPage.close();
+  }
+
+
+  // ======================================================================================
+  // Empty-result and mid-run states. These probe what the console does with a report or a run that is empty, sparse or
+  // oddly shaped. They do not assume any particular crash: each page must render and raise no script error.
+  section('report rendering: empty, sparse and oddly shaped results');
+  const reportProbe = async (label, body, check) => {
+    const pg = await openPage('#capture', {
+      fetchImpl: (url, o) => (url.pathname === '/api/capture'
+        ? Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } }))
+        : fetch(url, o)),
+    });
+    const panel = await until(() => pg.$('results').querySelector('.report-grid'));
+    ok(!!panel, `${label}: the report renders`);
+    if (panel && check) check(pg);
+    ok(pg.errors.length === 0, `${label}: no script error ${JSON.stringify(pg.errors)}`);
+    pg.close();
+  };
+  const base = { kind: 'capture', transaction_hash: hash('abcd'), chain: 'eth' };
+  await reportProbe('nothing found, with the coverage-gap warning', { ...base, understanding: '', warnings: [
+    'No potentially vulnerable functions were identified for this transaction.',
+    'No source code was available for 2 analyzed functions (568d8cd9@0x45e15d1e…148b, 568d8cd9@0x65c210c5…1f06); their verdicts rest on the call trace alone, so "no finding" for them is not evidence that they are safe.'],
+    ranking: [], candidates: [], stats: { functions_to_inspect: 4 } }, (pg) => {
+    ok(/did not point at any functions/.test(pg.$('results').textContent), 'empty-result: states plainly that nothing was ranked');
+    ok(/No source code was available for 2 analyzed functions/.test(pg.$('results').textContent), 'empty-result: the coverage gap is shown');
+    ok(/not evidence that they are safe/.test(pg.$('results').textContent), 'empty-result: says no finding is not safety');
+    ok(pg.$('results').querySelectorAll('.banner li').length === 2, 'empty-result: both warnings are listed');
+  });
+  await reportProbe('only the required fields', { ...base }, (pg) => {
+    ok(/did not point at any functions/.test(pg.$('results').textContent), 'sparse: the empty state is shown');
+    ok(/No narrative was produced/.test(pg.$('results').textContent), 'sparse: the narrative empty state is shown');
+  });
+  await reportProbe('null collections', { ...base, ranking: null, candidates: null, warnings: null, stats: null, understanding: null }, null);
+  await reportProbe('findings with missing, null and odd evidence', { ...base, understanding: 'ok', warnings: [], candidates: [], ranking: [
+    { function: '568d8cd9', address: VULN_ADDR, evidence: ['Observed: **call** with caller-supplied `calldata`'] },
+    { function: 'noEvidence', address: VULN_ADDR },
+    { function: 'nullEvidence', address: VULN_ADDR, evidence: null },
+    { function: 'emptyEvidence', address: '', evidence: ['', '   '] },
+    { function: '<img src=x onerror=alert(1)>', address: VULN_ADDR, evidence: ['<script>alert(1)</script>', 'x'.repeat(5000)], unranked: true },
+    { function: 'stringEvidence', address: VULN_ADDR, evidence: 'one bare string of evidence' },
+    { function: 'objectEvidence', address: VULN_ADDR, evidence: { a: 1 } },
+  ] }, (pg) => {
+    ok(pg.$('results').querySelectorAll('li.finding').length === 7, 'findings: all seven entries render');
+    ok(/one bare string of evidence/.test(pg.$('results').textContent), 'findings: a bare-string evidence value is shown');
+    ok(/No evidence text was returned/.test(pg.$('results').textContent), 'findings: a missing-evidence entry says so');
+    ok(!pg.$('results').querySelector('img[src="x"]') && !pg.$('results').querySelector('script'), 'findings: markup from the model stays inert text');
+  });
+  await reportProbe('narrative with unbalanced and very long markdown', { ...base, warnings: [], ranking: [], candidates: [],
+    understanding: '**unclosed bold and `unclosed code and * stray star\n' + '*'.repeat(3000) + '\n' + 'a '.repeat(30000) }, (pg) => {
+    ok(pg.$('results').querySelector('.understanding') !== null, 'markdown edge cases: the narrative panel renders');
+  });
+  for (const [label, value] of [['a number', 5], ['an object', { a: 1 }], ['an array', ['x']]]) {
+    const pg = await openPage('#capture', {
+      fetchImpl: (url, o) => (url.pathname === '/api/capture'
+        ? Promise.resolve(new Response(JSON.stringify({ ...base, understanding: value, ranking: [], candidates: [], warnings: [] }), { status: 200, headers: { 'content-type': 'application/json' } }))
+        : fetch(url, o)),
+    });
+    await until(() => pg.$('results').querySelector('.report-grid') || pg.errors.length, 4000);
+    ok(pg.errors.length === 0 && !!pg.$('results').querySelector('.report-grid'), `a non-text narrative (${label}) does not break the report ${JSON.stringify(pg.errors)}`);
+    ok(/No narrative was produced/.test(pg.$('results').textContent), `a non-text narrative (${label}) shows the empty-narrative state`);
+    pg.close();
+  }
+
+  section('limited coverage and junk model output: raw output -> real normalizer -> real UI');
+  const junkId = await p.start(hash('5e5e', '0'));
+  ok(await until(() => p.w.location.hash === `#result/${junkId}` && d.querySelectorAll('#results .finding').length > 0, 40000), 'a run whose raw output is junk still completes with a report');
+  const junkText = $('results').textContent;
+  ok(!/confidence|"zzz"|deep|\{|An error occurred|orphan evidence|junk_/i.test(junkText), 'no raw object, confidence field, error sentinel or junk finding is displayed: ' + junkText.slice(0, 160));
+  ok(![...d.querySelectorAll('#results .finding')].some((f) => /ghost/.test(f.textContent)) && /ghost_0x.*not an analyzed function/.test(d.querySelector('#results .banner').textContent), 'a ranked key that is not a finding is not listed as one, and the warning names it');
+  ok(d.querySelectorAll('#results .finding').length === 2, 'only the two real findings are listed');
+  ok(/Signature not bound to the caller/.test(junkText) && /Observation: burn without allowance check; Hypothesis: missing approval/.test(junkText), 'supported evidence structures are readable text');
+  const junkWarn = d.querySelector('#results .banner[data-tone="warn"]').textContent;
+  ok(/4 of 6 candidate functions were not analyzed/.test(junkWarn) && /not evidence that they are safe/.test(junkWarn), 'limited coverage is stated in the warning banner');
+  ok(/2 model verdict entries were rejected/.test(junkWarn) && /no usable evidence/.test(junkWarn) && /not <function>_<address>|identifier/.test(junkWarn), 'rejected entries and unusable findings are surfaced');
+  ok(/2 of 6 candidates analyzed \(limited\)/.test([...d.querySelectorAll('#results .fact')].map((f) => f.textContent).join(' ')), 'the coverage fact is shown');
+
+  section('report coverage states');
+  const cov = (extra) => ({ kind: 'capture', transaction_hash: hash('c0c0'), chain: 'eth', understanding: '', warnings: [], ranking: [], candidates: [], coverage: extra });
+  await reportProbe('no finding, limited coverage', cov({ status: 'limited', limited: true, candidates: 5, selected: 1, analyzed: 1, omitted_count: 4, failed_count: 0 }), (pg) => {
+    ok(/not a clean result/.test(pg.$('results').textContent) && !/did not point at any functions/.test(pg.$('results').textContent), 'limited coverage: an empty report is not presented as clean');
+    ok(/1 of 5 candidates analyzed \(limited\)/.test(pg.$('results').textContent), 'limited coverage: the fact is shown');
+  });
+  await reportProbe('no candidates at all', cov({ status: 'no_candidates', limited: false, candidates: 0, selected: 0, analyzed: 0, omitted_count: 0, failed_count: 0 }), (pg) => {
+    ok(/No candidate functions were found/.test(pg.$('results').textContent), 'no candidates: stated as genuinely empty input');
+  });
+  await reportProbe('complete coverage keeps the plain empty state', cov({ status: 'complete', limited: false, candidates: 3, selected: 3, analyzed: 3, omitted_count: 0, failed_count: 0 }), (pg) => {
+    ok(/did not point at any functions/.test(pg.$('results').textContent), 'complete coverage: the ordinary empty state');
+  });
+  await reportProbe('malformed coverage values', cov({ status: 'limited', limited: true, candidates: 'many', analyzed: {}, omitted_count: null }), (pg) => {
+    ok(/did not point at any functions/.test(pg.$('results').textContent), 'malformed coverage: falls back to the ordinary empty state without breaking');
+  });
+
+  section('mid-run states: sparse and terminal run payloads');
+  const runProbe = async (label, run, extra, check) => {
+    const id = 'probe' + Math.random().toString(16).slice(2, 10);
+    const payload = { run: { id, txn_hash: hash('abcd'), chain: 'eth', model: 'gpt-4o-mini', provider: 'openai', rpc_mode: 'server', key_source: 'user',
+      created_at: Date.now() / 1000 - 5, last_activity_at: Date.now() / 1000, finished_at: null, state: 'running',
+      stages: [{ id: 'collect', label: 'Collect transaction', status: 'active' }, { id: 'analyze', label: 'Analyze functions', status: 'pending' }],
+      current: { title: 'Working', description: '' }, error: null, summary: null, ...run },
+      server_time: Date.now() / 1000, events: [], logs: [], event_cursor: 0, log_cursor: 0, ...extra };
+    const pg = await openPage('#run/' + id, {
+      fetchImpl: (url, o) => (url.pathname === `/api/runs/${id}`
+        ? Promise.resolve(new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } }))
+        : fetch(url, o)),
+    });
+    await until(() => pg.$('active-task') && pg.$('active-task').textContent !== '' || pg.errors.length, 6000);
+    await sleep(300);
+    if (check) check(pg);
+    ok(pg.errors.length === 0, `${label}: no script error ${JSON.stringify(pg.errors)}`);
+    pg.close();
+  };
+  await runProbe('running, no events or logs yet', {}, {}, (pg) => {
+    ok(/IN PROGRESS/.test(pg.d.querySelector('.running-badge').textContent), 'running: the badge says in progress');
+    ok(pg.$('stepper').children.length === 2, 'running: the stepper lists the stages');
+  });
+  await runProbe('running, empty current description and a long event list', { current: { title: 'Analyzing function 1 of 4', description: '' } },
+    { events: Array.from({ length: 200 }, (_, i) => ({ ts: Date.now() / 1000, level: 'info', message: `event ${i}` })), logs: Array.from({ length: 50 }, (_, i) => `line ${i}`), event_cursor: 200, log_cursor: 50 },
+    (pg) => { ok(pg.$('activity').children.length <= 60, 'running: the activity list stays bounded'); });
+  await runProbe('failed with an analysis_incomplete error', { state: 'failed', finished_at: Date.now() / 1000, current: { title: 'Analysis failed', description: 'x' },
+    stages: [{ id: 'collect', label: 'Collect transaction', status: 'done' }, { id: 'analyze', label: 'Analyze functions', status: 'failed' }],
+    error: { code: 'analysis_incomplete', message: 'Stage 2 (Function Analysis) incomplete: 1 of 2 attempted candidate(s) failed', hint: 'Check the provider key.' } }, {},
+    (pg) => { ok(/FAILED/.test(pg.d.querySelector('.running-badge').textContent) && /incomplete/.test(pg.d.querySelector('.error-detail').textContent), 'failed: badge and message shown'); });
+  await runProbe('failed without an error object', { state: 'failed', finished_at: Date.now() / 1000, error: null, current: { title: 'Analysis failed', description: '' } }, {},
+    (pg) => { ok(!!pg.d.querySelector('.error-actions'), 'failed without error: the recovery actions still render'); });
+  await runProbe('timed out with its stage still marked active', { state: 'failed', finished_at: Date.now() / 1000,
+    error: { code: 'timeout', message: 'The analysis exceeded the time limit and was stopped.', hint: 'Try a smaller transaction.' } }, {},
+    (pg) => { ok(/FAILED/.test(pg.d.querySelector('.running-badge').textContent), 'timeout: the badge follows the run state, not the stage'); });
+  for (const st of ['cancelled', 'interrupted']) {
+    await runProbe(`${st} run`, { state: st, finished_at: Date.now() / 1000, current: { title: st, description: '' } }, {}, (pg) => {
+      ok(pg.d.querySelector('.running-badge').textContent === st.toUpperCase(), `${st}: the badge is shown`);
+    });
   }
 
 } catch (err) {

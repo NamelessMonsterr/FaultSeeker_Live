@@ -10,6 +10,7 @@ import os
 from faultseeker.providers import ProviderConfigError, ResolvedModel, load_registry
 from time import sleep
 from datetime import datetime
+from typing import NamedTuple
 
 
 
@@ -31,6 +32,70 @@ class ProviderFailure(ModelResponseError):
     def __init__(self, kind: str, message: str):
         super().__init__(message)
         self.kind = kind
+
+
+class InputLimitExceeded(ProviderFailure):
+    """The request was larger than the client's explicit input limit and was NOT sent (never silently cut).
+
+    A ProviderFailure subclass on purpose: every caller already treats those as terminal and fail-closed (no retry of the same
+    oversized request). kind is always 'input_limit'. The message gives sizes only and never quotes the prompt."""
+
+    def __init__(self, message: str):
+        super().__init__("input_limit", message)
+
+
+class FittedPrompt(NamedTuple):
+    text: str
+    shortened: list          # labels of the sections that had to be shortened ([] when nothing was)
+    omitted_chars: int
+
+
+_OMITTED = "\n[… {n} characters omitted to fit the model input limit …]\n"
+
+
+def _shorten(text: str, room: int) -> str:
+    """Keeps the head and the tail of `text` in `room` characters, with an explicit marker in between."""
+    marker = _OMITTED.format(n=len(text))
+    keep = max(room - len(marker), 0)
+    head = keep * 2 // 3
+    return text[:head] + _OMITTED.format(n=len(text) - keep) + (text[len(text) - (keep - head):] if keep - head else "")
+
+
+def fit_prompt(head: str, sections, tail: str, limit: int = None) -> FittedPrompt:
+    """Builds `head + sections + tail` within `limit` characters under an explicit, reported policy.
+
+    head and tail are REQUIRED text (instructions, candidate identifiers, the closing contract) and are never cut. `sections` is
+    a list of (label, text) of compactable evidence: a section that does not fit is shortened to its head and its tail with a
+    visible marker (the budget is shared fairly, small sections stay whole), and its label is reported in `shortened`. When
+    the required parts alone do not fit, InputLimitExceeded is raised: nothing is silently dropped."""
+    limit = GPTAgent.MAX_PROMPT_CHARS if limit is None else limit
+    sections = [(label, str(text)) for label, text in sections]
+    fixed = len(head) + len(tail)
+    marker_cost = len(_OMITTED.format(n=10 ** 7))
+    if fixed + sum(len(t) for _, t in sections) <= limit:
+        return FittedPrompt(head + "".join(t for _, t in sections) + tail, [], 0)
+    if fixed + marker_cost > limit:
+        raise InputLimitExceeded(f"the required part of the request ({fixed} characters) does not fit the model input limit "
+                                 f"of {limit} characters")
+    budget = limit - fixed
+    order = sorted(range(len(sections)), key=lambda i: len(sections[i][1]))
+    room = {}
+    left = budget
+    for position, i in enumerate(order):
+        fair = left // (len(order) - position)
+        room[i] = min(len(sections[i][1]), fair)
+        left -= room[i]
+    parts, shortened, omitted = [], [], 0
+    for i, (label, text) in enumerate(sections):
+        if len(text) <= room[i]:
+            parts.append(text)
+        else:
+            if room[i] < marker_cost + 40:
+                raise InputLimitExceeded(f"section '{label}' cannot be fitted into the model input limit of {limit} characters")
+            parts.append(_shorten(text, room[i]))
+            shortened.append(label)
+            omitted += len(text) - room[i]
+    return FittedPrompt(head + "".join(parts) + tail, shortened, omitted)
 
 
 # Pauses before each re-ask when the provider answered 200 but with unusable content (null / empty / non-text).
@@ -135,10 +200,23 @@ class AbstractAgent(abc.ABC):
         searched, concatenated or stored); legacy query(format='str') can hand back the error sentinel instead."""
         return self._send_message_strict(user_message, temperature)
     
-    def _process_json_response(self, response: str) -> Dict[str, Any]:
+    @staticmethod
+    def _literal(text: str):
+        """json, then a Python literal. Never executes anything; raises ValueError when `text` is neither."""
         try:
-            return eval(response)
-        except Exception:
+            return json.loads(text)
+        except ValueError:
+            pass
+        try:
+            return ast.literal_eval(text)
+        except (ValueError, SyntaxError, MemoryError, RecursionError, TypeError):
+            raise ValueError("not a data literal") from None
+
+    def _process_json_response(self, response: str) -> Dict[str, Any]:
+        """Legacy lenient parser (see query()): a data literal, else the old line-joining fallback, else the lines."""
+        try:
+            return self._literal(response)
+        except ValueError:
             response = response.split("\n")
             if len(response) == 1:
                 response = response[0].split('", "')
@@ -149,19 +227,18 @@ class AbstractAgent(abc.ABC):
                     output.append(temp.replace('```', '').strip())
                     break
                 if temp:
-                    output.append(temp)    
+                    output.append(temp)
             try:
-                output = eval(''.join(output))
-            except Exception:
-                pass
-            return output
-        
+                return self._literal(''.join(output))
+            except ValueError:
+                return output
+
     def _process_dict_response(self, response: str) -> Dict[str, Any]:
         try:
-            return eval(response)
-        except Exception:
+            return self._literal(response)
+        except ValueError:
             return [response]
-    
+
     def _process_response(self, response: str, format: str) -> Union[List[str], Dict[str, Any]]:
         if '```json' in response:
             response = response.split('```json')[1]
@@ -332,6 +409,10 @@ class GPTAgent(AbstractAgent):
     changed after an error), so a provider that rejects a parameter fails visibly instead of being worked around.
     """
 
+    # Explicit input-limit policy: a request longer than this many characters is never sent cut. It is either fitted by the caller
+    # (fit_prompt, with the shortening reported) or refused as InputLimitExceeded before any request is made.
+    MAX_PROMPT_CHARS = 10000
+
     def __init__(self, task, model):
         if not isinstance(model, ResolvedModel):
             model = load_registry().resolve(model)
@@ -361,7 +442,9 @@ class GPTAgent(AbstractAgent):
         return params
 
     def _send_message_strict(self, user_message, temperature=0):
-        user_message = user_message[:10000]
+        if len(user_message) > self.MAX_PROMPT_CHARS:
+            raise InputLimitExceeded(f"the request has {len(user_message)} characters, over the model input limit of "
+                                     f"{self.MAX_PROMPT_CHARS}; it was not sent")
 
         def call():
             completion = self._client.chat.completions.create(

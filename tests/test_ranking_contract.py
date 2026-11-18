@@ -40,7 +40,7 @@ def names(out):
 
 # ------------------------------------------------------------------------------------------ resolution of ranking entries
 
-@pytest.mark.parametrize("entry", [f"swap_{A}", f"SWAP_{A}", "swap", "Swap", f"swap@{A}", f"swap::{A}", "Chamber.swap",
+@pytest.mark.parametrize("entry", [f"swap_{A}", f"swap_{A.upper().replace('0X', '0x')}", "swap", f"swap@{A}", f"swap::{A}", "Chamber.swap",
                                    "swap(address,uint256)", "`swap`", "'swap'", "Chamber.swap(address)"])
 def test_every_supported_form_resolves_to_the_analyzed_function(entry):
     out = results.normalize(raw([entry], {f"swap_{A}": ["evidence"]}))
@@ -95,12 +95,20 @@ def test_warning_text_from_the_model_is_bounded_and_printable():
     json.dumps(out)
 
 
-def test_existing_ranking_behaviour_is_unchanged():
-    """guard: full keys, case-insensitive matching, duplicates, dict rankings, keys absent from the findings"""
-    out = results.normalize(raw([f"mint_{A}", f"MINT_{A}", f"burn_{B}"], {f"mint_{A}": ["m"]}))
-    assert names(out) == [("mint", A.lower()), ("burn", B.lower())] and out["ranking"][1]["evidence"] == []
+def test_ranking_behaviour_after_the_membership_rule():
+    """Changed on purpose (identity membership at the report boundary): full keys and address case still match and duplicates
+    still collapse, but the function name is case-sensitive and a key that is not an accepted finding is never ranked."""
+    out = results.normalize(raw([f"mint_{A}", f"mint_{A.upper().replace('0X', '0x')}", f"MINT_{A}", f"burn_{B}"], {f"mint_{A}": ["m"]}))
+    assert names(out) == [("mint", A.lower())] and out["ranking"][0]["evidence"] == ["m"]
+    assert any("2 ranking entries were not valid function names" in w for w in out["warnings"])
     out = results.normalize(raw({f"a_{A}": 1}, {}))
-    assert names(out) == [("a", A.lower())]
+    assert names(out) == [] and out["candidates"] == []
+
+
+@pytest.mark.parametrize("entry", [f"SWAP_{A}", "Swap", "SWAP"])
+def test_function_name_case_is_not_folded_when_ranking(entry):
+    out = results.normalize(raw([entry], {f"swap_{A}": ["evidence"]}))
+    assert out["ranking"][0].get("unranked") and any("not an analyzed function" in w for w in out["warnings"])
 
 
 # ------------------------------------------------------------------------------------------ real analyzer -> pipeline -> report
@@ -120,7 +128,9 @@ def report(tmp_path, monkeypatch, scenario):
 @pytest.mark.parametrize("scenario", ["foundok", "foundbare"])
 def test_a_full_key_or_a_bare_name_ranking_yields_a_validated_ranked_report(tmp_path, monkeypatch, scenario):
     result, out = report(tmp_path, monkeypatch, scenario)
-    assert names(out) == [("foo", fakes.A)] and out["warnings"] == [] and "unranked" not in out["ranking"][0]
+    assert names(out) == [("foo", fakes.A)] and "unranked" not in out["ranking"][0]
+    # The fake downloader supplies no source, so the (correct) coverage note is the only warning; none is about the ranking.
+    assert [w for w in out["warnings"] if "No source code was available" not in w] == []
     assert result["ranking_problem"] == ""
 
 
@@ -152,7 +162,8 @@ def test_api_bare_name_ranking_completes_with_a_ranked_validated_report(make_cli
     c, run_id, run = run_scenario(make_client, "foundbare")
     assert run["state"] == "completed", run
     body = c.get(f"/api/runs/{run_id}/result").json()
-    assert names(body) == [("foo", fakes.A)] and body["warnings"] == [] and body["candidates"] == []
+    assert names(body) == [("foo", fakes.A)] and body["candidates"] == []
+    assert [w for w in body["warnings"] if "No source code was available" not in w] == []     # only the coverage note
 
 
 def test_api_unusable_ranking_completes_with_the_candidate_and_names_the_gap(make_client):
