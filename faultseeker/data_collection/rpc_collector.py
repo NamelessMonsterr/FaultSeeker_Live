@@ -162,6 +162,12 @@ def collect(client: RpcClient, txn_hash: str, chain: str) -> dict:
                                     "endpoint is for the same chain.")
     receipt = client.call("eth_getTransactionReceipt", [txn_hash])
     if not receipt:
+        if tx.get("blockNumber"):
+            # The node returned the transaction WITH a block number, so it is mined: a missing receipt is the endpoint's history
+            # limit (pruned / non-archive), not an unmined transaction.
+            raise RpcError("history_unavailable",
+                           f"The RPC node knows this transaction (block {_int(tx.get('blockNumber'))}) but has no receipt for it. "
+                           "That usually means the endpoint has pruned this part of history. Use an archive-capable RPC endpoint.")
         return {"status": "Pending", "transaction_hash": txn_hash}
     status_flag = receipt.get("status")
     status = "Success" if status_flag == "0x1" else "Fail" if status_flag == "0x0" else "Unknown"

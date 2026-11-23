@@ -7,10 +7,10 @@ import traceback
 from ollama import Client as OllamaClient, chat
 from openai import OpenAI
 import os
+from faultseeker.budget import BudgetExceeded, InputBudget, Part, fit_parts
 from faultseeker.providers import ProviderConfigError, ResolvedModel, load_registry
 from time import sleep
 from datetime import datetime
-from typing import NamedTuple
 
 
 
@@ -35,67 +35,15 @@ class ProviderFailure(ModelResponseError):
 
 
 class InputLimitExceeded(ProviderFailure):
-    """The request was larger than the client's explicit input limit and was NOT sent (never silently cut).
+    """The request does not fit the model's input budget and was NOT sent (never silently cut).
 
-    A ProviderFailure subclass on purpose: every caller already treats those as terminal and fail-closed (no retry of the same
-    oversized request). kind is always 'input_limit'. The message gives sizes only and never quotes the prompt."""
+    A ProviderFailure subclass on purpose: every caller already treats those as terminal and fail-closed (no retry of the same oversized
+    request). kind is always 'input_limit'. The message gives sizes only and never quotes the prompt. `detail` carries the numbers
+    (estimated tokens, limits, the budget's sources) for logs and reports; the cause is an application budget, not a provider outage."""
 
-    def __init__(self, message: str):
+    def __init__(self, message: str, detail: dict = None):
         super().__init__("input_limit", message)
-
-
-class FittedPrompt(NamedTuple):
-    text: str
-    shortened: list          # labels of the sections that had to be shortened ([] when nothing was)
-    omitted_chars: int
-
-
-_OMITTED = "\n[… {n} characters omitted to fit the model input limit …]\n"
-
-
-def _shorten(text: str, room: int) -> str:
-    """Keeps the head and the tail of `text` in `room` characters, with an explicit marker in between."""
-    marker = _OMITTED.format(n=len(text))
-    keep = max(room - len(marker), 0)
-    head = keep * 2 // 3
-    return text[:head] + _OMITTED.format(n=len(text) - keep) + (text[len(text) - (keep - head):] if keep - head else "")
-
-
-def fit_prompt(head: str, sections, tail: str, limit: int = None) -> FittedPrompt:
-    """Builds `head + sections + tail` within `limit` characters under an explicit, reported policy.
-
-    head and tail are REQUIRED text (instructions, candidate identifiers, the closing contract) and are never cut. `sections` is
-    a list of (label, text) of compactable evidence: a section that does not fit is shortened to its head and its tail with a
-    visible marker (the budget is shared fairly, small sections stay whole), and its label is reported in `shortened`. When
-    the required parts alone do not fit, InputLimitExceeded is raised: nothing is silently dropped."""
-    limit = GPTAgent.MAX_PROMPT_CHARS if limit is None else limit
-    sections = [(label, str(text)) for label, text in sections]
-    fixed = len(head) + len(tail)
-    marker_cost = len(_OMITTED.format(n=10 ** 7))
-    if fixed + sum(len(t) for _, t in sections) <= limit:
-        return FittedPrompt(head + "".join(t for _, t in sections) + tail, [], 0)
-    if fixed + marker_cost > limit:
-        raise InputLimitExceeded(f"the required part of the request ({fixed} characters) does not fit the model input limit "
-                                 f"of {limit} characters")
-    budget = limit - fixed
-    order = sorted(range(len(sections)), key=lambda i: len(sections[i][1]))
-    room = {}
-    left = budget
-    for position, i in enumerate(order):
-        fair = left // (len(order) - position)
-        room[i] = min(len(sections[i][1]), fair)
-        left -= room[i]
-    parts, shortened, omitted = [], [], 0
-    for i, (label, text) in enumerate(sections):
-        if len(text) <= room[i]:
-            parts.append(text)
-        else:
-            if room[i] < marker_cost + 40:
-                raise InputLimitExceeded(f"section '{label}' cannot be fitted into the model input limit of {limit} characters")
-            parts.append(_shorten(text, room[i]))
-            shortened.append(label)
-            omitted += len(text) - room[i]
-    return FittedPrompt(head + "".join(parts) + tail, shortened, omitted)
+        self.detail = detail or {}
 
 
 # Pauses before each re-ask when the provider answered 200 but with unusable content (null / empty / non-text).
@@ -120,6 +68,56 @@ class AbstractAgent(abc.ABC):
         self.model = model_name
         self.memory = []
         self._init_resources(task)
+
+    # Input budget of the model behind this agent (faultseeker.budget.InputBudget); None means "not enforced" (test doubles only:
+    # agents built from the registry always have one).
+    budget = None
+
+    def _truncate_history(self, history, max_turns=1):
+        """The messages actually retained for a request: the system message and the last `max_turns` exchanges."""
+        return [history[0]] + history[1:][-(max_turns * 2):]
+
+    def _messages_for_request(self, user_message: str):
+        """Exactly the messages a request with `user_message` would send (system + retained history + the new message)."""
+        return self._truncate_history(self.memory + [{"role": "user", "content": user_message}])
+
+    def input_room_bytes(self) -> int:
+        """UTF-8 bytes still available for the NEXT user message, given the budget and what else is sent with it."""
+        if self.budget is None:
+            return 1 << 62
+        sent = self._messages_for_request("")[:-1]
+        tokens = self.budget.input_limit_tokens - self.budget.message_tokens(sent) - self.budget.per_message_tokens
+        return self.budget.bytes_for_tokens(tokens)
+
+    def _enforce_budget(self, user_message: str) -> None:
+        """Refuses (InputLimitExceeded, nothing sent) a request that does not fit the budget. Counts every message that is sent: the
+        system message, the retained history and the new user message, plus the reserved output and the safety margin."""
+        if self.budget is None:
+            return
+        messages = self._messages_for_request(user_message)
+        needed = self.budget.message_tokens(messages)
+        limit = self.budget.input_limit_tokens
+        if needed > limit:
+            raise InputLimitExceeded(
+                f"the request needs about {needed:,} estimated tokens across {len(messages)} messages, over this model's input budget of "
+                f"{limit:,} ({self.budget.context_tokens:,} context - {self.budget.output_reserve_tokens:,} reserved output - "
+                f"{self.budget.margin_tokens:,} margin); it was not sent",
+                detail={"needed_tokens": needed, "input_limit_tokens": limit, "budget": self.budget.describe()})
+
+    def fit(self, parts):
+        """Joins prompt `parts` (faultseeker.budget.Part) within this model's budget. Returns (text, reductions); the reductions list is
+        empty when nothing was cut. Required parts are never cut: when they alone do not fit, InputLimitExceeded is raised."""
+        if self.budget is None:
+            return "".join(p.text for p in parts), []
+        try:
+            fitted = fit_parts(parts, self.input_room_bytes())
+        except BudgetExceeded as exc:
+            d = exc.detail
+            raise InputLimitExceeded(
+                f"the required part of the request ({d['required_bytes']:,} bytes) does not fit this model's input budget "
+                f"({d['room_bytes']:,} bytes available for this message even with all reducible evidence omitted)",
+                detail=dict(d, budget=self.budget.describe())) from None
+        return fitted.text, fitted.reductions
 
     def _init_resources(self, task):
         system_message = {
@@ -151,6 +149,7 @@ class AbstractAgent(abc.ABC):
     def _send_message_strict(self, user_message: str, temperature = 0) -> str:
         """Provider call that either returns usable text or raises ProviderFailure. Subclasses with a real provider
         override it (validation plus bounded re-asks); the default validates whatever _send_message returned."""
+        self._enforce_budget(user_message)
         return self._require_text(self._send_message(user_message, temperature))
 
     def _chat_strict(self, user_message: str, call) -> str:
@@ -381,14 +380,24 @@ class AbstractAgent(abc.ABC):
 
 
 class OllmaAgent(AbstractAgent):
-    def __init__(self, task, model_name: str = "deepseek-r1:14b", host: str = None):
+    def __init__(self, task, model_name: str = "deepseek-r1:14b", host: str = None, budget: InputBudget = None):
         super().__init__(task, model_name)
         self._client = OllamaClient(host=host) if host else None
+        self.budget = budget
 
     def _send_message_strict(self, user_message: str, temperature = 0.3) -> str:
+        self._enforce_budget(user_message)
+
         def call():
             send = self._client.chat if self._client else chat
-            response = send(model=self.model, messages=self.memory, options={'temperature': temperature})
+            options = {'temperature': temperature}
+            messages = self.memory
+            if self.budget is not None:
+                # Ollama silently drops the front of a prompt that exceeds its context window, so the window is stated explicitly
+                # (it is the one the budget was computed for) and only the retained history is sent, as for the other providers.
+                options['num_ctx'] = self.budget.context_tokens
+                messages = self._truncate_history(self.memory)
+            response = send(model=self.model, messages=messages, options=options)
             return response['message']['content']
         return self._chat_strict(user_message, call)
 
@@ -409,16 +418,13 @@ class GPTAgent(AbstractAgent):
     changed after an error), so a provider that rejects a parameter fails visibly instead of being worked around.
     """
 
-    # Explicit input-limit policy: a request longer than this many characters is never sent cut. It is either fitted by the caller
-    # (fit_prompt, with the shortening reported) or refused as InputLimitExceeded before any request is made.
-    MAX_PROMPT_CHARS = 10000
-
     def __init__(self, task, model):
         if not isinstance(model, ResolvedModel):
             model = load_registry().resolve(model)
         if model.provider.type != 'openai_compatible':
             raise ProviderConfigError(f"Provider '{model.provider.id}' is not OpenAI-compatible.")
         self.resolved = model
+        self.budget = model.budget
         key_env = model.provider.api_key_env
         api_key = os.environ.get(key_env, '').strip() if key_env else ''
         if key_env and not api_key:
@@ -426,12 +432,6 @@ class GPTAgent(AbstractAgent):
         self._client = OpenAI(api_key=api_key or 'no-key-required', base_url=model.base_url,
                               max_retries=model.provider.max_retries, timeout=model.provider.timeout_seconds)
         super().__init__(task, model_name=model.model_id)
-
-    def _truncate_history(self, history, max_turns=1):
-        system_prompt = history[0]
-        message_pairs = history[1:]
-        truncated = message_pairs[-(max_turns * 2):]
-        return [system_prompt] + truncated
 
     def _request_params(self, temperature):
         params = dict(self.resolved.extra_params)
@@ -442,9 +442,7 @@ class GPTAgent(AbstractAgent):
         return params
 
     def _send_message_strict(self, user_message, temperature=0):
-        if len(user_message) > self.MAX_PROMPT_CHARS:
-            raise InputLimitExceeded(f"the request has {len(user_message)} characters, over the model input limit of "
-                                     f"{self.MAX_PROMPT_CHARS}; it was not sent")
+        self._enforce_budget(user_message)
 
         def call():
             completion = self._client.chat.completions.create(

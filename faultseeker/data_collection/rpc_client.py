@@ -23,8 +23,22 @@ if os.environ.get("FAULTSEEKER_RPC_RETRIES", "").strip().isdigit():      # 0 = a
 TIMEOUT = 30
 
 
+# Messages nodes use when the requested block/state/receipt is outside the history they keep (pruned or non-archive nodes). Deliberately
+# specific: generic wording such as "header not found", "execution reverted", "method not found", "invalid params" or a rate limit is NOT
+# treated as pruned history.
+PRUNED_HISTORY = re.compile(
+    r"missing trie node|historical state[^.]{0,60}(?:is )?not available|state (?:at|for) block[^.]{0,60}(?:is )?(?:not available|pruned)"
+    r"|(?:data|block|state|history)[^.]{0,40}\bpruned|\bpruned\b[^.]{0,40}(?:data|block|state|history)|old data not available"
+    r"|not an archive node|requires? (?:an? )?archive|archive (?:node|mode) (?:is )?required|proof window"
+    r"|historical (?:data|backend|rpc)[^.]{0,40}not (?:available|supported)", re.I)
+
+
+def is_pruned_history(text: str) -> bool:
+    return bool(PRUNED_HISTORY.search(text or ""))
+
+
 class RpcError(Exception):
-    """kind: no_endpoint | unreachable | rejected | bad_response | not_found."""
+    """kind: no_endpoint | unreachable | rejected | bad_response | not_found | history_unavailable."""
 
     def __init__(self, kind: str, message: str):
         super().__init__(message)
@@ -124,6 +138,9 @@ class RpcClient:
             if payload.get("error"):
                 err = payload["error"]
                 text = str(err.get("message", err) if isinstance(err, dict) else err)[:160]
+                if is_pruned_history(text):
+                    raise RpcError("history_unavailable", f"{host} does not have the history needed for {method} ({text}). "
+                                                          "Use an archive-capable RPC endpoint.")
                 if re.search(r"rate|limit|capacity|timeout|busy", text, re.I) and attempt < len(RETRY_DELAYS):
                     last = f"{host} reported: {text}"
                     continue

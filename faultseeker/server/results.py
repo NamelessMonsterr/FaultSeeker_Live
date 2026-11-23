@@ -101,8 +101,46 @@ def _coverage(raw_cov) -> Any:
             "selected": _count(raw_cov.get("selected")), "analyzed": _count(raw_cov.get("analyzed")),
             "omitted_count": len(omitted) if isinstance(omitted, list) else 0,
             "failed_count": len(failed) if isinstance(failed, list) else 0,
+            "evidence_limited": raw_cov["evidence_limited"] if isinstance(raw_cov.get("evidence_limited"), bool) else None,
+            "reduced_count": _count(raw_cov.get("reduced_count")), "source_missing_count": _count(raw_cov.get("source_missing_count")),
             "selection_rejected": _count(raw_cov.get("selection_rejected")),
             "selection_replies_ignored": _count(raw_cov.get("selection_replies_ignored"))}
+
+
+_EXECUTION = ("completed", "failed", "omitted")
+_EVIDENCE = ("complete", "reduced", "source_missing", "reduced_source_missing", "not_analyzed")
+
+
+def _is_reduction(reason) -> bool:
+    return "input budget" in str(reason) or "model input limit" in str(reason)
+
+
+def _short_addr(address: str) -> str:
+    return f"{address[:8]}…{address[-4:]}" if ADDRESS_RE.match(address) else _shown(address, 14)
+
+
+def _functions(raw_list) -> List[Dict[str, Any]]:
+    """Per-function results for the report: execution outcome and evidence adequacy kept apart, reductions as readable counts."""
+    out: List[Dict[str, Any]] = []
+    if not isinstance(raw_list, list):
+        return out
+    for item in raw_list[:300]:
+        if not isinstance(item, dict) or item.get("execution") not in _EXECUTION or item.get("evidence") not in _EVIDENCE:
+            continue
+        function, address = item.get("function"), item.get("address")
+        if not (isinstance(function, str) and function and isinstance(address, str)):
+            continue
+        record = {"function": _shown(function, 80), "address": address.lower() if ADDRESS_RE.match(address) else "",
+                  "execution": item["execution"], "evidence": item["evidence"], "reductions": []}
+        for r in (item.get("reductions") or [])[:12] if isinstance(item.get("reductions"), list) else []:
+            if isinstance(r, dict) and isinstance(r.get("section"), str) and isinstance(r.get("step"), str):
+                record["reductions"].append({"step": _shown(r["step"], 40), "section": _shown(r["section"], 80),
+                                             "tier": _shown(str(r.get("tier", "")), 20), "action": "omitted" if r.get("action") == "omitted" else "shortened",
+                                             "original_bytes": _count(r.get("original_bytes")), "kept_bytes": _count(r.get("kept_bytes"))})
+        if item["execution"] == "failed" and isinstance(item.get("failure"), str):
+            record["failure"] = _shown(item["failure"], 240)
+        out.append(record)
+    return out
 
 
 def _plural(n: int, one: str, many: str) -> str:
@@ -214,6 +252,10 @@ def normalize(raw: Dict[str, Any], *, model_errors: int = 0) -> Dict[str, Any]:
             n = coverage["analyzed"]
             warnings.append(f"No potentially vulnerable functions were identified among the {n} analyzed "
                             f"function{_plural(n, '', 's')}; this is not a clean result because other candidates were not analyzed.")
+        elif coverage and coverage["evidence_limited"]:
+            warnings.append("No potentially vulnerable functions were identified, but the evidence the model saw was limited "
+                            f"(reduced for {coverage['reduced_count']}, source missing for {coverage['source_missing_count']} analyzed "
+                            "function(s)); this is not a clean result.")
         else:
             warnings.append("No potentially vulnerable functions were identified for this transaction.")
     if coverage and coverage["limited"]:
@@ -229,8 +271,8 @@ def normalize(raw: Dict[str, Any], *, model_errors: int = 0) -> Dict[str, Any]:
 
     gaps = raw.get("evidence_gaps")
     if isinstance(gaps, dict) and gaps:
-        shortened = [k for k, v in gaps.items() if isinstance(v, list) and any("model input limit" in str(x) for x in v)]
-        no_source = [k for k, v in gaps.items() if not (isinstance(v, list) and v and all("model input limit" in str(x) for x in v))]
+        shortened = [k for k, v in gaps.items() if isinstance(v, list) and any(_is_reduction(x) for x in v)]
+        no_source = [k for k, v in gaps.items() if not (isinstance(v, list) and v and all(_is_reduction(x) for x in v))]
         if no_source:
             shown = ", ".join(_short_identity(k) for k in no_source[:3])
             more = f", and {len(no_source) - 3} more" if len(no_source) > 3 else ""
@@ -240,9 +282,18 @@ def normalize(raw: Dict[str, Any], *, model_errors: int = 0) -> Dict[str, Any]:
         if shortened:
             shown = ", ".join(_short_identity(k) for k in shortened[:3])
             more = f", and {len(shortened) - 3} more" if len(shortened) > 3 else ""
-            warnings.append(f"The verdict input for {len(shortened)} analyzed function{'' if len(shortened) == 1 else 's'} "
-                            f"({shown}{more}) was shortened to fit the model input limit, so part of the analysis evidence was not seen; "
+            warnings.append(f"Evidence was reduced to fit the model input budget for {len(shortened)} analyzed function"
+                            f"{'' if len(shortened) == 1 else 's'} ({shown}{more}), so the model did not see all of it; "
                             "\"no finding\" for them is not evidence that they are safe.")
+    lookups = raw.get("source_lookups")
+    if isinstance(lookups, dict) and lookups:
+        items = [(a, v) for a, v in lookups.items() if isinstance(a, str) and ADDRESS_RE.match(a) and isinstance(v, dict)
+                 and isinstance(v.get("summary"), str)]
+        for address, info in items[:3]:
+            chain = _shown(str(info.get("chain", "")), 16)
+            warnings.append(f"Contract source lookup for {_short_addr(address)}{f' [{chain}]' if chain else ''}: {_shown(info['summary'], 420)}")
+        if len(items) > 3:
+            warnings.append(f"Source was also unavailable for {len(items) - 3} more contract{_plural(len(items) - 3, '', 's')}.")
     if model_errors:
         warnings.append(f"{model_errors} model request(s) failed during this run, so the report may be incomplete.")
 
@@ -257,6 +308,7 @@ def normalize(raw: Dict[str, Any], *, model_errors: int = 0) -> Dict[str, Any]:
         "ranking": ranking,
         "candidates": candidates,
         "coverage": coverage,
+        "functions": _functions(raw.get("function_results")),
         "stats": {"functions_to_inspect": debug.get("functions_to_inspect_count"),
                   "forensics_seconds": debug.get("forensics_duration"),
                   "analysis_seconds": debug.get("analysis_duration")},

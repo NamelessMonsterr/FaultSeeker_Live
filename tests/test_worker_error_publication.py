@@ -48,3 +48,17 @@ def test_typed_model_failures_get_their_own_fixed_explanations(make_client, mode
     rid = start_run(c)
     err = wait_final(c, rid)["run"]["error"]
     assert err["code"] == code and "SECRET-REPLY-TEXT" not in everything_published(c, rid)
+
+
+def test_an_input_budget_failure_is_named_as_an_application_limit_not_a_provider_problem(make_client):
+    c = make_client(FAKE_MODE="budget_incomplete")
+    err = wait_final(c, start_run(c))["run"]["error"]
+    assert err["code"] == "analysis_incomplete" and "InputLimitExceeded" in err["message"]
+    assert "input budget" in err["hint"] and "not a provider outage" in err["hint"] and "FAULTSEEKER_CONTEXT_TOKENS_<MODEL>" in err["hint"]
+    assert "provider key, quota" not in err["hint"]
+
+
+def test_input_too_large_hint_points_at_the_budget(make_client):
+    c = make_client(FAKE_MODE="input_limit")
+    err = wait_final(c, start_run(c))["run"]["error"]
+    assert err["code"] == "input_too_large" and "input budget" in err["message"] and "FAULTSEEKER_CONTEXT_TOKENS_<MODEL>" in err["hint"]

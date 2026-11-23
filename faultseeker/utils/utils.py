@@ -316,5 +316,5 @@ def build_agent(task, model):
         load_dotenv()
     resolved = load_registry().resolve(model)
     if resolved.provider.type == 'ollama':
-        return OllmaAgent(task, resolved.model_id, host=resolved.host)
+        return OllmaAgent(task, resolved.model_id, host=resolved.host, budget=resolved.budget)
     return GPTAgent(task, resolved)

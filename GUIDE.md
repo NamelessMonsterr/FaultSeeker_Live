@@ -163,6 +163,59 @@ Per model, `params` lists what is sent. Allowed names: `temperature`, `top_p`, `
 * If a provider rejects a parameter (for example a model that does not accept `temperature`), the run **stops with
   `provider_parameter_rejected`** and tells the operator to adjust `params`, rather than working around it.
 
+### Input budgets
+
+Every request to a model is checked against that model's input budget before it is sent. There is no universal character cap any more
+(the old 10,000-character cap was an application limit, not a provider limit, and it ended the BEGO `swap` analysis with a 10,237-character request).
+
+**Units.** Estimated tokens, never characters. No tokenizer dependency is added, so the estimate is a conservative upper bound:
+`tokens = ceil(UTF-8 bytes / bytes_per_token)` with `bytes_per_token = 1.0` by default (a byte-level BPE token covers at least one byte, so this
+over-counts rather than under-counts; it cannot guarantee that a *different* tokenizer is bounded, which is why a larger ratio is an explicit
+operator calibration). A request fits when the estimated tokens of **every message sent** (system message, retained history, tool messages and
+the new user message, each plus 16 tokens of framing) + the reserved output + a safety margin (the larger of 256 tokens and 2% of the context)
+do not exceed the context window. History is the system message plus the last exchange, for every provider (Ollama now sends the same,
+and states `num_ctx` explicitly because Ollama otherwise silently drops the front of an oversized prompt).
+
+**Where limits come from, highest precedence first.**
+
+| # | Source | Notes |
+|---|---|---|
+| 1 | `FAULTSEEKER_CONTEXT_TOKENS_<MODEL>`, `FAULTSEEKER_OUTPUT_RESERVE_TOKENS_<MODEL>`, `FAULTSEEKER_BYTES_PER_TOKEN_<MODEL>` | `<MODEL>` is the registry id upper-cased with every non-alphanumeric character replaced by `_` (`gpt-4o-mini` → `GPT_4O_MINI`, `ollama:llama3` → `OLLAMA_LLAMA3`, `mercury` → `MERCURY`). Context 1,024–10,000,000; ratio 1.0–8.0. Trusted as set |
+| 2 | `limits` block of the model in `config/models.json` | Documented values only, each with its source page and check date (below) |
+| 3 | `FAULTSEEKER_DEFAULT_CONTEXT_TOKENS` | Only for models without a `limits` block |
+| 4 | Built-in conservative fallback | `openai_compatible` 8,192 tokens (2,048 reserved for output), `ollama` 4,096 (1,024). An assumption about an **unknown** model, not a claim about any model |
+
+The output reserve is, highest first: the override; the `max_tokens`/`max_completion_tokens` the request actually sends; the model's documented
+maximum output; the fallback. Invalid values (non-numeric, out of range, a reserve below the `max_tokens` sent, a context that leaves under 512
+usable tokens) are rejected when the model is resolved, with the setting named; nothing is silently clamped.
+
+**Verified limits in `config/models.json`** (OpenAI model pages, checked 2026-11-18; context window / max output tokens):
+
+| Model | Context | Max output | Source |
+|---|---|---|---|
+| gpt-4o-mini | 128,000 | 16,384 | https://developers.openai.com/api/docs/models/gpt-4o-mini |
+| gpt-4o | 128,000 | 16,384 | https://developers.openai.com/api/docs/models/gpt-4o (the page marks the model deprecated) |
+| gpt-4.1-mini | 1,047,576 | 32,768 | https://developers.openai.com/api/docs/models/gpt-4.1-mini |
+| gpt-4.1 | 1,047,576 | 32,768 | https://developers.openai.com/api/docs/models/gpt-4.1 |
+
+`codex-proxy` and `mercury` have **no** `limits`: their model id comes from your environment, and the only Mercury figures found were secondary
+sources that disagree with each other. They use the fallback until you set `FAULTSEEKER_CONTEXT_TOKENS_CODEX_PROXY` / `..._MERCURY` (and, if
+needed, `FAULTSEEKER_OUTPUT_RESERVE_TOKENS_<MODEL>`) from your own provider's documentation. Ollama's documented default context is chosen by VRAM
+(4k / 32k / 256k tokens); the 4,096 fallback is the lowest of those tiers. Set the real figure with `FAULTSEEKER_CONTEXT_TOKENS_OLLAMA_<NAME>`.
+
+**What happens when a request does not fit (Stage 2, per candidate).** Prompt text is split into *required* parts (instructions, candidate identity,
+the task description, the closing contract) and *reducible evidence*, reduced **in this order**: (1) history (earlier understanding, task tree),
+(2) context (balances, relations, children calls, the latest task result), (3) source code, (4) the candidate's own trace/analysis evidence. Within a
+tier every part keeps the same fraction; a reduced part keeps its head and tail around a visible `[… N bytes omitted …]` marker, and a part that cannot keep
+anything becomes the marker alone. Every reduction is recorded per candidate (step, section, tier, original and kept bytes) and reaches the report. If the
+**required** parts alone do not fit, the request is **not sent**: `InputLimitExceeded` (a terminal `ProviderFailure`, no retry) fails the candidate, Stage 2 ends as
+`analysis_incomplete`, and the hint names the budget instead of blaming the provider. Narrowing and ranking requests (optional, whole-candidate-list prompts) and the
+Stage 1 forensics prompts are budget-checked but not reduced: over budget, narrowing is ignored, ranking falls back to unranked, and a Stage 1 prompt stops the run as `input_too_large`.
+
+**Execution versus evidence.** The report keeps two axes apart. *Execution* (`coverage.status`, `limited`): was every candidate analyzed.
+*Evidence* (`coverage.evidence_limited`, per-function `evidence`): did the model see adequate evidence: `complete`, `reduced` (cut to fit the budget),
+`source_missing`, `reduced_source_missing`, `not_analyzed`. A completed execution with limited evidence is never reported as a clean negative.
+
 ### Keys and isolation
 * A user may type a key for the selected model, or the server may hold one in the variable the registry names for that provider.
 * A user's key replaces the server key for **that provider only**.
@@ -361,18 +414,20 @@ FAULTSEEKER_TEST_FOUNDRY_DIRS=/f/1.4.4:/f/1.5.1:/f/1.9.0 python -m pytest tests 
 
 ### Results
 
-**Fresh results for this revision (evidence-fix build, run offline from the unzipped tree; nothing here is a live ETH/BSC result):**
+**Fresh results for this revision (budgeting / reduced-evidence / RPC-history build; run offline from the working tree; nothing here is a live ETH/BSC result):**
 
 | Run | Conditions | Result |
 |---|---|---|
-| Python suite | Python **3.11.15** (uv-managed; Render's version), full `requirements.txt` + `requirements-dev.txt`, **no Foundry** on PATH. `python -m pytest tests -q -p no:cacheprovider -rs` | **745 passed, 0 failed, 5 skipped**. Skips: 4 in `test_cast_integration.py` (Foundry `cast` + `anvil` not installed) and 1 in `test_selectors.py:34` (`cast` not installed) |
-| Browser suite | Node v22.23.4, jsdom 31, server on Python 3.11.15 with the fake worker and local fake providers. `cd tests/ui && npm test` | **242 checks passed, 0 failed** |
-| Real browser, one scenario | Headless Chromium 153 (npm `@sparticuz/chromium`) against the real server and fake worker, run `5e5e…` (junk model output, limited coverage), desktop 1280x900 and mobile 390x844 | Rendered and inspected by eye. It found a real defect (a long identifier in the warning banner overflowed the mobile viewport by 35 px); fixed in `console.css`, re-measured at 0 px on both widths. The *empty-report* wording for limited coverage and no candidates is covered by jsdom only, not by a screenshot |
+| Python suite | Python **3.11.15** (uv-managed), full `requirements.txt` + `requirements-dev.txt`, **no Foundry** on PATH. `python -m pytest tests -q -p no:cacheprovider -rs` | **820 passed, 0 failed, 5 skipped**. Skips: 4 in `test_cast_integration.py` (Foundry `cast` + `anvil` not installed) and 1 in `test_selectors.py:34` (`cast` not installed) |
+| Browser suite | Node v22.23.4, jsdom 31, server on Python 3.11.15 with the fake worker and local fake providers. `cd tests/ui && npm install && npm test` | **258 checks passed, 0 failed** |
+| Real browser | Headless Chromium 153 (npm `@sparticuz/chromium`) against the real server and fake worker: run `5e5e…` (junk model output, limited coverage) and run `b0b0…` (reduced evidence, missing source), desktop 1280x900 and mobile 390x844 | Rendered and inspected by eye; horizontal overflow measured at 0 px on both widths for both runs. The empty-report wording for `no_candidates` and limited execution coverage is covered by jsdom only |
+
+The immediately previous revision (evidence-fix build) recorded 745 passed / 5 skipped (Python 3.11.15) and 242 browser checks.
 
 The Foundry integration tests (`test_cast_integration.py`) were **not run** here: Foundry is unavailable, so real-`cast` behaviour was not re-verified in this revision.
 
 **Baseline for comparison (the November 15 ZIP, re-run here on Python 3.11.15):** 528 passed, 5 skipped (same five skips), 221 jsdom checks.
-The new regressions were written first and run against that baseline: the six new files collected 213 tests, **150 failed and 63 passed** (the passing ones are guards, e.g. valid keys still accepted, a 10,000-character prompt still sent whole).
+The new regressions were written first and run against that baseline: the six new files collected 213 tests, **150 failed and 63 passed** (the passing ones are guards, e.g. valid keys still accepted). That revision's 10,000-character cap no longer exists; see Input budgets.
 
 **Historical claims (not re-verified in this revision; kept only as history).** An earlier revision recorded: Python 3.12.3 with real Foundry 1.4.4 + 1.5.1 + 1.9.0 =
 261 passed / 0 skipped; Python 3.12.3 without Foundry = 248 passed / 5 skipped; minimal packages = 154 passed / 12 skipped; browser suite = 148 checks.
@@ -383,6 +438,9 @@ Those counts describe an older tree and are superseded by the table above. The R
 function names were matched case-insensitively when ranking (`test_ranking_contract.py`, `test_results.py`); a ranked full key that was not a finding was shown with empty evidence
 (`test_results.py`, `test_ranking_contract.py`); a model finding with a key that is not `<function>_<address>` was promoted as an unranked candidate (`test_results.py`).
 Two other tests only changed their *setup* because the old setup gave the model a key that is not a candidate of its context (`test_evidence_to_verdict.py`, `test_model_response_validation.py`); their assertions are unchanged.
+Changed again in the budgeting revision, because the behaviour they pinned is the defect that revision fixes: `test_input_limit.py` was rewritten (it pinned the universal 10,000-character cap);
+the verdict-input warning now says "model input budget" instead of "model input limit" (`test_evidence_report_contract.py`); and a pipeline test that expected the plain "No potentially vulnerable functions were identified"
+line for candidates with no contract source now expects "not a clean result" (`test_selection_completion.py`), because missing source is limited evidence.
 
 Key package versions are whatever pip resolved on the build date; they were not pinned for this run.
 
@@ -396,7 +454,9 @@ These flows were implicit (flags, list lengths, substring tests). They are now e
 | **Coverage** (`coverage_report`, raw `coverage`, report `coverage`) | `no_candidates` / `complete` / `limited` (omitted or failed candidates) | Genuinely empty input reads differently from a limited analysis; an empty report with `limited` coverage is **not** a clean result in the API warnings and in the UI |
 | **Candidate loop and completion** (`_function_analysis_init`) | init → steps → adequacy check → complete \| iteration limit \| provider failure (terminal) | Only an explicit response completes a candidate: exactly `Yes` (any case, optional final `.`/`!`) or `{"adequate": true}`. "not yet, yes later", a quoted yes, malformed text and an empty reply never complete it; the attempt bound (31 iterations, a check every third) and rollback are unchanged |
 | **Verdict acceptance** (`_update_potentially_vulnerable_function`) | per entry: resolve identity → validate evidence → validate confidence → accepted \| rejected(reason); per step: some accepted \| nothing named \| everything rejected (error, retried by the candidate loop) | A key must resolve **uniquely** to a candidate of this analysis or to a trace-backed function the analysis context shows (child call present in the transaction's call memo); abbreviations and decorated spellings use the same rule; evidence must normalize to readable text; confidence must be finite and in (0, 1]; the same function twice in one reply counts once; rejections are counted per reason and roll back with a failed attempt |
-| **Model input** (`GPTAgent`, `fit_prompt`) | prompt ≤ `MAX_PROMPT_CHARS` (10,000) → sent whole; over → refused as `InputLimitExceeded`; the verdict prompt is fitted first | Nothing is silently cut. Required text (instructions, candidate identifiers, closing contract) is never shortened; analysis evidence keeps its head and tail with a visible marker, and the candidate gets an `evidence_gaps` entry that the report states. `InputLimitExceeded` is a `ProviderFailure`: terminal, no retry; routing, parameters and retry budgets are unchanged |
+| **Model input** (`budget.py`, `AbstractAgent._enforce_budget` / `fit`) | request → measured against the model's budget → sent whole \| fitted (reductions recorded) \| refused as `InputLimitExceeded` | Every request path (OpenAI-compatible, Ollama, legacy `query`) is checked against system + retained history + new message + reserved output + margin; reducible evidence goes in the order history, context, source, trace; required text is never cut; nothing required is dropped silently; routing, parameters and retry budgets are unchanged |
+| **Evidence adequacy** (`function_results`, `coverage.evidence_limited`) | per candidate: execution completed \| failed \| omitted; evidence complete \| reduced \| source_missing \| reduced_source_missing \| not_analyzed | Execution completion never implies adequate evidence; reduced or source-missing evidence with no finding is reported as "not a clean result"; reductions roll back with a failed attempt |
+| **RPC receipt state** (`rpc_collector.collect`) | transaction lookup → receipt lookup: found \| missing with a block number (`history_unavailable`) \| missing without a block number (genuinely unmined) | Only a transaction the node itself places in no block is "not mined"; a missing receipt for a mined transaction, or a pruned-history error, is `history_unavailable` with an archive-RPC hint; rate limits and other errors keep their own classes |
 | **Stage 1 model replies** (`forensics/contracts.py`) | reply → typed value \| `ProviderFailure` \| `ForensicsModelError` | No `eval` anywhere (a test scans the package); an explicit `[]` of victims is valid, a provider failure or unusable reply is never "no victims" or a clean classification; `unknown`/`vulnerable` match in any letter case; one `query_json` per operation, no loop around it |
 | **Ranking** (`normalize`) | raw ranked entries → resolved to an accepted finding \| dropped (reason); ranking usable \| unranked fallback | A ranked key must resolve uniquely to an accepted finding (never invents one); optional ranking failure keeps valid findings (shown unranked) |
 | **Report** (`normalize`) | raw finding → accepted (valid identity + readable evidence) \| rejected | Raw objects, confidence fields, provider error sentinels and malformed values are never shown; junk is never promoted; rejected verdict entries, unusable evidence, limited coverage and shortened verdict input are surfaced as warnings |
@@ -430,7 +490,9 @@ Other implicit machines exist (run lifecycle, key validation, sessions, progress
 | `test_selection_completion.py` | Narrowing validation, prioritization, selected/analyzed/omitted/failed bookkeeping, coverage in the pipeline result, explicit completion responses and look-alikes |
 | `test_forensics_safe_parsing.py` | No `eval`/`exec`; hostile model text never executes; actual victim and role caller paths with local fake agents; provider and unusable replies fail closed within the existing retry budget |
 | `test_evidence_report_contract.py` | Readable evidence, junk never promoted, rejection and coverage warnings, confidence finiteness and range, evidence-type validation |
-| `test_input_limit.py` | Real `GPTAgent` path with a fake transport: a prompt over 10,000 characters with a tail marker is never silently cut; the verdict prompt keeps identifiers and both ends of the evidence; routing, parameters, retries unchanged |
+| `test_input_limit.py` | Budget configuration and precedence, invalid overrides, the 10,237-character request under a restrictive and a sufficient budget, enforcement on every request path (system/history/tool messages, output reserve, multibyte text, Ollama), the defined reduction order, fail-closed required content, per-function and coverage propagation |
+| `test_rpc_history.py` | Pruned-history versus genuinely unmined versus unrelated RPC errors, retry behaviour, run classification |
+| `test_source_lookup_cause.py` | Source lookup causes (credentials, unreachable, unverified, unknown), no key leak, evidence gap kept separate from execution failure |
 | `test_worker_error_publication.py` | Generic worker errors are sanitized in the API; detail only in the technical log |
 | `tests/ui/ui.test.mjs` | Console behaviour in jsdom: setup, networks, presets, provider-aware key hints, invalid / **unreachable** / outage key checks, full run to report, every failure type, capture, routing, busy/cancel, **access protection with a cookie jar** (sign-in, wrong code, sign-out, expired session, rate-limit message), unreachable server, untrusted text never interpreted as HTML |
 
@@ -442,7 +504,7 @@ Other implicit machines exist (run lifecycle, key validation, sessions, progress
 * Online signature lookups in cast were not testable offline ([section 8](#8-foundry-versions-and-trace-handling)).
 * The browser suite runs in jsdom, not a real browser: only the one scenario in the Results table was inspected in a real browser; other layouts, real cookie handling and navigation were not seen by eye.
 * **Fake-model tests do not show exploit detection.** They prove how the pipeline treats replies, not that a real model finds a known exploit; no live ETH/BSC run was made.
-* The 10,000-character input limit is the pre-existing value, now explicit. Requests that exceed it end as `InputLimitExceeded` instead of being cut; a per-model limit would need a registry schema change and was not made.
+* The input budget is an estimate (UTF-8 bytes, a conservative upper bound), not a tokenizer count; the documented limits are the providers' published context sizes, not a guarantee that a given account or endpoint accepts them. Models without a documented limit use a conservative fallback until an override is set.
 
 ---
 
@@ -518,7 +580,9 @@ The image sets `FAULTSEEKER_PUBLIC=1`, so adding a server-held key (`-e OPENAI_A
 | `RPC collection failed (not_found)` | The endpoint does not know the hash: wrong network, or a pruned node | Match the network and RPC chain; use an archive RPC |
 | `RPC collection failed (not_successful)` | The transaction reverted or is not mined | Only successful transactions are analyzed |
 | `RPC collection failed (rejected / unreachable)` | Bad key, rate limit, provider down | Check the RPC URL and key; use another endpoint |
-| `Contract source unavailable for 0x…` | Not verified on Sourcify and no Etherscan-API result | Set `ETHERSCAN_API_KEY`; the run continues without that contract's source |
+| `Contract source unavailable for 0x…` | The line states what each lookup reported and the likely cause (missing/invalid explorer key, rate limit, unreachable service, unverified contract) or says the cause is not established | Follow the stated cause. A key may widen coverage but does not guarantee the source exists; the run continues and the report marks the function's evidence as source-missing |
+| `RPC collection failed (history_unavailable)` | The endpoint knows the transaction (it returned a block number) but has no receipt, or answered with a pruned-history error (`missing trie node`, `historical state … not available`, …) | Use an archive-capable RPC under “RPC connection”. A hash the node has never mined still reports `not mined yet` |
+| `analysis_incomplete` with `InputLimitExceeded` | A request did not fit the model's input budget (application limit, not a provider outage) | Use a model with a larger documented context or set `FAULTSEEKER_CONTEXT_TOKENS_<MODEL>` (see Input budgets) |
 | `Explorer page did not report a successful transaction` | Only with `FAULTSEEKER_EXPLORER_FALLBACK=1`: blocked page | Leave the fallback off |
 | `worker_crashed` | Often out of memory on the free plan | See Technical logs; try smaller transactions |
 | Locked out of sign-in | Rate limit (429) | Wait for `Retry-After` |

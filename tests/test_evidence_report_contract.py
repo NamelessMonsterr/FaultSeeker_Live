@@ -130,9 +130,9 @@ def test_malformed_coverage_and_rejection_fields_do_not_crash_or_mislead():
 
 
 def test_input_limited_verdicts_are_reported_as_limited_evidence():
-    out = results.normalize(raw({}, evidence_gaps={f"withdraw@{A1}": ["verdict input shortened to fit the model input limit"]}))
+    out = results.normalize(raw({}, evidence_gaps={f"withdraw@{A1}": ["evidence reduced to fit the model input budget"]}))
     text = " ".join(out["warnings"])
-    assert "model input limit" in text and "not evidence" in text and "No source code was available" not in text
+    assert "model input budget" in text and "not evidence" in text and "No source code was available" not in text
 
 
 # ------------------------------------------------------------------------------------------ verdict acceptance

@@ -148,6 +148,8 @@ class FaultSeekerPipeline:
             'ranking_problem': analysis_result.get('ranking_problem', ''),
             'evidence_gaps': analysis_result.get('evidence_gaps', {}),
             'coverage': analysis_result.get('coverage', {}),
+            'function_results': analysis_result.get('function_results', []),
+            'source_lookups': analysis_result.get('source_lookups', {}),
             'verdict_rejections': analysis_result.get('verdict_rejections', {}),
             'transaction_understanding': analysis_result.get('transaction_understanding', ''),
 

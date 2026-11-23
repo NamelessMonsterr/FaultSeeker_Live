@@ -14,7 +14,8 @@ from faultseeker.prompts.function_analysis import (
     VulnerabilityAnalysisPrompts,
     LocalTaskPrompts,
 )
-from faultseeker.utils.agent import AbstractAgent, ModelResponseError, ProviderFailure, fit_prompt
+from faultseeker.budget import Part, REQUIRED
+from faultseeker.utils.agent import AbstractAgent, InputLimitExceeded, ModelResponseError, ProviderFailure
 from faultseeker.utils.evidence import normalize_confidence, normalize_evidence
 from faultseeker.utils.identity import IdentityError, resolve_identity
 from faultseeker.utils.solidity_selectors import function_matches_selector, is_bare_selector
@@ -37,6 +38,7 @@ _CANDIDATE_ATTEMPT_STATE_FIELDS = (
     "children_call_memo",
     "repeated_patterns",
     "verdict_rejections",
+    "reduction_log",
 )
 
 
@@ -307,9 +309,12 @@ class FunctionAnalyzer:
         return address
 
     def _retrieve_additional_info(self, additional_info):
-        prompt = self.function_prompts.retrieve_additional_info
-        prompt += f"Current available information:{self.function_call_info_summary}\n"
-        prompt += f"Additional information to be reorganized:{additional_info}"
+        prompt = self._fit_prompt(self.generation_agent, [
+            Part('instructions', self.function_prompts.retrieve_additional_info, REQUIRED),
+            Part('current available information (label)', "Current available information:", REQUIRED),
+            *self._dict_parts(self.function_call_info_summary, 'candidate evidence', fmt='repr'),
+            Part('additional information (label)', "\nAdditional information to be reorganized:", REQUIRED),
+            Part('additional information to reorganize', str(additional_info), REQUIRED)], 'additional information')
         # The reply as a whole must be a JSON object (else ModelResponseError: the step fails and the loop handles it);
         # individual malformed entries inside it are optional pieces and are skipped.
         formatted_additional_info = self.generation_agent.query_json(prompt, expect=dict)
@@ -389,18 +394,22 @@ class FunctionAnalyzer:
     def _perform_task(self):
         self._normalize_task(self.current_task)
         self.current_task['additional_information'] = self._retrieve_additional_info(str(self.current_task['additional_information'])+ self.current_task['task_description'])
-        processing_prompt = self.function_prompts.function_call_info_processing.format(
-            selected_task = json.dumps(self.current_task)
-        )
+        processing_prompt = self._fit_prompt(
+            self.processing_agent,
+            self._template_parts(self.function_prompts.function_call_info_processing,
+                                 {'selected_task': self._dict_parts(self.current_task, 'selected task')}),
+            'task processing')
         self.processing_result = self.processing_agent.query_text(processing_prompt)
         logging.info(f"Processing result: {self.processing_result}")
 
     def _select_task(self):
-        task_selection_prompt = self.function_prompts.function_call_task_selection.format(
-            task_tree=self.task_tree,
-            function_call_info_summary=self.function_call_info_summary,
-            current_understanding=self.understanding_result
-        )
+        task_selection_prompt = self._fit_prompt(
+            self.generation_agent,
+            self._template_parts(self.function_prompts.function_call_task_selection, {
+                'task_tree': (str(self.task_tree), 'history'),
+                'function_call_info_summary': self._dict_parts(self.function_call_info_summary, 'candidate evidence', fmt='repr'),
+                'current_understanding': (str(self.understanding_result), 'history')}),
+            'task selection')
 
         problem = ''
         for attempt in range(MAX_TASK_SELECTION_ATTEMPTS):
@@ -444,22 +453,88 @@ class FunctionAnalyzer:
         ) from None
 
     def _update_task_tree(self):
-        prompt = self.task_prompts.update_task_tree.format(
-            task_tree = self.task_tree,
-            current_understanding = self.understanding_result,
-            task_completed = self.processing_result
-        )
+        prompt = self._fit_prompt(
+            self.reasoning_agent,
+            self._template_parts(self.task_prompts.update_task_tree, {
+                'task_tree': (str(self.task_tree), 'history'),
+                'current_understanding': (str(self.understanding_result), 'history'),
+                'task_completed': (str(self.processing_result), 'context')}),
+            'task tree update')
         result = self.reasoning_agent.query_text(prompt)
         self.task_tree = result
         logging.info(f"Task tree: {self.task_tree}")
 
+    # ---- budgeted prompts: what is required, what may be reduced, in which order ------------------------------------------
+    # Tiers (faultseeker.budget): REQUIRED is never reduced. Reducible evidence goes in this order when a request does not fit:
+    # history (earlier understanding, task tree), context (balances, relations, children calls), source (function source code),
+    # trace (the candidate's own call data) last. Everything that is reduced is recorded (reduction_log) and reported.
+    _KEY_TIERS = {
+        'function': REQUIRED, 'address': REQUIRED, 'appreance_count': REQUIRED, 'note': REQUIRED,
+        'task_description': REQUIRED, 'description': REQUIRED,
+        'calls': 'trace', 'address_calls': 'trace', 'function_call': 'trace',
+        'function_source_code': 'source', 'source_code': 'source', 'function_call_related_info': 'source', 'address_related_info': 'source',
+    }
+
+    def _tier_of_key(self, key):
+        return self._KEY_TIERS.get(key, 'context')
+
+    def _dict_parts(self, value, label, fmt='json', nested=('additional_information',)):
+        """A dict rendered as `{k: v, ...}` text split into one part per key, each with its tier. Unknown keys are 'context'."""
+        show = json.dumps if fmt == 'json' else repr
+        if not isinstance(value, dict):
+            return [Part(label, show(value), 'context')]
+        parts = [Part(f"{label} (open)", '{', REQUIRED)]
+        for n, (key, item) in enumerate(value.items()):
+            lead = (', ' if n else '') + show(key) + ': '
+            if key in nested and isinstance(item, dict):
+                parts.append(Part(f"{label}.{key} (open)", lead, REQUIRED))
+                parts.extend(self._dict_parts(item, f"{label}.{key}", fmt, nested=()))
+            else:
+                parts.append(Part(f"{label}.{key}", lead + show(item), self._tier_of_key(key)))
+        parts.append(Part(f"{label} (close)", '}', REQUIRED))
+        return parts
+
+    def _template_parts(self, template, fields):
+        """Parts of a prompt template: its literal text is REQUIRED; each {field} becomes the part(s) given in `fields`
+        (a list of Part, or a (text, tier) pair)."""
+        import string
+        parts = []
+        for literal, name, _spec, _conv in string.Formatter().parse(template):
+            if literal:
+                parts.append(Part('instructions', literal, REQUIRED))
+            if name is not None:
+                value = fields[name]
+                parts.extend(value if isinstance(value, list) else [Part(name, value[0], value[1])])
+        return parts
+
+    def _fit_prompt(self, agent, parts, step):
+        """The prompt text within the agent's input budget, recording whatever had to be reduced for the candidates being analyzed.
+        Raises InputLimitExceeded (the candidate fails closed) when the required parts alone do not fit."""
+        text, reductions = agent.fit(parts)
+        if reductions:
+            self._note_reductions(step, reductions)
+        return text
+
+    def _note_reductions(self, step, reductions):
+        log = self.__dict__.setdefault('reduction_log', {})
+        for identity in (getattr(self, '_current_identities', None) or ['(unattributed)']):
+            entries = log.setdefault(identity, [])
+            for r in reductions:
+                record = dict(r, step=step)
+                same = next((e for e in entries if e['step'] == step and e['section'] == r['section']), None)
+                if same is None:
+                    if len(entries) < 60:
+                        entries.append(record)
+                elif record['kept_bytes'] < same['kept_bytes']:
+                    same.update(record)
+
     def _update_current_understanding(self, is_init=False):
-        if is_init:
-            understanding_prompt = self.function_prompts.function_call_organization_function_call.format(function_call_info_summary=json.dumps(self.function_call_info_summary))
-            self.understanding_result = self.organization_agent.query_text(understanding_prompt)
-        else:
-            understanding_prompt = self.function_prompts.function_call_organization_function_call.format(function_call_info_summary=json.dumps(self.function_call_info_summary))
-            self.understanding_result = self.organization_agent.query_text(understanding_prompt)
+        understanding_prompt = self._fit_prompt(
+            self.organization_agent,
+            self._template_parts(self.function_prompts.function_call_organization_function_call,
+                                 {'function_call_info_summary': self._dict_parts(self.function_call_info_summary, 'candidate evidence')}),
+            'understanding')
+        self.understanding_result = self.organization_agent.query_text(understanding_prompt)
         logging.info(f"Current understanding: {self.understanding_result}")
 
     _VERDICT_KEY = re.compile(r'^.+_0x[0-9a-fA-F]{40}$')
@@ -488,6 +563,11 @@ class FunctionAnalyzer:
         return unique
 
     def _record_evidence_gaps(self):
+        for identity in (getattr(self, '_current_identities', None) or []):
+            if self.__dict__.get('reduction_log', {}).get(identity):
+                gaps = self.evidence_gaps.setdefault(identity, [])
+                if self._INPUT_LIMIT_GAP not in gaps:
+                    gaps.append(self._INPUT_LIMIT_GAP)
         for identifier, has_source in self._candidate_context():
             if not has_source:
                 function, _, address = identifier.rpartition('_')
@@ -563,20 +643,17 @@ class FunctionAnalyzer:
                                 "is not evidence that the function is safe). "))
         tail = ('The following function calls have been confirmed to be vulnerable, if it is in the provided information, please add it to the returned JSON with the predefined format: '
                 + str(self.cheatsheet))
-        # Required: the instructions, the candidate identifiers and the closing contract. Compactable: the analysis evidence, which is
-        # shortened at its middle (head and tail kept, visibly marked) only when the request would exceed the input limit.
-        fitted = fit_prompt(instructions, [("current understanding", "Current understanding:" + self.understanding_result),
-                                           ("current task", "Current task:" + json.dumps(self.current_task)),
-                                           ("analysis result", 'Analysis result of current task:' + json.dumps(self.processing_result))],
-                            tail)
-        if fitted.shortened:
-            gaps = self.__dict__.setdefault('evidence_gaps', {})
-            for identifier, _ in context:
-                function, _, address = identifier.rpartition('_')
-                entry = gaps.setdefault(self._identity(function, address), [])
-                if self._INPUT_LIMIT_GAP not in entry:
-                    entry.append(self._INPUT_LIMIT_GAP)
-        result = self.organization_agent.query_json(fitted.text, expect=(dict, list))
+        # Required: the instructions, the candidate identifiers, the task description and the closing contract. Reducible, in the
+        # defined order (history, context, source, trace): the earlier understanding, the evidence inside the task, and the analysis
+        # result. Whatever is reduced is recorded for the candidate; text that cannot fit even then fails the step closed.
+        text = self._fit_prompt(self.organization_agent, [
+            Part('instructions', instructions, REQUIRED),
+            Part('current understanding', "Current understanding:" + self.understanding_result, 'history'),
+            Part('current task (label)', "Current task:", REQUIRED),
+            *self._dict_parts(self.current_task, 'current task'),
+            Part('analysis result', 'Analysis result of current task:' + json.dumps(self.processing_result), 'trace'),
+            Part('closing contract', tail, REQUIRED)], 'verdict')
+        result = self.organization_agent.query_json(text, expect=(dict, list))
         if isinstance(result, list):
             if result:
                 raise ModelResponseError("expected a JSON object of potentially vulnerable functions, got a non-empty list")
@@ -634,7 +711,7 @@ class FunctionAnalyzer:
         if ignored:
             print(f"         {ignored} verdict entr{'y' if ignored == 1 else 'ies'} without a usable key, evidence or confidence ignored")
 
-    _INPUT_LIMIT_GAP = 'verdict input shortened to fit the model input limit'
+    _INPUT_LIMIT_GAP = 'evidence reduced to fit the model input budget'
 
     def _update_children_call_memo(self, function_call, function_name=''):
         for i in function_call:
@@ -686,11 +763,13 @@ class FunctionAnalyzer:
    1.2 Summary of the relation with other addresses - (completed)
    1.3 Retrieve the source code of the function call - (completed)
 '''
-        prompt = prompt.format(
-            task_tree = initial_task_tree,
-            current_understanding = self.understanding_result,
-            function_call_info_summary = json.dumps(self.function_call_info_summary)
-        )
+        prompt = self._fit_prompt(
+            self.reasoning_agent,
+            self._template_parts(prompt, {
+                'task_tree': (initial_task_tree, 'history'),
+                'current_understanding': (str(self.understanding_result), 'history'),
+                'function_call_info_summary': self._dict_parts(self.function_call_info_summary, 'candidate evidence')}),
+            'analysis init')
         result = self.reasoning_agent.query_text(prompt)
         self.task_tree = result
         logging.info(f"Function call info summary: {json.dumps(self.function_call_info_summary)}")
@@ -719,8 +798,9 @@ class FunctionAnalyzer:
                     break
 
                 if i % 3 == 0:
-                    check_prompt = self.function_prompts.check_analysis_adequacy
-                    check_prompt += "Current understanding:" + self.understanding_result
+                    check_prompt = self._fit_prompt(self.organization_agent, [
+                        Part('instructions', self.function_prompts.check_analysis_adequacy, REQUIRED),
+                        Part('current understanding', "Current understanding:" + self.understanding_result, 'trace')], 'adequacy check')   # the very text being judged: reduced last
                     result = self.organization_agent.query_text(check_prompt)
                     if self._adequacy_verdict(result):
                         completed = True
@@ -729,7 +809,8 @@ class FunctionAnalyzer:
             except ProviderFailure as exc:
                 # The provider gave no usable text (already re-asked by the agent). That is neither "adequate" nor "not
                 # adequate": the candidate stops here, as a provider failure, instead of burning the iteration cap.
-                last_error, stopped = exc, 'provider'
+                # An input-budget refusal is the application's own limit, not a provider failure, and is named as such.
+                last_error, stopped = exc, 'input budget' if isinstance(exc, InputLimitExceeded) else 'provider'
                 break
 
             except CandidateIncomplete as exc:
@@ -749,6 +830,7 @@ class FunctionAnalyzer:
             reason = {
                 'iteration limit': f"iteration limit ({i}) reached without an adequacy confirmation",
                 'provider': "stopped by a provider failure without an adequacy confirmation",
+                'input budget': "stopped because a request did not fit the model input budget (an application limit, not a provider outage)",
             }.get(stopped, "stopped by an error without an adequacy confirmation")
 
             detail = f"{reason} after {completed_steps} completed step(s)"
@@ -941,12 +1023,66 @@ class FunctionAnalyzer:
         failed = sorted(i for i in self.unresolved_failures if i in selected)
         analyzed = [i for i in selected if i in self.examined_function_memo]
         limited = bool(omitted or failed)
+        log = self.__dict__.get('reduction_log', {})
+        reduced = sorted(i for i in analyzed if log.get(i))
+        source_missing = sorted(i for i in analyzed if 'no function source code' in self.evidence_gaps.get(i, []))
+        self._selected_identities, self._analyzed_identities, self._universe_identities = selected, set(analyzed), universe
         self._coverage = {
+            # execution axis: did every candidate get analyzed (status / limited)
+            # evidence axis: was the evidence each analyzed function saw adequate (evidence_limited): reduced to fit the input budget
+            # and/or its contract source missing. A completed execution with limited evidence is NOT a clean negative.
+            'reduced_count': len(reduced), 'source_missing_count': len(source_missing),
+            'evidence_limited': bool(reduced or source_missing),
             'status': 'no_candidates' if not universe else ('limited' if limited else 'complete'),
             'limited': limited, 'candidates': len(universe), 'selected': len(selected), 'analyzed': len(analyzed),
             'omitted': omitted, 'failed': failed, 'selection_rejected': self.selection_rejected,
             'selection_replies_ignored': self.selection_replies_ignored,
         }
+
+    def function_results(self, limit=300):
+        """One record per candidate: its EXECUTION outcome (completed / failed / omitted) and the ADEQUACY of the evidence it saw
+        (complete / reduced / source_missing / reduced_source_missing / not_analyzed), with what was reduced and why. Sizes are bytes."""
+        universe = getattr(self, '_universe_identities', None)
+        if not universe:
+            return []
+        out = []
+        log = self.__dict__.get('reduction_log', {})
+        for identity in sorted(universe):
+            function, _, address = identity.partition('@')
+            analyzed = identity in self._analyzed_identities
+            if analyzed:
+                execution = 'completed'
+            elif identity in self.unresolved_failures:
+                execution = 'failed'
+            else:
+                execution = 'omitted'
+            reduced = bool(log.get(identity)) if analyzed else False
+            no_source = analyzed and 'no function source code' in self.evidence_gaps.get(identity, [])
+            evidence = ('not_analyzed' if not analyzed else 'reduced_source_missing' if reduced and no_source
+                        else 'reduced' if reduced else 'source_missing' if no_source else 'complete')
+            record = {'identity': identity, 'function': function, 'address': address, 'execution': execution, 'evidence': evidence}
+            if reduced:
+                record['reductions'] = [{k: r[k] for k in ('step', 'section', 'tier', 'original_bytes', 'kept_bytes', 'action')}
+                                        for r in log[identity][:12]]
+            if execution == 'failed':
+                record['failure'] = str(self.unresolved_failures[identity])[:300]
+            out.append(record)
+            if len(out) >= limit:
+                break
+        return out
+
+    def source_lookup_report(self, limit=50):
+        """What the contract-source lookups reported for the candidate addresses (cause or uncertainty; never a credential)."""
+        from faultseeker.data_collection.contract_downloader import ContractDownloader, describe_source_lookup
+        addresses = {i.partition('@')[2].lower() for i in (getattr(self, '_universe_identities', None) or [])}
+        report = {}
+        for address in sorted(addresses):
+            outcome = ContractDownloader.lookup_outcomes.get(address)
+            if outcome and outcome.get('cause') != 'found' and len(report) < limit:
+                key = os.environ.get('ETHERSCAN_API_KEY', '').strip()
+                clean = {k: (v.replace(key, '[redacted]') if key and isinstance(v, str) else v) for k, v in outcome.items()}
+                report[address] = dict(clean, summary=describe_source_lookup(clean))
+        return report
 
     def coverage_report(self):
         """What the analysis covered: candidates / selected / analyzed / omitted (not selected, never analyzed) / failed.
@@ -1155,6 +1291,7 @@ class FunctionAnalyzer:
     def _capture_candidate_attempt_state(self):
         """Capture an isolated baseline of mutable per-candidate analysis state."""
         self.__dict__.setdefault('verdict_rejections', {})
+        self.__dict__.setdefault('reduction_log', {})
         return {
             field: deepcopy(getattr(self, field))
             for field in _CANDIDATE_ATTEMPT_STATE_FIELDS
@@ -1179,6 +1316,8 @@ class FunctionAnalyzer:
         for identity in identities:
             if identity not in self.attempted_function_memo:
                 self.attempted_function_memo.append(identity)
+        self._current_identities = list(identities)
+        self.__dict__.setdefault('reduction_log', {})
 
         baseline = self._capture_candidate_attempt_state()
         last_detail = "candidate analysis did not complete"
@@ -1377,6 +1516,8 @@ class FunctionAnalyzer:
             'ranking_problem': self.ranking_problem,
             'evidence_gaps': {k: list(v) for k, v in self.evidence_gaps.items()},
             'coverage': self.coverage_report(),
+            'function_results': self.function_results(),
+            'source_lookups': self.source_lookup_report(),
             'verdict_rejections': dict(self.verdict_rejections),
             'potentially_vulnerable_functions': self.potentially_vulnerable_functions,
             "transaction_understanding": self.understanding_result,

@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
+from faultseeker.budget import BudgetConfigError, InputBudget, resolve_budget, validate_limits
+
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MODELS_FILE = ROOT / "config" / "models.json"
 
@@ -50,6 +52,7 @@ class ModelSpec:
     model: Optional[str] = None
     model_env: Optional[str] = None
     params: Dict[str, Any] = field(default_factory=lambda: {"temperature": "pass"})
+    limits: Optional[Dict[str, Any]] = None     # validated registry "limits" block (documented context/output limits), if any
 
 
 @dataclass(frozen=True)
@@ -64,6 +67,7 @@ class ResolvedModel:
     temperature_mode: str              # "pass" (use the caller's value) | "omit" | "fixed"
     temperature_value: Optional[float]
     extra_params: Dict[str, Any]       # sent verbatim, exactly as configured
+    budget: Optional[InputBudget] = None   # context / output / margin budget (see faultseeker/budget.py)
 
 
 def _read_env(environ: Mapping[str, str], name: Optional[str]) -> str:
@@ -130,8 +134,12 @@ class Registry:
         unknown = set(params) - ALLOWED_PARAMS
         if unknown:
             raise ProviderConfigError(f"Model '{mid}': unsupported params {sorted(unknown)}; allowed: {sorted(ALLOWED_PARAMS)}.")
+        try:
+            limits = validate_limits(mid, raw.get("limits"))
+        except BudgetConfigError as exc:
+            raise ProviderConfigError(str(exc)) from None
         return ModelSpec(id=mid, label=raw.get("label", mid), provider_id=raw["provider"], model=raw.get("model"),
-                         model_env=raw.get("model_env"), params=params)
+                         model_env=raw.get("model_env"), params=params, limits=limits)
 
     @staticmethod
     def _ollama_models(environ: Mapping[str, str], providers: Dict[str, Provider]) -> List[ModelSpec]:
@@ -176,8 +184,12 @@ class Registry:
         else:
             host = _read_env(environ, provider.host_env) or None
         mode, value, extra = self._params(spec, environ)
+        try:
+            budget = resolve_budget(spec.id, spec.limits, provider.type, extra, environ)
+        except BudgetConfigError as exc:
+            raise ProviderConfigError(str(exc)) from None
         return ResolvedModel(id=spec.id, label=spec.label, provider=provider, model_id=model_id_exact, base_url=base_url,
-                             host=host, temperature_mode=mode, temperature_value=value, extra_params=extra)
+                             host=host, temperature_mode=mode, temperature_value=value, extra_params=extra, budget=budget)
 
     @staticmethod
     def _params(spec: ModelSpec, environ: Mapping[str, str]) -> Tuple[str, Optional[float], Dict[str, Any]]:

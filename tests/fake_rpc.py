@@ -6,6 +6,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 TX = "0x" + "ab" * 32
 REVERTED = "0x" + "bd" * 32
 PENDING = "0x" + "ee" * 32
+PRUNED = "0x" + "cc" * 32          # mined (the node returns its block number) but the node keeps no receipt for it
 FROM = "0x" + "11" * 20
 TO = "0x" + "22" * 20
 TOKEN = "0x" + "33" * 20          # 6-decimals ERC-20 "USDC"
@@ -49,8 +50,9 @@ def node_state():
              "contractAddress": None},
         REVERTED: {"status": "0x0", "blockNumber": "0x64", "gasUsed": "0x1", "logs": []},
         PENDING: None,
+        PRUNED: None,
     }
-    txs = {TX: tx, REVERTED: dict(tx, hash=REVERTED), PENDING: dict(tx, hash=PENDING, blockNumber=None)}
+    txs = {TX: tx, REVERTED: dict(tx, hash=REVERTED), PENDING: dict(tx, hash=PENDING, blockNumber=None), PRUNED: dict(tx, hash=PRUNED)}
     return txs, receipts
 
 
@@ -62,6 +64,7 @@ class FakeServer:
         self.mode = "ok"
         self.failures_left = 0
         self.sourcify = {}            # "chainId/address" -> response dict (404 when absent)
+        self.method_errors = {}       # JSON-RPC method -> error message the node answers with
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -94,6 +97,8 @@ class FakeServer:
                 if outer.mode == "flaky" and outer.failures_left > 0:
                     outer.failures_left -= 1
                     return self._send(503, {})
+                if method in outer.method_errors:
+                    return self._send(200, {"jsonrpc": "2.0", "id": body["id"], "error": {"code": -32000, "message": outer.method_errors[method]}})
                 txs, receipts = node_state()
                 result = None
                 if method == "eth_getTransactionByHash":

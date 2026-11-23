@@ -587,8 +587,11 @@ class RunManager:
                 "not_successful": "Only successful, mined transactions can be analyzed. Check the hash and the network.",
                 "not_found": "The RPC node does not know this hash. Check the network selection and that the RPC endpoint is for the same chain.",
                 "rejected": "The RPC endpoint refused the request. Check its URL and key, or use another endpoint.",
+                "history_unavailable": "This endpoint does not keep history that far back (pruned or non-archive node). Provide an "
+                                       "archive-capable RPC under “RPC connection”, then run again.",
             }
-            code = {"not_successful": "tx_not_successful", "not_found": "tx_not_found"}.get(kind, "rpc_failed")
+            code = {"not_successful": "tx_not_successful", "not_found": "tx_not_found",
+                    "history_unavailable": "rpc_history_unavailable"}.get(kind, "rpc_failed")
             return {"code": code, "message": detail,
                     "hint": hints.get(kind, "Check the RPC connection (URL, key, rate limits) and run again.")}
         if run.cast_error and ("Stage 1" in message or not message or "Forensics" in message):
@@ -607,6 +610,11 @@ class RunManager:
             return {"code": "provider_failed", "message": message,
                     "hint": "The model provider failed or returned an empty answer. Check its availability, quota and key, then run again."}
         if err.get("type") == "FunctionAnalysisIncomplete" or "Stage 2 (Function Analysis) incomplete" in message:
+            if "InputLimitExceeded" in message or "input budget" in message:
+                return {"code": "analysis_incomplete", "message": message,
+                        "hint": "At least one request did not fit this model's input budget. That is an application limit, not a provider "
+                                "outage. Use a model with a larger documented context window, or, if the configured limit is wrong, set "
+                                "FAULTSEEKER_CONTEXT_TOKENS_<MODEL> (see GUIDE.md, Input budgets), then run again."}
             return {"code": "analysis_incomplete", "message": message,
                     "hint": "Some functions could not be analyzed, usually a model or provider problem. Check the provider "
                             "key, quota and availability, then run again."}
@@ -618,8 +626,10 @@ class RunManager:
                     "hint": "The model answered in a form the pipeline cannot read. See the technical logs, then run again or try another model."}
         if err.get("type") == "InputLimitExceeded":
             return {"code": "input_too_large",
-                    "message": "A model request was larger than the supported input limit, so the analysis stopped instead of sending a cut request.",
-                    "hint": "Try a smaller transaction. See the technical logs for which request was too large."}
+                    "message": "A model request did not fit this model's input budget, so the analysis stopped instead of sending a cut request.",
+                    "hint": "This is an application limit, not a provider outage. Use a model with a larger documented context window or, if "
+                            "the configured limit is wrong, set FAULTSEEKER_CONTEXT_TOKENS_<MODEL> (see GUIDE.md, Input budgets). "
+                            "The technical logs show which request was too large."}
         if message or err.get("type"):
             # Generic worker error: only the exception type (made safe) is published; the raw text stays in the technical log.
             return {"code": "pipeline_error",

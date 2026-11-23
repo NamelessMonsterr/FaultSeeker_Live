@@ -699,6 +699,21 @@ try {
   ok(/2 model verdict entries were rejected/.test(junkWarn) && /no usable evidence/.test(junkWarn) && /not <function>_<address>|identifier/.test(junkWarn), 'rejected entries and unusable findings are surfaced');
   ok(/2 of 6 candidates analyzed \(limited\)/.test([...d.querySelectorAll('#results .fact')].map((f) => f.textContent).join(' ')), 'the coverage fact is shown');
 
+  section('reduced evidence and missing source: execution completed, evidence limited');
+  const redId = await p.start(hash('b0b0', '0'));
+  ok(await until(() => p.w.location.hash === `#result/${redId}` && d.querySelector('#results .functions'), 40000), 'a run with reduced evidence completes with a report');
+  const redText = $('results').textContent;
+  ok(/not a clean result/.test(d.querySelector('#results .empty').textContent) && !/did not point at any functions/.test(redText), 'no finding with limited evidence is not presented as clean');
+  const redFacts = [...d.querySelectorAll('#results .fact')].map((f) => f.textContent).join(' | ');
+  ok(/2 of 2 candidates analyzed(?! \(limited\))/.test(redFacts) && /Evidence\s*Limited \(1 reduced to fit the input budget, 1 without contract source\)/.test(redFacts), 'execution and evidence are two separate facts: ' + redFacts);
+  const panel = d.querySelector('#results .functions');
+  ok(panel && panel.open && panel.dataset.limited === 'true', 'the per-function coverage panel opens when evidence is limited');
+  const rows = [...panel.querySelectorAll('.function-row')];
+  ok(rows.length === 2 && rows[0].dataset.execution === 'completed' && rows[0].dataset.evidence === 'reduced' && rows[1].dataset.evidence === 'source_missing', 'per-function rows carry execution and evidence separately');
+  ok(/Shortened in verdict: analysis result \(trace\), 9000 → 3100 bytes/.test(rows[0].textContent), 'the reduction is disclosed with its sizes');
+  const redWarn = d.querySelector('#results .banner[data-tone="warn"]').textContent;
+  ok(/Evidence was reduced to fit the model input budget/.test(redWarn) && /missing or invalid API key/.test(redWarn) && /not guaranteed/.test(redWarn) && !/will recover/.test(redWarn), 'the lookup cause is stated without promising recovery');
+
   section('report coverage states');
   const cov = (extra) => ({ kind: 'capture', transaction_hash: hash('c0c0'), chain: 'eth', understanding: '', warnings: [], ranking: [], candidates: [], coverage: extra });
   await reportProbe('no finding, limited coverage', cov({ status: 'limited', limited: true, candidates: 5, selected: 1, analyzed: 1, omitted_count: 4, failed_count: 0 }), (pg) => {
@@ -710,6 +725,15 @@ try {
   });
   await reportProbe('complete coverage keeps the plain empty state', cov({ status: 'complete', limited: false, candidates: 3, selected: 3, analyzed: 3, omitted_count: 0, failed_count: 0 }), (pg) => {
     ok(/did not point at any functions/.test(pg.$('results').textContent), 'complete coverage: the ordinary empty state');
+  });
+  await reportProbe('complete execution, limited evidence, no finding', cov({ status: 'complete', limited: false, evidence_limited: true, reduced_count: 2, source_missing_count: 0, candidates: 2, selected: 2, analyzed: 2, omitted_count: 0, failed_count: 0 }), (pg) => {
+    ok(/not a clean result/.test(pg.$('results').textContent) && /Limited \(2 reduced to fit the input budget\)/.test(pg.$('results').textContent), 'evidence axis: an empty report with reduced evidence is not clean');
+  });
+  await reportProbe('adequate evidence', cov({ status: 'complete', limited: false, evidence_limited: false, reduced_count: 0, source_missing_count: 0, candidates: 1, selected: 1, analyzed: 1, omitted_count: 0, failed_count: 0 }), (pg) => {
+    ok(/Evidence\s*Adequate/.test(pg.$('results').textContent) && /did not point at any functions/.test(pg.$('results').textContent), 'adequate evidence keeps the ordinary empty state');
+  });
+  await reportProbe('malformed per-function data', { ...cov(null), functions: [null, 5, { execution: 'x', evidence: 'complete' }, { function: 'f', address: '', execution: 'failed', evidence: 'not_analyzed', failure: 'boom', reductions: 'junk' }] }, (pg) => {
+    ok(pg.d.querySelectorAll('.function-row').length === 1 && /Failure: boom/.test(pg.$('results').textContent), 'malformed per-function records are skipped, valid ones shown');
   });
   await reportProbe('malformed coverage values', cov({ status: 'limited', limited: true, candidates: 'many', analyzed: {}, omitted_count: null }), (pg) => {
     ok(/did not point at any functions/.test(pg.$('results').textContent), 'malformed coverage: falls back to the ordinary empty state without breaking');

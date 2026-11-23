@@ -1,3 +1,4 @@
+import re
 import subprocess
 from bs4 import BeautifulSoup
 import pandas as pd
@@ -29,7 +30,46 @@ CONTRACT_SOURCES ={
     'base': 'https://basescan.org/contractsverified'
 }
     
+def describe_source_lookup(outcome: dict) -> str:
+    """One honest sentence about why a contract's source was not retrieved: what each lookup reported, the likely cause when the
+    evidence supports one, and uncertainty otherwise. It never claims that adding a key would recover the source."""
+    sourcify = outcome.get('sourcify', 'not tried')
+    explorer = outcome.get('explorer', 'not tried')
+    parts = [f"Sourcify: {sourcify}", f"Etherscan API ({'key configured' if outcome.get('explorer_key_configured') else 'no ETHERSCAN_API_KEY'}): {explorer}"]
+    cause = outcome.get('cause', 'unknown')
+    meaning = {
+        'explorer_credentials': 'the explorer reported a missing or invalid API key; a valid key may allow the lookup, which is not guaranteed to find source',
+        'explorer_rate_limited': 'the explorer reported rate limiting; the source may exist but could not be fetched this time',
+        'lookup_unreachable': 'a lookup service could not be reached; this is a connectivity problem, not evidence that the contract is unverified',
+        'unverified': 'neither service has verified source for this address',
+        'unknown': 'the cause could not be determined from the lookup output',
+    }.get(cause, 'the cause could not be determined from the lookup output')
+    return "; ".join(parts) + f". Likely cause: {meaning}."
+
+
+def _scrub(text) -> str:
+    """Removes the explorer API key from lookup output before it is stored, printed or reported."""
+    text = str(text)
+    key = os.environ.get('ETHERSCAN_API_KEY', '').strip()
+    return text.replace(key, '[redacted]') if key else text
+
+
+def _classify_lookup(outcome: dict) -> str:
+    text = " ".join(str(outcome.get(k, '')) for k in ('sourcify', 'explorer')).lower()
+    if 'could not be reached' in text or 'unreachable' in text:
+        return 'lookup_unreachable'
+    if re.search(r'api[ _-]?key', text):
+        return 'explorer_credentials'
+    if re.search(r'rate.?limit|max rate', text):
+        return 'explorer_rate_limited'
+    if 'no verified match' in outcome.get('sourcify', '') and ('not verified' in text or 'no source' in text):
+        return 'unverified'
+    return 'unknown'
+
+
 class ContractDownloader:
+    # address(lower) -> what each lookup reported for the contracts looked up in THIS process (never persisted, never contains a key).
+    lookup_outcomes = {}
 
     def __init__(self, chain:str, address:list, output_dir:str='./temp2', cache_dir:str='./data/cache/contracts'):
         self.chain = chain.lower()
@@ -75,15 +115,21 @@ class ContractDownloader:
         os.makedirs(output_dir, exist_ok=True)
         known = chains.get(chain)
         has_key = bool(os.environ.get('ETHERSCAN_API_KEY', '').strip())
+        outcome = {'chain': chain, 'explorer_key_configured': has_key}
+        ContractDownloader.lookup_outcomes[address.lower()] = outcome
 
         def via_sourcify():
             if not known:
+                outcome['sourcify'] = f"not tried (chain '{chain}' is not in the supported chain list)"
                 return False
             try:
-                return source_fetcher.fetch(known['chain_id'], address, output_dir) > 0
+                found = source_fetcher.fetch(known['chain_id'], address, output_dir) > 0
             except source_fetcher.SourceUnavailable as exc:
-                print(f'Sourcify lookup failed for {address}[{chain}]: {exc}', flush=True)
+                outcome['sourcify'] = f'could not be reached or answered with an error ({_scrub(exc)})'
+                print(f'Sourcify lookup failed for {address}[{chain}]: {_scrub(exc)}', flush=True)
                 return False
+            outcome['sourcify'] = 'found' if found else 'no verified match'
+            return found
 
         def via_getcode():
             try:
@@ -91,16 +137,22 @@ class ContractDownloader:
             except (subprocess.CalledProcessError, OSError) as exc:
                 detail = (getattr(exc, 'stderr', b'') or b'').decode('utf-8', 'ignore').strip()[:200] if isinstance(
                     getattr(exc, 'stderr', None), bytes) else str(exc)[:200]
+                detail = _scrub(detail)
+                outcome['explorer'] = f"failed ({detail or type(exc).__name__})"
                 print(f'getCode failed for {address}[{chain}]: {detail}', flush=True)
                 return False
-            return ContractDownloader._has_sources(output_dir)
+            found = ContractDownloader._has_sources(output_dir)
+            outcome['explorer'] = 'found' if found else 'returned no source files'
+            return found
 
         order = (via_getcode, via_sourcify) if has_key else (via_sourcify, via_getcode)
         for attempt in order:
             if attempt():
+                outcome['cause'] = 'found'
                 return
-        print(f'Contract source unavailable for {address}[{chain}]: it is not verified on Sourcify and the Etherscan '
-              f'API did not return it. Set ETHERSCAN_API_KEY (free tier) to widen coverage.', flush=True)
+        outcome['cause'] = _classify_lookup(outcome)
+        print(f'Contract source unavailable for {address}[{chain}]: {describe_source_lookup(outcome)} '
+              f'Setting ETHERSCAN_API_KEY may widen coverage but does not guarantee the source is found.', flush=True)
 
 
     @staticmethod

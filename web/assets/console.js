@@ -689,10 +689,46 @@
     if (c.status === 'no_candidates') return ['Coverage', 'No candidate functions'];
     return ['Coverage', `${c.analyzed} of ${c.candidates} candidates analyzed${c.limited ? ' (limited)' : ''}`];
   }
+  // Two axes: execution (was every candidate analyzed) and evidence (did what the model saw suffice). Never conflated.
+  function evidenceFact(c) {
+    if (!c || c.status === 'no_candidates' || !isCount(c.analyzed) || typeof c.evidence_limited !== 'boolean') return null;   // unknown is not "adequate"
+    if (c.evidence_limited !== true) return ['Evidence', 'Adequate'];
+    const parts = [];
+    if (isCount(c.reduced_count) && c.reduced_count) parts.push(`${c.reduced_count} reduced to fit the input budget`);
+    if (isCount(c.source_missing_count) && c.source_missing_count) parts.push(`${c.source_missing_count} without contract source`);
+    return ['Evidence', `Limited${parts.length ? ' (' + parts.join(', ') + ')' : ''}`];
+  }
+  const EXEC_LABEL = { completed: 'Completed', failed: 'Failed', omitted: 'Not analyzed' };
+  const EVID_LABEL = { complete: 'Evidence complete', reduced: 'Evidence reduced', source_missing: 'Source missing',
+    reduced_source_missing: 'Reduced, source missing', not_analyzed: 'No evidence analyzed' };
+  function functionsPanel(list) {
+    if (!Array.isArray(list) || !list.length) return null;
+    const rows = list.filter((f) => f && EXEC_LABEL[f.execution] && EVID_LABEL[f.evidence]);
+    if (!rows.length) return null;
+    const limited = rows.some((f) => f.execution !== 'completed' || f.evidence !== 'complete');
+    const node = h('details', { class: 'panel functions', dataset: { limited: String(limited) } },
+      h('summary', null, `Coverage by function (${rows.length})`),
+      h('ul', { class: 'function-rows' }, rows.map((f) => {
+        const li = h('li', { class: 'function-row', dataset: { execution: f.execution, evidence: f.evidence } },
+          h('span', { class: 'mono', text: `${f.function}${f.address ? ' ' + f.address.slice(0, 8) + '…' + f.address.slice(-4) : ''}` }),
+          h('span', { class: 'tag', text: EXEC_LABEL[f.execution] }),
+          h('span', { class: 'tag', text: EVID_LABEL[f.evidence] }));
+        (Array.isArray(f.reductions) ? f.reductions : []).forEach((r) => {
+          li.append(h('p', { class: 'muted reduction', text: `${r.action === 'omitted' ? 'Omitted' : 'Shortened'} in ${r.step}: ${r.section} (${r.tier}), ${r.original_bytes} → ${r.kept_bytes} bytes` }));
+        });
+        if (f.failure) li.append(h('p', { class: 'muted reduction', text: `Failure: ${f.failure}` }));
+        return li;
+      })));
+    if (limited) node.open = true;
+    return node;
+  }
   function emptyRankingText(c) {
     if (c && c.status === 'no_candidates') return 'No candidate functions were found in this transaction, so nothing was analyzed.';
     if (c && c.limited === true && isCount(c.analyzed) && isCount(c.omitted_count)) {
       return `No function was flagged among the ${c.analyzed} analyzed. ${c.omitted_count} candidate${c.omitted_count === 1 ? ' was' : 's were'} not analyzed, so this is not a clean result.`;
+    }
+    if (c && c.evidence_limited === true) {
+      return 'No function was flagged, but the evidence the model saw was limited (see Evidence above), so this is not a clean result.';
     }
     return 'The analysis did not point at any functions for this transaction.';
   }
@@ -738,6 +774,7 @@
       !capture ? ['Duration', fmtDuration(data.duration)] : null,
       stats.functions_to_inspect != null ? ['Functions inspected', String(stats.functions_to_inspect)] : null,
       coverageFact(data.coverage),
+      evidenceFact(data.coverage),
     ].filter(Boolean);
     box.append(h('dl', { class: 'facts' }, facts.map(([k, v]) => h('div', { class: 'fact' }, h('dt', { text: k }), h('dd', null, v)))));
 
@@ -760,6 +797,9 @@
         h('div', { class: 'section-heading' }, h('h2', { text: 'Other candidates' }), h('span', { class: 'muted', text: 'NOT RANKED' })),
         h('ol', { class: 'finding-list' }, data.candidates.map((f, i) => findingNode(f, chain, { rank: '–' })))));
     }
+
+    const fnPanel = functionsPanel(data.functions);
+    if (fnPanel) box.append(fnPanel);
 
     if (opts.runId) {
       const pre = h('pre', { tabindex: '0', 'aria-label': 'Pipeline technical logs', text: '' });

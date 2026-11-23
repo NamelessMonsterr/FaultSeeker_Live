@@ -1,5 +1,5 @@
 {
-  "_comment": "Single source of truth for model providers and enabled models, used by the server, the console and the pipeline. Contains no secrets: endpoints, exact model IDs and API keys are read from the environment variables named here. Override the file path with FAULTSEEKER_MODELS_FILE.",
+  "_comment": "Single source of truth for model providers and enabled models, used by the server, the console and the pipeline. Contains no secrets: endpoints, exact model IDs and API keys are read from the environment variables named here. Override the file path with FAULTSEEKER_MODELS_FILE. A model's optional \"limits\" block holds DOCUMENTED context_tokens / max_output_tokens (with the source page and check date). Models whose id comes from the environment (codex-proxy, mercury) have none: they use a conservative fallback until FAULTSEEKER_CONTEXT_TOKENS_<MODEL> is set. See faultseeker/budget.py for units and precedence.",
   "providers": {
     "openai": {
       "label": "OpenAI",
@@ -30,13 +30,11 @@
     }
   },
   "models": [
-    {"id": "gpt-4o-mini", "label": "GPT-4o mini", "provider": "openai", "model": "gpt-4o-mini", "params": {"temperature": "pass"}},
-    {"id": "gpt-4o", "label": "GPT-4o", "provider": "openai", "model": "gpt-4o", "params": {"temperature": "pass"}},
-    {"id": "gpt-4.1-mini", "label": "GPT-4.1 mini", "provider": "openai", "model": "gpt-4.1-mini", "params": {"temperature": "pass"}},
-    {"id": "gpt-4.1", "label": "GPT-4.1", "provider": "openai", "model": "gpt-4.1", "params": {"temperature": "pass"}},
-    {"id": "codex-proxy", "label": "Codex proxy", "provider": "codex_proxy", "model_env": "CODEX_PROXY_MODEL",
-     "params": {"temperature": {"env": "CODEX_PROXY_TEMPERATURE", "type": "float", "when_unset": "omit"}}},
-    {"id": "mercury", "label": "Inception Mercury", "provider": "mercury", "model_env": "MERCURY_MODEL",
-     "params": {"temperature": {"env": "MERCURY_TEMPERATURE", "type": "float", "when_unset": "omit"}}}
+    {"id": "gpt-4o-mini", "label": "GPT-4o mini", "provider": "openai", "model": "gpt-4o-mini", "params": {"temperature": "pass"}, "limits": {"context_tokens": 128000, "max_output_tokens": 16384, "source": "https://developers.openai.com/api/docs/models/gpt-4o-mini", "verified": "2026-11-18"}},
+    {"id": "gpt-4o", "label": "GPT-4o", "provider": "openai", "model": "gpt-4o", "params": {"temperature": "pass"}, "limits": {"context_tokens": 128000, "max_output_tokens": 16384, "source": "https://developers.openai.com/api/docs/models/gpt-4o", "verified": "2026-11-18"}},
+    {"id": "gpt-4.1-mini", "label": "GPT-4.1 mini", "provider": "openai", "model": "gpt-4.1-mini", "params": {"temperature": "pass"}, "limits": {"context_tokens": 1047576, "max_output_tokens": 32768, "source": "https://developers.openai.com/api/docs/models/gpt-4.1-mini", "verified": "2026-11-18"}},
+    {"id": "gpt-4.1", "label": "GPT-4.1", "provider": "openai", "model": "gpt-4.1", "params": {"temperature": "pass"}, "limits": {"context_tokens": 1047576, "max_output_tokens": 32768, "source": "https://developers.openai.com/api/docs/models/gpt-4.1", "verified": "2026-11-18"}},
+    {"id": "codex-proxy", "label": "Codex proxy", "provider": "codex_proxy", "model_env": "CODEX_PROXY_MODEL", "params": {"temperature": {"env": "CODEX_PROXY_TEMPERATURE", "type": "float", "when_unset": "omit"}}},
+    {"id": "mercury", "label": "Inception Mercury", "provider": "mercury", "model_env": "MERCURY_MODEL", "params": {"temperature": {"env": "MERCURY_TEMPERATURE", "type": "float", "when_unset": "omit"}}}
   ]
 }

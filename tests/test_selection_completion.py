@@ -212,7 +212,9 @@ def test_the_pipeline_result_carries_coverage_and_the_report_states_it(tmp_path,
     assert raw["coverage"]["status"] == "complete" and raw["coverage"]["analyzed"] == 2 and raw["verdict_rejections"] == {}
     out = results.normalize(raw)
     assert out["coverage"]["analyzed"] == 2 and out["coverage"]["limited"] is False
-    assert any("No potentially vulnerable functions were identified for this transaction." == w for w in out["warnings"])
+    # execution is complete, but these fake candidates have no contract source: evidence is limited, so no finding is NOT a clean result
+    assert out["coverage"]["evidence_limited"] is True and out["coverage"]["source_missing_count"] == 2
+    assert any("not a clean result" in w for w in out["warnings"])
 
 
 def test_a_pipeline_with_no_candidates_reports_genuinely_empty_input(tmp_path, monkeypatch):

@@ -12,7 +12,7 @@ import time
 
 MARK = "##FS##"
 BY_PREFIX = {"fa11": "cast_fail", "dead": "auth_fail", "bad0": "bad_rank", "0bad": "crash",
-             "9a07": "quota", "e8e8": "explorer_fail", "7c7c": "rpc_collect_fail", "5e5e": "junk_report", "7e7e": "reverted", "1c1c": "analysis_incomplete", "0000": "empty", "4a49": "hang"}
+             "9a07": "quota", "e8e8": "explorer_fail", "7c7c": "rpc_collect_fail", "5e5e": "junk_report", "b0b0": "reduced_report", "7e7e": "reverted", "1c1c": "analysis_incomplete", "0000": "empty", "4a49": "hang"}
 ADDR = "0xc342774492b54ce5f8ac662113ed702fc1b34972"
 
 
@@ -52,6 +52,11 @@ def main():
         say("      → Collecting transaction info...")
         marker({"event": "error", "type": "RuntimeError", "message": "Stage 1 (Forensics) failed to produce results"})
         sys.exit(1)
+    if mode == "budget_incomplete":
+        marker({"event": "error", "type": "FunctionAnalysisIncomplete",
+                "message": "Stage 2 (Function Analysis) incomplete: 1 of 5 candidate(s) could not be analyzed: swap@0x88503f48e437a377f1ac2892cbb3a5b09949fadd "
+                           "(InputLimitExceeded: the request needs about 10,500 estimated tokens across 3 messages, over this model's input budget of 5,888)"})
+        sys.exit(1)
     if mode in ("pipeline_error", "pipeline_error_oddtype", "forensics_model", "input_limit"):
         say("      → Reviewing function calls...")
         say("Traceback (most recent call last): KeyError: internal detail /srv/faultseeker/internal.py")
@@ -69,6 +74,11 @@ def main():
                 "Stage 2 (Function Analysis) incomplete: 1 of 2 attempted candidate(s) failed and were not recovered: "
                 "bar@0x" + "bb" * 20 + " (CandidateIncomplete: iteration limit (31) reached without an adequacy confirmation "
                 "after 1 completed step(s); last error ProviderDown: provider outage [redacted])"})
+        sys.exit(1)
+    if mode == "history_unavailable":
+        say("RPC collection failed (history_unavailable): The RPC node knows this transaction (block 100) but has no receipt for it. "
+            "That usually means the endpoint has pruned this part of history. Use an archive-capable RPC endpoint.")
+        marker({"event": "error", "type": "RuntimeError", "message": "Stage 1 (Forensics) failed to produce results"})
         sys.exit(1)
     if mode in ("rpc_collect_fail", "reverted"):
         say("      → Collecting transaction info...")
@@ -149,6 +159,31 @@ def main():
             "coverage": {"status": "limited", "limited": True, "candidates": 6, "selected": 2, "analyzed": 2,
                          "omitted": [f"f{i}@{ADDR}" for i in range(4)], "failed": [], "selection_rejected": 1, "selection_replies_ignored": 0},
             "_debug": {"functions_to_inspect_count": 6}}
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "w") as fh:
+            json.dump(result, fh)
+        marker({"event": "result"})
+        return
+    if mode == "reduced_report":
+        # Execution completed for every candidate, but the evidence the model saw was reduced / source was missing, and nothing was flagged.
+        result = {
+            "transaction_hash": txn, "chain": chain, "ranked_suspicious_functions": [], "potentially_vulnerable_functions": {},
+            "transaction_understanding": "The attacker swapped tokens.", "duration": 1.0, "timestamp": "2026-11-06T10:00:00",
+            "coverage": {"status": "complete", "limited": False, "evidence_limited": True, "reduced_count": 1, "source_missing_count": 1,
+                         "candidates": 2, "selected": 2, "analyzed": 2, "omitted": [], "failed": [], "selection_rejected": 0,
+                         "selection_replies_ignored": 0},
+            "evidence_gaps": {f"swap@{ADDR}": ["evidence reduced to fit the model input budget"], f"burn@{ADDR}": ["no function source code"]},
+            "function_results": [
+                {"identity": f"swap@{ADDR}", "function": "swap", "address": ADDR, "execution": "completed", "evidence": "reduced",
+                 "reductions": [{"step": "verdict", "section": "analysis result", "tier": "trace", "action": "shortened",
+                                 "original_bytes": 9000, "kept_bytes": 3100}]},
+                {"identity": f"burn@{ADDR}", "function": "burn", "address": ADDR, "execution": "completed", "evidence": "source_missing"}],
+            "source_lookups": {ADDR: {"chain": chain, "cause": "explorer_credentials", "sourcify": "no verified match",
+                                      "explorer": "failed (Missing/Invalid API Key)", "explorer_key_configured": False,
+                                      "summary": "Sourcify: no verified match; Etherscan API (no ETHERSCAN_API_KEY): failed (Missing/Invalid API Key). "
+                                                 "Likely cause: the explorer reported a missing or invalid API key; a valid key may allow the lookup, "
+                                                 "which is not guaranteed to find source."}},
+            "_debug": {"functions_to_inspect_count": 2}}
         os.makedirs(os.path.dirname(out), exist_ok=True)
         with open(out, "w") as fh:
             json.dump(result, fh)
