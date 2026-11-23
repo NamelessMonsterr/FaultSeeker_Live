@@ -40,7 +40,7 @@ def agent_for(monkeypatch, model_id, **env):
 def test_shipped_registry_has_no_secrets_and_no_invented_endpoints():
     text = (providers.DEFAULT_MODELS_FILE).read_text()
     data = json.loads(text)
-    assert set(data["providers"]) == {"openai", "ollama", "codex_proxy", "mercury"}
+    assert set(data["providers"]) == {"openai", "ollama", "codex_proxy", "mercury", "milionseek"}
     assert "sk-" not in text and "Bearer" not in text
     for pid in ("codex_proxy", "mercury"):
         p = data["providers"][pid]
@@ -104,7 +104,7 @@ def test_unconfigured_models_say_which_variable_is_missing_never_a_value(monkeyp
 def test_enabled_models_come_from_one_source_and_can_be_filtered(monkeypatch):
     reg = providers.load_registry()
     env = {"CODEX_PROXY_BASE_URL": "http://127.0.0.1:1/v1", "CODEX_PROXY_MODEL": "m1", "MERCURY_BASE_URL": "https://x/v1", "MERCURY_MODEL": "m2"}
-    assert [m.id for m in reg.enabled(env)] == ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1", "codex-proxy", "mercury"]
+    assert [m.id for m in reg.enabled(env)] == ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1", "codex-proxy", "mercury", "deepseek-v4.1-flash-free"]
     assert [m.id for m in reg.enabled({**env, "FAULTSEEKER_ENABLED_MODELS": "mercury, gpt-4o"})] == ["mercury", "gpt-4o"]
     assert [m.id for m in reg.enabled({"FAULTSEEKER_ENABLED_MODELS": "mercury"})] == [], "enabled but unconfigured stays hidden"
     with pytest.raises(providers.ProviderConfigError, match="unknown models"):
