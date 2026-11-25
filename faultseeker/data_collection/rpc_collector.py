@@ -3,12 +3,14 @@
 The returned dict has the same keys the explorer collector produced, so everything downstream is unchanged, plus a few
 extra keys (input_data, value_wei, logs, ...) that only an RPC node can give exactly.
 """
+import re
 from datetime import datetime, timezone
 from decimal import Decimal, localcontext
 from typing import Dict, List, Optional
 
 import networkx as nx
 
+from faultseeker import chains
 from faultseeker.data_collection.rpc_client import RpcClient, RpcError
 
 TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"        # ERC-20 / ERC-721
@@ -24,6 +26,24 @@ def _int(value) -> int:
     if value in (None, "", "0x"):
         return 0
     return int(value, 16) if isinstance(value, str) else int(value)
+
+
+def verify_chain(client: RpcClient, chain: str) -> int:
+    """The endpoint's eth_chainId, which must equal the selected network's registry id. Raises RpcError otherwise:
+    wrong_chain (a different network), bad_response (missing/malformed answer) or unknown_chain (no registry id to compare with).
+    Nothing is fetched from, or cached for, an endpoint that has not passed this check."""
+    spec = chains.get(chain)
+    if not spec or not isinstance(spec.get("chain_id"), int):
+        raise RpcError("unknown_chain", f"The network '{str(chain)[:40]}' has no registered chain ID, so the RPC endpoint cannot be verified.")
+    raw = client.call("eth_chainId")
+    if not (isinstance(raw, str) and re.fullmatch(r"0x[0-9a-fA-F]{1,64}", raw)):
+        raise RpcError("bad_response", "The RPC endpoint did not return a valid chain ID (eth_chainId), so it cannot be verified.")
+    actual = int(raw, 16)
+    if actual != spec["chain_id"]:
+        raise RpcError("wrong_chain", f"This RPC endpoint reports chain ID {actual}, but the selected network ({spec['label']}) is chain ID "
+                                      f"{spec['chain_id']}. It is an endpoint for a different network: use one for {spec['label']}, or select the "
+                                      "matching network.")
+    return actual
 
 
 def _addr(topic_or_word: str) -> str:
@@ -67,21 +87,42 @@ def format_amount(raw: int, decimals: int) -> str:
     return text or "0"
 
 
-class _TokenInfo:
-    """decimals/symbol lookups, cached, tolerant of tokens that implement neither."""
+def format_raw_amount(raw: int) -> str:
+    """The raw integer of a token whose decimals are not known. Never shown as a plain amount: 'decimals = 0' would be a claim."""
+    return f"{raw:,} raw units, decimals unknown"
 
-    def __init__(self, client: RpcClient):
+
+class _TokenInfo:
+    """decimals/symbol lookups, cached, tolerant of tokens that implement neither.
+
+    Metadata is read at the transaction's own block (`block`, a hex number). Only when that state is not available on the endpoint
+    (pruned history) does it fall back to "latest", and the result says so (metadata_block == 'latest'). A token whose decimals could
+    not be read at all has decimals None, which is NOT zero."""
+
+    def __init__(self, client: RpcClient, block: str = "latest"):
         self.client = client
+        self.block = block
         self.cache: Dict[str, dict] = {}
+
+    def _call(self, address: str, selector: str):
+        """(result, block_used). Historical first; latest only when the historical state is missing."""
+        try:
+            return self.client.call("eth_call", [{"to": address, "data": selector}, self.block]), "historical"
+        except RpcError as exc:
+            if self.block == "latest" or exc.kind != "history_unavailable":
+                raise
+        return self.client.call("eth_call", [{"to": address, "data": selector}, "latest"]), "latest"
 
     def get(self, address: str) -> dict:
         if address in self.cache:
             return self.cache[address]
-        info = {"symbol": "", "decimals": None}
+        info = {"symbol": "", "decimals": None, "metadata_block": "historical"}
         if len(self.cache) < MAX_TOKENS_LOOKED_UP:
             for field, selector in (("decimals", SEL_DECIMALS), ("symbol", SEL_SYMBOL)):
                 try:
-                    out = self.client.call("eth_call", [{"to": address, "data": selector}, "latest"])
+                    out, used = self._call(address, selector)
+                    if used == "latest":
+                        info["metadata_block"] = "latest"
                 except RpcError as exc:
                     if exc.kind in ("unreachable", "no_endpoint"):
                         break
@@ -112,25 +153,30 @@ def _transfers(logs: List[dict], tokens: _TokenInfo) -> List[dict]:
                 words = _words(log.get("data", "0x"))
                 if len(words) >= 1:
                     info = tokens.get(token)
-                    amount = format_amount(int(words[0], 16), info["decimals"] or 0)
+                    raw_amount = int(words[0], 16)
+                    known = info["decimals"] is not None
                     found.append({"token": token, "source": _addr(topics[1]), "target": _addr(topics[2]),
-                                  "amount": amount, "name": info["symbol"] or "ERC20", "standard": "ERC-20"})
+                                  "amount": format_amount(raw_amount, info["decimals"]) if known else format_raw_amount(raw_amount),
+                                  "raw_amount": str(raw_amount), "decimals": info["decimals"], "decimals_known": known,
+                                  "metadata_block": info.get("metadata_block", "historical"),
+                                  "name": info["symbol"] or "ERC20", "standard": "ERC-20"})
             elif t0 == TRANSFER and len(topics) == 4:
-                found.append({"token": token, "source": _addr(topics[1]), "target": _addr(topics[2]), "amount": "1",
-                              "name": "ERC721", "standard": "ERC-721"})
+                found.append({"token": token, "source": _addr(topics[1]), "target": _addr(topics[2]), "amount": "1", "raw_amount": "1",
+                              "decimals": 0, "decimals_known": True, "name": "ERC721", "standard": "ERC-721"})
             elif t0 == TRANSFER_SINGLE and len(topics) == 4:
                 words = _words(log.get("data", "0x"))
                 if len(words) >= 2:
                     found.append({"token": token, "source": _addr(topics[2]), "target": _addr(topics[3]),
-                                  "amount": format_amount(int(words[1], 16), 0), "name": "ERC1155", "standard": "ERC-1155"})
+                                  "amount": format_amount(int(words[1], 16), 0), "raw_amount": str(int(words[1], 16)), "decimals": 0,
+                                  "decimals_known": True, "name": "ERC1155", "standard": "ERC-1155"})
             elif t0 == TRANSFER_BATCH and len(topics) == 4:
                 words = _words(log.get("data", "0x"))
                 ids_at, vals_at = int(words[0], 16) // 32, int(words[1], 16) // 32
                 n = int(words[ids_at], 16)
                 for i in range(n):
                     found.append({"token": token, "source": _addr(topics[2]), "target": _addr(topics[3]),
-                                  "amount": format_amount(int(words[vals_at + 1 + i], 16), 0), "name": "ERC1155",
-                                  "standard": "ERC-1155"})
+                                  "amount": format_amount(int(words[vals_at + 1 + i], 16), 0), "raw_amount": str(int(words[vals_at + 1 + i], 16)),
+                                  "decimals": 0, "decimals_known": True, "name": "ERC1155", "standard": "ERC-1155"})
         except (ValueError, IndexError):
             continue                                                  # malformed log: skip, never fail the run
     return found
@@ -141,7 +187,8 @@ def _graph(transfers: List[dict]) -> dict:
     for t in transfers:
         graph.add_node(t["source"], label=t["source"])
         graph.add_node(t["target"], label=t["target"])
-        graph.add_edge(t["source"], t["target"], label=f"{t['token']} [{t['name']}] ({t['amount']})")
+        note = ", latest-block decimals" if t.get("metadata_block") == "latest" and t.get("decimals_known") else ""
+        graph.add_edge(t["source"], t["target"], label=f"{t['token']} [{t['name']}] ({t['amount']}{note})")
     return nx.node_link_data(graph, edges="edges")
 
 
@@ -156,6 +203,7 @@ def collect(client: RpcClient, txn_hash: str, chain: str) -> dict:
 
     A reverted transaction returns a record whose status is 'Fail'; the caller decides what to do with it.
     """
+    chain_id = verify_chain(client, chain)               # before anything else is read from this endpoint
     tx = client.call("eth_getTransactionByHash", [txn_hash])
     if not tx:
         raise RpcError("not_found", "The RPC node does not know this transaction. Check the network and that the "
@@ -184,7 +232,7 @@ def collect(client: RpcClient, txn_hash: str, chain: str) -> dict:
     logs = receipt.get("logs") or []
     created = (receipt.get("contractAddress") or "").lower()
     to_addr = (tx.get("to") or "").lower()
-    transfers = _transfers(logs, _TokenInfo(client))
+    transfers = _transfers(logs, _TokenInfo(client, hex(block_number)))
     from_addr = (tx.get("from") or "").lower()
     input_data = tx.get("input") or tx.get("data") or "0x"
 
@@ -200,6 +248,8 @@ def collect(client: RpcClient, txn_hash: str, chain: str) -> dict:
         # Beyond the explorer record: exact on-chain data.
         "source": "rpc",
         "chain": chain,
+        "chain_id": chain_id,
+        "transfers": transfers,
         "input_data": input_data,
         "method_selector": input_data[:10] if len(input_data) >= 10 else "",
         "value_wei": _int(tx.get("value")),

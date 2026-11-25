@@ -414,15 +414,15 @@ FAULTSEEKER_TEST_FOUNDRY_DIRS=/f/1.4.4:/f/1.5.1:/f/1.9.0 python -m pytest tests 
 
 ### Results
 
-**Fresh results for this revision (budgeting / reduced-evidence / RPC-history build; run offline from the working tree; nothing here is a live ETH/BSC result):**
+**Fresh results for this revision (main2 audit-fix build; run offline from the working tree; nothing here is a live ETH/BSC result):**
 
 | Run | Conditions | Result |
 |---|---|---|
-| Python suite | Python **3.11.15** (uv-managed), full `requirements.txt` + `requirements-dev.txt`, **no Foundry** on PATH. `python -m pytest tests -q -p no:cacheprovider -rs` | **820 passed, 0 failed, 5 skipped**. Skips: 4 in `test_cast_integration.py` (Foundry `cast` + `anvil` not installed) and 1 in `test_selectors.py:34` (`cast` not installed) |
-| Browser suite | Node v22.23.4, jsdom 31, server on Python 3.11.15 with the fake worker and local fake providers. `cd tests/ui && npm install && npm test` | **258 checks passed, 0 failed** |
-| Real browser | Headless Chromium 153 (npm `@sparticuz/chromium`) against the real server and fake worker: run `5e5e…` (junk model output, limited coverage) and run `b0b0…` (reduced evidence, missing source), desktop 1280x900 and mobile 390x844 | Rendered and inspected by eye; horizontal overflow measured at 0 px on both widths for both runs. The empty-report wording for `no_candidates` and limited execution coverage is covered by jsdom only |
+| Python suite | Python **3.11.15** (uv-managed), full `requirements.txt` + `requirements-dev.txt`, **no Foundry** on PATH. `python -m pytest tests -q -p no:cacheprovider -rs` | **954 passed, 0 failed, 5 skipped**. Skips: 4 in `test_cast_integration.py` (Foundry `cast` + `anvil` not installed) and 1 in `test_selectors.py:34` (`cast` not installed) |
+| Browser suite | Node v22.23.4, jsdom 31, server on Python 3.11.15 with the fake worker and local fake providers. `cd tests/ui && npm install && npm test` | **275 checks passed, 0 failed** |
+| Real browser | Headless Chromium 153 (npm `@sparticuz/chromium`) against the real server and fake worker: a cancelled run (new `cancelled` stage state), desktop 1280x900 and mobile 390x844 | Rendered and inspected by eye; no horizontal overflow. The key-routing fix (F01) and the other audit fixes have no visual change and are covered by jsdom and Python tests |
 
-The immediately previous revision (evidence-fix build) recorded 745 passed / 5 skipped (Python 3.11.15) and 242 browser checks.
+The immediately previous revision (budgeting build) recorded 820 passed / 5 skipped (Python 3.11.15) and 258 browser checks.
 
 The Foundry integration tests (`test_cast_integration.py`) were **not run** here: Foundry is unavailable, so real-`cast` behaviour was not re-verified in this revision.
 
@@ -442,7 +442,38 @@ Changed again in the budgeting revision, because the behaviour they pinned is th
 the verdict-input warning now says "model input budget" instead of "model input limit" (`test_evidence_report_contract.py`); and a pipeline test that expected the plain "No potentially vulnerable functions were identified"
 line for candidates with no contract source now expects "not a clean result" (`test_selection_completion.py`), because missing source is limited evidence.
 
+Changed again in the audit-fix revision, each because the behaviour it pinned is a finding that revision fixes: the exact-equality check of a balance amount now compares exact decimals instead of `pytest.approx` of a float (`test_rpc_collection.py`, F10);
+an empty zero-exit explorer lookup is `no_files`, no longer "unverified" (`test_source_lookup_cause.py`, F08);
+with an unreachable endpoint the chain check now stops the replay before `cast` runs, so two end-to-end tests no longer expect a `cast exited` line (`test_pipeline_patches.py`, F05);
+the replay-cache tests now supply a complete cast footer and a chain id (`test_pipeline_patches.py`, F03/F04); the model-registry contract tests now include the DeepSeek route and assert model ids instead of a count (`test_api.py`, `test_providers.py`, `ui.test.mjs`, F11);
+the fake node answers `eth_chainId`, so the RPC tests state which chain their node serves (setup only).
+
 Key package versions are whatever pip resolved on the build date; they were not pinned for this run.
+
+### Audit fixes (main2 audit, findings F01-F11 and R01-R02)
+
+Each finding was reproduced by a failing test before it was fixed (`tests/test_audit_*.py` and the F01 section of `tests/ui/ui.test.mjs`).
+
+| Finding | Fix |
+|---|---|
+| F01 key bound to provider | `console.js` keeps the owner of the typed key; a provider change clears and re-hides it, a submit re-checks |
+| F02 body cap on streamed bodies | `read_json_body` counts received bytes; bad `Content-Length` is refused |
+| F03 failed replay cached | success requires exit 0 and the cast completion footer; otherwise nothing is returned or cached |
+| F04 cache keyed by hash only | key = chain id + hash + schema; SHA-256 and metadata sidecar; atomic publish; legacy entries ignored |
+| F05 no chain check | `eth_chainId` must equal the registry id before replay or collection (`wrong_chain`, `bad_response`, `unknown_chain`) |
+| F06 non-string fields | every field is type-checked; all validation precedes any external key check |
+| F07 terminal paths | one `_settle` step; stage statuses `cancelled` / `interrupted` added to the UI |
+| F08 zero-exit getCode | output is read, scrubbed and classified; empty zero exit is `no_files`, not "unverified" |
+| F09 unknown decimals | historical block metadata, labelled `latest` fallback, unknown decimals shown as raw units |
+| F10 float arithmetic | exact `Decimal` balances, string amounts with a `unit` flag |
+| F11 stale tests | registry contract updated for the DeepSeek route; assertions are on model ids, not counts |
+| R01 redirects / rebinding | redirects refused; connect-time public-address check with pinning in the Python RPC client |
+| R02 latest-only source | `source_provenance` reported as a warning when any source was used |
+
+**Reconciliation note.** This build was rebased onto main2 3048f70, which holds the real DeepSeek route. The real `config/models.json` entry (model id `deepseek-v4.1-flash-free`, `temperature: pass`, limits source `https://100milionseek.top/v1/models`) was kept; the audit-fix tests were changed to that id. The reconstructed `milionseek` model id is not used.
+
+**Limitations that remain.** The `cast` subprocess resolves and connects by itself, so the connect-time address check and the redirect refusal do not cover it. The replay cache records chain, hash, digest and schema, not the block hash.
+Token decimals and symbols come from the contract's current ABI answers at the transaction block when the endpoint keeps that state, otherwise from `latest` (labelled). R03-R06 (failed-run diagnostics artifact, readiness, parameter verification, 503 backoff) were not changed.
 
 ### Touched state machines and invariants
 
@@ -457,6 +488,14 @@ These flows were implicit (flags, list lengths, substring tests). They are now e
 | **Model input** (`budget.py`, `AbstractAgent._enforce_budget` / `fit`) | request → measured against the model's budget → sent whole \| fitted (reductions recorded) \| refused as `InputLimitExceeded` | Every request path (OpenAI-compatible, Ollama, legacy `query`) is checked against system + retained history + new message + reserved output + margin; reducible evidence goes in the order history, context, source, trace; required text is never cut; nothing required is dropped silently; routing, parameters and retry budgets are unchanged |
 | **Evidence adequacy** (`function_results`, `coverage.evidence_limited`) | per candidate: execution completed \| failed \| omitted; evidence complete \| reduced \| source_missing \| reduced_source_missing \| not_analyzed | Execution completion never implies adequate evidence; reduced or source-missing evidence with no finding is reported as "not a clean result"; reductions roll back with a failed attempt |
 | **RPC receipt state** (`rpc_collector.collect`) | transaction lookup → receipt lookup: found \| missing with a block number (`history_unavailable`) \| missing without a block number (genuinely unmined) | Only a transaction the node itself places in no block is "not mined"; a missing receipt for a mined transaction, or a pruned-history error, is `history_unavailable` with an archive-RPC hint; rate limits and other errors keep their own classes |
+| **Request body** (`app.read_json_body`, gate middleware) | headers → bytes received → parsed \| 400 invalid \| 413 too large | The cap counts the bytes actually received, in chunks, before the body is buffered whole; a missing, understated or malformed `Content-Length` cannot bypass it; the same cap covers `/auth/login` and `/api/runs`; every field is validated (type and format) **before** any external key-validation call |
+| **Provider key ownership** (`console.js`: `state.keyProvider`, `lastProvider`) | typed for provider P → still P (kept) \| provider changed (cleared, re-hidden) \| keyless (cleared, disabled) | A key is held only for the provider it was entered for; switching to another provider clears it and it is never restored; a submit re-checks and never pairs one provider's key with another model |
+| **Chain verification** (`rpc_collector.verify_chain`, `TransactionReplayer.verified_chain_id`) | endpoint → `eth_chainId` → verified \| `wrong_chain` \| `bad_response` \| `unknown_chain` | Nothing is replayed, collected or cached for an endpoint that has not matched the selected network's registry chain id; the same endpoint resolution is used for replay and collection |
+| **Replay cache** (`TransactionReplayer`) | cast run → exit 0 AND complete trace (completion footer) → published atomically \| discarded | Failed, empty, truncated or non-zero replays publish nothing; entries are keyed by chain id + hash + schema version, carry a SHA-256 and metadata, and a mismatching, corrupted or legacy (hash-only) entry is a miss; an interrupted write leaves no entry |
+| **Token amounts** (`rpc_collector._TokenInfo`, `FundFlowAnalyzer`) | decimals read at the transaction block \| read at `latest` (labelled) \| unknown | Unknown decimals are never zero: the label says `N raw units, decimals unknown` and the record keeps the raw integer; balances are exact `Decimal` strings with a `unit` flag (no float anywhere), and an unreadable amount is an error, never zero |
+| **Source lookup** (`ContractDownloader.lookup_outcomes`) | Sourcify → explorer API → found \| unverified \| credentials \| rate-limited \| unreachable \| no_files \| unknown | A zero exit with no files is classified by what the tool printed; an empty zero exit is `no_files` (absence not established), not "unverified"; keys are scrubbed everywhere; found source is reported as latest, not block-pinned |
+| **Run terminal state** (`RunManager._decide` → `_settle`) | running → completed \| failed \| cancelled \| interrupted | Exactly one settle step: no stage stays `active` (it becomes `failed` / `cancelled` / `interrupted`), completed stages stay `done`, the headline no longer says "Starting the pipeline", and a terminal event is recorded; precedence is shutdown > cancel > timeout > fatal > result |
+| **RPC redirects and addresses** (`rpc_client._opener`) | request → connect to a validated public address → response \| 3xx refused | Redirects are never followed; when the server enforces public endpoints (the default) every DNS answer must be public and the connection is pinned to the validated address; the foundry `cast` subprocess is not covered by this check (see limitations) |
 | **Stage 1 model replies** (`forensics/contracts.py`) | reply → typed value \| `ProviderFailure` \| `ForensicsModelError` | No `eval` anywhere (a test scans the package); an explicit `[]` of victims is valid, a provider failure or unusable reply is never "no victims" or a clean classification; `unknown`/`vulnerable` match in any letter case; one `query_json` per operation, no loop around it |
 | **Ranking** (`normalize`) | raw ranked entries → resolved to an accepted finding \| dropped (reason); ranking usable \| unranked fallback | A ranked key must resolve uniquely to an accepted finding (never invents one); optional ranking failure keeps valid findings (shown unranked) |
 | **Report** (`normalize`) | raw finding → accepted (valid identity + readable evidence) \| rejected | Raw objects, confidence fields, provider error sentinels and malformed values are never shown; junk is never promoted; rejected verdict entries, unusable evidence, limited coverage and shortened verdict input are surfaced as warnings |
@@ -491,6 +530,7 @@ Other implicit machines exist (run lifecycle, key validation, sessions, progress
 | `test_forensics_safe_parsing.py` | No `eval`/`exec`; hostile model text never executes; actual victim and role caller paths with local fake agents; provider and unusable replies fail closed within the existing retry budget |
 | `test_evidence_report_contract.py` | Readable evidence, junk never promoted, rejection and coverage warnings, confidence finiteness and range, evidence-type validation |
 | `test_input_limit.py` | Budget configuration and precedence, invalid overrides, the 10,237-character request under a restrictive and a sufficient budget, enforcement on every request path (system/history/tool messages, output reserve, multibyte text, Ollama), the defined reduction order, fail-closed required content, per-function and coverage propagation |
+| `test_audit_requests.py`, `test_audit_replay.py`, `test_audit_amounts.py`, `test_audit_terminal_state.py`, `test_audit_ssrf_provenance.py` | Audit findings F01-F10, R01, R02: streamed body cap and typed fields, replay acceptance / cache provenance / chain verification, unknown decimals and exact arithmetic, terminal run state, redirects and connect-time address checks, source provenance |
 | `test_rpc_history.py` | Pruned-history versus genuinely unmined versus unrelated RPC errors, retry behaviour, run classification |
 | `test_source_lookup_cause.py` | Source lookup causes (credentials, unreachable, unverified, unknown), no key leak, evidence gap kept separate from execution failure |
 | `test_worker_error_publication.py` | Generic worker errors are sanitized in the API; detail only in the technical log |

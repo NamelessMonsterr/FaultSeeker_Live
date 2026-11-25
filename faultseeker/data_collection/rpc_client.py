@@ -4,9 +4,12 @@ Standard library only. The endpoint is FAULTSEEKER_RPC_URL (the web console sets
 failing that, the foundry.toml alias for the chain. WebSocket URLs are rewritten to their HTTP form, because this
 client speaks HTTP only. The endpoint URL is never put into an error message or printed: it may embed a provider key.
 """
+import http.client
+import ipaddress
 import json
 import os
 import re
+import socket
 import time
 import urllib.error
 import urllib.request
@@ -38,7 +41,7 @@ def is_pruned_history(text: str) -> bool:
 
 
 class RpcError(Exception):
-    """kind: no_endpoint | unreachable | rejected | bad_response | not_found | history_unavailable."""
+    """kind: no_endpoint | unreachable | rejected | bad_response | not_found | history_unavailable | wrong_chain | unknown_chain."""
 
     def __init__(self, kind: str, message: str):
         super().__init__(message)
@@ -98,6 +101,67 @@ def _host(url: str) -> str:
     return urlsplit(url).hostname or "the RPC endpoint"
 
 
+def _enforce_public() -> bool:
+    """The web server sets FAULTSEEKER_ENFORCE_PUBLIC_RPC=1 for its worker unless private endpoints were explicitly allowed."""
+    return os.environ.get("FAULTSEEKER_ENFORCE_PUBLIC_RPC", "") == "1"
+
+
+def _validated_ip(host: str, port: int) -> str:
+    """Resolves `host` NOW and returns an address to connect to, refusing the endpoint when ANY answer is not a public address
+    (loopback, private, link-local, reserved, multicast, unspecified, shared/CGNAT, cloud metadata). The connection is then made to
+    that exact address, so the check and the connection cannot see different DNS answers."""
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except OSError as exc:
+        raise RpcError("unreachable", f"could not resolve {host} ({type(exc).__name__}).") from None
+    chosen = None
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0].split("%")[0])
+        ip = getattr(ip, "ipv4_mapped", None) or ip
+        if not ip.is_global:
+            raise RpcError("rejected", f"{host} resolves to a private or reserved address, which this server does not connect to.")
+        chosen = chosen or str(ip)
+    if not chosen:
+        raise RpcError("unreachable", f"{host} did not resolve to any address.")
+    return chosen
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    def connect(self):
+        self.sock = socket.create_connection((_validated_ip(self.host, self.port), self.port), self.timeout)
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    def connect(self):
+        sock = socket.create_connection((_validated_ip(self.host, self.port), self.port), self.timeout)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)          # certificate checked against the NAME, not the IP
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A JSON-RPC endpoint has no reason to redirect a POST, and a redirect would send the request (and any key in it) to a host
+    nobody validated. Redirects are refused: urllib then raises HTTPError for the 3xx."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+class _PinnedHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(_PinnedHTTPConnection, req)
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(_PinnedHTTPSConnection, req, context=self._context)
+
+
+def _opener():
+    handlers = [_NoRedirect()]
+    if _enforce_public():
+        handlers += [_PinnedHTTPHandler(), _PinnedHTTPSHandler()]
+    return urllib.request.build_opener(*handlers)
+
+
 class RpcClient:
     def __init__(self, url: str, timeout: float = TIMEOUT):
         self.url = url
@@ -116,9 +180,12 @@ class RpcClient:
             if attempt:
                 time.sleep(RETRY_DELAYS[attempt - 1])
             try:
-                with urllib.request.urlopen(request, timeout=self.timeout) as resp:
+                with _opener().open(request, timeout=self.timeout) as resp:
                     raw = resp.read()
             except urllib.error.HTTPError as exc:
+                if 300 <= exc.code < 400:
+                    raise RpcError("rejected", f"{host} answered with a redirect (HTTP {exc.code}). Redirects are not followed: "
+                                               "use the endpoint's final URL.")
                 if exc.code in (401, 403):
                     raise RpcError("rejected", f"{host} refused the request (HTTP {exc.code}). Check the endpoint and its key.")
                 if exc.code == 429 or exc.code >= 500:

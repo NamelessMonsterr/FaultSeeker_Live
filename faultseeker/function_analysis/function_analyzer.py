@@ -1071,6 +1071,13 @@ class FunctionAnalyzer:
                 break
         return out
 
+    def source_provenance_report(self):
+        """How many contracts' source the analysis actually used. Every source comes from a CURRENT-state lookup (Sourcify or the
+        explorer API), never one pinned to the transaction's block, so the report states that as evidence uncertainty."""
+        info = getattr(self, 'contract_info', None) or {}
+        used = sum(1 for value in info.values() if value) if isinstance(info, dict) else 0
+        return {'sources_used': used, 'pinned_to_transaction_block': False}
+
     def source_lookup_report(self, limit=50):
         """What the contract-source lookups reported for the candidate addresses (cause or uncertainty; never a credential)."""
         from faultseeker.data_collection.contract_downloader import ContractDownloader, describe_source_lookup
@@ -1518,6 +1525,7 @@ class FunctionAnalyzer:
             'coverage': self.coverage_report(),
             'function_results': self.function_results(),
             'source_lookups': self.source_lookup_report(),
+            'source_provenance': self.source_provenance_report(),
             'verdict_rejections': dict(self.verdict_rejections),
             'potentially_vulnerable_functions': self.potentially_vulnerable_functions,
             "transaction_understanding": self.understanding_result,

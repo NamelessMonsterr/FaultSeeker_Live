@@ -49,6 +49,14 @@ def test_shipped_registry_has_no_secrets_and_no_invented_endpoints():
         m = next(m for m in data["models"] if m["id"] == mid)
         assert "model" not in m and m["model_env"], "exact model IDs come from the environment"
     assert data["providers"]["openai"]["base_url"] == "https://api.openai.com/v1"
+    # The one intentionally fixed third-party endpoint (the DeepSeek proxy route): a fixed https URL, a per-run user key (no server secret is
+    # shipped or required), and a model whose id is fixed in the registry.
+    ms = data["providers"]["milionseek"]
+    assert ms["base_url"] == "https://100milionseek.top/v1" and ms["api_key_env"] == "MILIONSEEK_API_KEY" and ms["type"] == "openai_compatible"
+    m = next(m for m in data["models"] if m["id"] == "deepseek-v4.1-flash-free")
+    assert m["provider"] == "milionseek" and m["model"] == "deepseek-v4.1-flash-free"
+    assert m["limits"]["context_tokens"] == 198000 and m["limits"]["max_output_tokens"] == 65536
+    assert providers.load_registry().resolve("deepseek-v4.1-flash-free", {"MILIONSEEK_API_KEY": "k"}).budget.input_limit_tokens == 128504
 
 
 def test_each_model_names_its_provider_and_nothing_is_guessed_from_the_name(tmp_path):

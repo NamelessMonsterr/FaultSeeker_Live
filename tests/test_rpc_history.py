@@ -14,6 +14,7 @@ from tests.fake_rpc import FakeServer, PENDING, PRUNED, TX
 @pytest.fixture()
 def node(monkeypatch):
     s = FakeServer()
+    s.chain_id = 56                                              # these tests collect for bsc; the endpoint is verified against it
     monkeypatch.setattr(rpc_client, "RETRY_DELAYS", (0, 0))
     for k in ("FAULTSEEKER_EXPLORER_FALLBACK", "ETHERSCAN_API_KEY"):
         monkeypatch.delenv(k, raising=False)

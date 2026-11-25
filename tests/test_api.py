@@ -26,7 +26,10 @@ def test_config_contents(client):
     assert {c["id"] for c in cfg["chains"] if c["support"] == "full"} == {"eth", "bsc"}
     assert len(cfg["presets"]["eth"]) == 101 and len(cfg["presets"]["bsc"]) == 13
     assert cfg["models"][0]["key_required"] is True and sum(m["default"] for m in cfg["models"]) == 1
-    assert {m["provider"] for m in cfg["models"]} == {"openai"}      # proxies appear only when their env is set
+    # fixed-endpoint providers are always listed; providers whose endpoint comes from the environment appear only when it is set
+    assert {m["provider"] for m in cfg["models"]} == {"openai", "milionseek"}
+    assert {m["id"] for m in cfg["models"]} == {"gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1", "deepseek-v4.1-flash-free"}
+    assert next(m for m in cfg["models"] if m["id"] == "deepseek-v4.1-flash-free")["key_required"] is True      # per-run user key, no server secret
     assert cfg["auth"] == {"required": False}
     assert cfg["environment"]["ready"] is True and cfg["active_run"] is None
 

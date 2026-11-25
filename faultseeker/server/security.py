@@ -17,7 +17,20 @@ class ValidationError(Exception):
         self.field, self.message, self.code = field, message, code
 
 
+def text_field(body: dict, name: str, required: bool = False) -> str:
+    """A request field that must be text. Missing or null means empty; any other type is a field error, never coerced
+    (a number, boolean, list or object is not text, and calling str() on it would hide a malformed client)."""
+    value = body.get(name)
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValidationError(name, f"{name.replace('_', ' ').capitalize()} must be text.")
+    return value.strip()
+
+
 def validate_hash(value) -> str:
+    if value is not None and not isinstance(value, str):
+        raise ValidationError("txn_hash", "Enter a full transaction hash: 0x followed by 64 hex characters.")
     value = (value or "").strip()
     if not HASH_RE.match(value):
         raise ValidationError("txn_hash", "Enter a full transaction hash: 0x followed by 64 hex characters.")
@@ -25,6 +38,8 @@ def validate_hash(value) -> str:
 
 
 def validate_secret(field: str, value, label: str):
+    if value is not None and not isinstance(value, str):
+        raise ValidationError(field, f"{label} must be text.")
     value = (value or "").strip()
     if not value:
         return ""
@@ -47,6 +62,9 @@ def _check_public_host(host: str):
 
 def resolve_rpc(url, key):
     """Return the final RPC URL (or '' for the server connection)."""
+    for field, value in (("rpc_url", url), ("rpc_key", key)):
+        if value is not None and not isinstance(value, str):
+            raise ValidationError(field, f"{'RPC URL' if field == 'rpc_url' else 'The RPC key'} must be text.")
     url, key = (url or "").strip(), (key or "").strip()
     if not url:
         if key:

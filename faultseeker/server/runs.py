@@ -202,6 +202,12 @@ class RunManager:
             env["FAULTSEEKER_RPC_URL"] = rpc_url
         else:
             env.pop("FAULTSEEKER_RPC_URL", None)
+        # The Python RPC client re-validates the endpoint at connect time (public addresses only, pinned) unless private endpoints
+        # were explicitly allowed for this server.
+        if settings.ALLOW_PRIVATE_RPC:
+            env.pop("FAULTSEEKER_ENFORCE_PUBLIC_RPC", None)
+        else:
+            env["FAULTSEEKER_ENFORCE_PUBLIC_RPC"] = "1"
         return env
 
     def get(self, run_id: str) -> Optional[Run]:
@@ -489,11 +495,8 @@ class RunManager:
             run.state = "interrupted"
             run.error = {"code": "interrupted", "message": "The server restarted while this run was in progress.",
                          "hint": "Start the analysis again. Cached replays and contracts are reused."}
-            run.current = {"title": "Run interrupted", "description": run.error["message"]}
         elif run.cancel_requested:
             run.state = "cancelled"
-            run.current = {"title": "Run cancelled", "description": "The analysis was stopped before it finished."}
-            self._event(run, "Run cancelled", "warn")
         elif timed_out:
             run.state = "failed"
             run.error = {"code": "timeout", "message": "The analysis exceeded the time limit and was stopped.",
@@ -524,11 +527,25 @@ class RunManager:
                 self._event(run, "Report ready", "success")
         else:
             run.state, run.error = "failed", self._classify_failure(run, rc)
-            active = next((s for s in run.stages if s["status"] == "active"), None)
-            if active:
-                active["status"] = "failed"
+        if run.state in ("failed", "cancelled", "interrupted"):
+            self._settle(run)
+
+    def _settle(self, run: Run):
+        """The ONE place a terminal non-success state is made consistent: no stage stays 'active', the headline text no longer says the
+        pipeline is starting, and a terminal event is recorded. Stages that completed stay 'done'."""
+        stage_status = {"failed": "failed", "cancelled": "cancelled", "interrupted": "interrupted"}[run.state]
+        for stage in run.stages:
+            if stage["status"] == "active":
+                stage["status"] = stage_status
+        if run.state == "failed":
             run.current = {"title": "Analysis failed", "description": run.error["message"]}
             self._event(run, run.error["message"], "error")
+        elif run.state == "interrupted":
+            run.current = {"title": "Run interrupted", "description": run.error["message"]}
+            self._event(run, "Run interrupted", "warn")
+        else:
+            run.current = {"title": "Run cancelled", "description": "The analysis was stopped before it finished."}
+            self._event(run, "Run cancelled", "warn")
 
     def _write_result(self, run: Run, normalized: dict):
         """Atomic: result.json either exists complete or not at all."""
@@ -589,9 +606,12 @@ class RunManager:
                 "rejected": "The RPC endpoint refused the request. Check its URL and key, or use another endpoint.",
                 "history_unavailable": "This endpoint does not keep history that far back (pruned or non-archive node). Provide an "
                                        "archive-capable RPC under “RPC connection”, then run again.",
+                "wrong_chain": "The RPC endpoint is for a different network than the one selected. Use an endpoint for the selected "
+                               "network, or select the network the endpoint serves.",
+                "unknown_chain": "This network has no registered chain ID, so the RPC endpoint cannot be verified. Choose a supported network.",
             }
             code = {"not_successful": "tx_not_successful", "not_found": "tx_not_found",
-                    "history_unavailable": "rpc_history_unavailable"}.get(kind, "rpc_failed")
+                    "history_unavailable": "rpc_history_unavailable", "wrong_chain": "rpc_wrong_chain"}.get(kind, "rpc_failed")
             return {"code": code, "message": detail,
                     "hint": hints.get(kind, "Check the RPC connection (URL, key, rate limits) and run again.")}
         if run.cast_error and ("Stage 1" in message or not message or "Forensics" in message):

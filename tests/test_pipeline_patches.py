@@ -33,9 +33,14 @@ def fake_cast(tmp_path, monkeypatch):
     bin_dir.mkdir()
     script(bin_dir / "cast", f'echo "$@" >> "{tmp_path}/argv.log"\n'
            'if [ -f "${0%/*}/fail" ]; then echo "boom line 1" >&2; echo "dns error: could not resolve" >&2; exit 1; fi\n'
-           'echo "Traces:"; echo "  [18] 0x5FbDB2315678afecb367f032d93F642f64180aa3::2fbebd38(00)"\n')
+           'echo "Traces:"; echo "  [18] 0x5FbDB2315678afecb367f032d93F642f64180aa3::2fbebd38(00)"\n'
+           'echo ""; echo "Transaction successfully executed."; echo "Gas used: 21510"\n')
     monkeypatch.setenv("PATH", str(bin_dir))
     monkeypatch.delenv("FAULTSEEKER_RPC_URL", raising=False)
+    # These tests are about the cast invocation and the cache. The endpoint's chain-id verification has its own tests
+    # (test_audit_replay.py), so here it is answered from the registry without a network.
+    from faultseeker import chains
+    monkeypatch.setattr(TransactionReplayer, "verified_chain_id", staticmethod(lambda chain: chains.get(chain)["chain_id"]))
     return SimpleNamespace(argv=tmp_path / "argv.log", cache=str(tmp_path / "replay"))
 
 
@@ -74,11 +79,12 @@ def test_replay_failure_is_reported_and_not_cached(fake_cast, monkeypatch, capsy
     assert not r.run(TX, "eth")
     printed = capsys.readouterr().out
     assert "cast exited with code 1:" in printed and "dns error" in printed
-    assert r.get_replay_cache(TX) is None
+    assert r.get_replay_cache(TX, 1) is None
 
 
 def test_replay_without_cast_installed(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(TransactionReplayer, "verified_chain_id", staticmethod(lambda chain: 1))
     assert TransactionReplayer(str(tmp_path / "c")).run(TX, "eth") is None
     assert "cast exited with code 127" in capsys.readouterr().out
 
@@ -185,8 +191,9 @@ def test_real_pipeline_reports_a_stage1_failure_end_to_end(tmp_path):
     assert proc.returncode == 1
     assert "##FS## " in out and '"event": "start"' in out and '"event": "error"' in out
     assert "Stage 1 (Forensics) failed to produce results" in out
-    assert "cast exited with code 1: no route to host" in out
-    assert "RPC collection failed (unreachable)" in out and "Explorer request failed" not in out
+    # Changed by audit F05: the endpoint is verified (eth_chainId) BEFORE cast runs, so an unreachable endpoint now stops the replay
+    # first and cast is never invoked against an unverified endpoint. (Before, cast ran and failed here.)
+    assert "RPC collection failed (unreachable)" in out and "cast exited" not in out and "Explorer request failed" not in out
     assert "cannot unpack" not in proc.stderr + out
     assert not (tmp_path / "out" / "r.json").exists()
 
@@ -259,5 +266,6 @@ def test_real_worker_builds_agents_for_a_proxy_provider_and_reaches_stage_1(tmp_
     env = {"CODEX_PROXY_BASE_URL": "http://127.0.0.1:9/v1", "CODEX_PROXY_MODEL": "exact-model", "CODEX_PROXY_API_KEY": "codex-" + "k" * 20}
     proc = _run_worker(tmp_path, "codex-proxy", env)
     assert proc.returncode == 1 and "Stage 1 (Forensics) failed to produce results" in proc.stdout
-    assert "cast exited with code 1: no route to host" in proc.stdout and "ProviderConfigError" not in proc.stdout
+    # (audit F05) the unreachable endpoint is reported by the chain check before cast is invoked
+    assert "RPC collection failed (unreachable)" in proc.stdout and "cast exited" not in proc.stdout and "ProviderConfigError" not in proc.stdout
     assert "codex-kkk" not in proc.stdout + proc.stderr

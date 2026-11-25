@@ -343,9 +343,24 @@
 
   /* key requirement */
   function selectedModel() { return modelInfo($('model').value); }
+  // A key belongs to the provider it was entered for. `state.keyProvider` is that provider; `state.lastProvider` is the provider that was
+  // selected the last time this ran (the owner of text that was set without an input event).
+  function resetKeyField() {
+    const input = $('model-key');
+    input.value = '';
+    input.type = 'password';
+    $('show-key').textContent = 'Show';
+    $('show-key').setAttribute('aria-pressed', 'false');
+    state.keyProvider = '';
+  }
   function updateKeyRequirement() {
     const m = selectedModel();
     const input = $('model-key');
+    const now = m ? m.provider : '';
+    const owner = state.keyProvider || state.lastProvider || now;
+    if (input.value && owner !== now) resetKeyField();          // never carry one provider's key to another provider
+    state.keyProvider = input.value ? owner : '';
+    state.lastProvider = now;
     const who = m ? m.provider_label : 'the selected provider';
     const stored = 'The key is used for this request only, is sent only to ' + who + ', and is never saved in browser storage.';
     let tag = '', hint = stored;
@@ -356,7 +371,7 @@
     $('key-requirement').textContent = tag;
     $('key-hint').textContent = hint;
     input.disabled = !!m && !m.key_required && !m.key_optional;
-    if (input.disabled) input.value = '';
+    if (input.disabled && input.value) resetKeyField();
     $('show-key').disabled = input.disabled;
   }
 
@@ -384,6 +399,7 @@
     if (state.submitting || $('analyze').disabled) return;
     clearFieldErrors();
     hideNotice();
+    updateKeyRequirement();             // last line of defence: a key entered for another provider is cleared, never submitted
     const payload = {
       txn_hash: $('transaction').value.trim(), chain: $('chain').value, mode: $('model').value,
       model_key: $('model-key').value.trim(), rpc_url: $('rpc-url').value.trim(), rpc_key: $('rpc-key').value.trim(),
@@ -529,7 +545,7 @@
     state.stepperSig = sig;
     const list = $('stepper');
     clear(list);
-    const words = { pending: 'Waiting', active: 'In progress', done: 'Complete', failed: 'Failed' };
+    const words = { pending: 'Waiting', active: 'In progress', done: 'Complete', failed: 'Failed', cancelled: 'Cancelled', interrupted: 'Interrupted' };
     for (const s of stages) {
       list.append(h('li', { class: 'step', dataset: { status: s.status }, 'aria-current': s.status === 'active' ? 'step' : null },
         h('span', { class: 'step-marker', 'aria-hidden': 'true' }),
@@ -860,7 +876,11 @@
   /* ---------- wiring ---------- */
   function bind() {
     $('analysis-form').addEventListener('submit', submit);
-    for (const id of ['transaction', 'model-key']) $(id).addEventListener('input', () => { setFieldError(id, ''); validateForm(); });
+    for (const id of ['transaction', 'model-key']) $(id).addEventListener('input', () => {
+      setFieldError(id, '');
+      if (id === 'model-key') { const m = selectedModel(); state.keyProvider = $(id).value && m ? m.provider : ''; }
+      validateForm();
+    });
     for (const id of ['rpc-url', 'rpc-key']) $(id).addEventListener('input', () => setFieldError(id, ''));
     $('chain').addEventListener('change', () => {
       validateForm();

@@ -285,6 +285,12 @@ def normalize(raw: Dict[str, Any], *, model_errors: int = 0) -> Dict[str, Any]:
             warnings.append(f"Evidence was reduced to fit the model input budget for {len(shortened)} analyzed function"
                             f"{'' if len(shortened) == 1 else 's'} ({shown}{more}), so the model did not see all of it; "
                             "\"no finding\" for them is not evidence that they are safe.")
+    prov = raw.get("source_provenance")
+    used = prov.get("sources_used") if isinstance(prov, dict) else None
+    if isinstance(used, int) and not isinstance(used, bool) and used > 0 and not (isinstance(prov, dict) and prov.get("pinned_to_transaction_block") is True):
+        warnings.append(f"Contract source for {used} contract{_plural(used, '', 's')} is the latest verified version, not pinned to the transaction "
+                        "block. For upgradeable or since-redeployed contracts it may differ from the code that actually ran; the call trace is the "
+                        "ground truth.")
     lookups = raw.get("source_lookups")
     if isinstance(lookups, dict) and lookups:
         items = [(a, v) for a, v in lookups.items() if isinstance(a, str) and ADDRESS_RE.match(a) and isinstance(v, dict)

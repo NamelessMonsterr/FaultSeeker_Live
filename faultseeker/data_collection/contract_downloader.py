@@ -42,6 +42,7 @@ def describe_source_lookup(outcome: dict) -> str:
         'explorer_rate_limited': 'the explorer reported rate limiting; the source may exist but could not be fetched this time',
         'lookup_unreachable': 'a lookup service could not be reached; this is a connectivity problem, not evidence that the contract is unverified',
         'unverified': 'neither service has verified source for this address',
+        'no_files': 'neither lookup returned source files and neither said why; whether the contract is unverified is not established',
         'unknown': 'the cause could not be determined from the lookup output',
     }.get(cause, 'the cause could not be determined from the lookup output')
     return "; ".join(parts) + f". Likely cause: {meaning}."
@@ -62,8 +63,10 @@ def _classify_lookup(outcome: dict) -> str:
         return 'explorer_credentials'
     if re.search(r'rate.?limit|max rate', text):
         return 'explorer_rate_limited'
-    if 'no verified match' in outcome.get('sourcify', '') and ('not verified' in text or 'no source' in text):
+    if 'no verified match' in outcome.get('sourcify', '') and re.search(r'not verified|unverified', outcome.get('explorer', '').lower()):
         return 'unverified'
+    if 'no verified match' in outcome.get('sourcify', '') and outcome.get('explorer', '').startswith('returned no source files'):
+        return 'no_files'        # a zero exit and no files, with nothing in the output that says why: absence is not established
     return 'unknown'
 
 
@@ -89,14 +92,16 @@ class ContractDownloader:
         if explorer_key:
             command += ['-k', explorer_key]
         ret = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, shell = False)
+        out, err = _scrub(ret.stdout.decode('utf-8', 'ignore')), _scrub(ret.stderr.decode('utf-8', 'ignore'))
         logging.info('==========================================')
         logging.info(f'{address}[{chain}]')
-        logging.info(ret.stdout.decode('utf-8'))
-        logging.info(ret.stderr.decode('utf-8'))
-        if ret.stderr.decode('utf-8') != '':
+        logging.info(out)
+        logging.info(err)
+        if err != '':
             print(f'{address}[{chain}]')
-            print(ret.stderr.decode('utf-8'))
+            print(err)
         logging.info('==========================================')
+        return (out + ' ' + err).strip()[:2000]            # what the tool said (key scrubbed), so a zero exit is read for what it reports
 
     @staticmethod
     def _has_sources(output_dir):
@@ -133,7 +138,7 @@ class ContractDownloader:
 
         def via_getcode():
             try:
-                ContractDownloader._run_getcode(chain, address, output_dir)
+                said = ContractDownloader._run_getcode(chain, address, output_dir)
             except (subprocess.CalledProcessError, OSError) as exc:
                 detail = (getattr(exc, 'stderr', b'') or b'').decode('utf-8', 'ignore').strip()[:200] if isinstance(
                     getattr(exc, 'stderr', None), bytes) else str(exc)[:200]
@@ -142,7 +147,8 @@ class ContractDownloader:
                 print(f'getCode failed for {address}[{chain}]: {detail}', flush=True)
                 return False
             found = ContractDownloader._has_sources(output_dir)
-            outcome['explorer'] = 'found' if found else 'returned no source files'
+            note = " ".join(_scrub(said or '').split())[:200]
+            outcome['explorer'] = 'found' if found else (f'returned no source files ({note})' if note else 'returned no source files')
             return found
 
         order = (via_getcode, via_sourcify) if has_key else (via_sourcify, via_getcode)

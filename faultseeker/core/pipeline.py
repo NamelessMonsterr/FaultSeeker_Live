@@ -150,6 +150,7 @@ class FaultSeekerPipeline:
             'coverage': analysis_result.get('coverage', {}),
             'function_results': analysis_result.get('function_results', []),
             'source_lookups': analysis_result.get('source_lookups', {}),
+            'source_provenance': analysis_result.get('source_provenance', {}),
             'verdict_rejections': analysis_result.get('verdict_rejections', {}),
             'transaction_understanding': analysis_result.get('transaction_understanding', ''),
 

@@ -1,5 +1,6 @@
 """FastAPI application: JSON API under /api, access control under /auth, plus the static console."""
 import asyncio
+import json
 import os
 import logging
 from contextlib import asynccontextmanager
@@ -12,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from . import keycheck, presets, results, settings
 from .auth import COOKIE_NAME, AccessControl
 from .runs import BusyError, RunManager
-from .security import ValidationError, resolve_rpc, validate_hash, validate_secret
+from .security import ValidationError, resolve_rpc, text_field, validate_hash, validate_secret
 
 log = logging.getLogger("faultseeker.server")
 manager: RunManager = None        # created in lifespan; tests may replace it
@@ -77,6 +78,28 @@ def _origin_ok(request: Request) -> bool:
     return urlsplit(origin).netloc.lower() == request.headers.get("host", "").lower()
 
 
+class BodyTooLarge(Exception):
+    """More bytes were RECEIVED than MAX_BODY_BYTES allows, whatever the Content-Length header claimed."""
+
+
+async def read_json_body(request: Request):
+    """The JSON body, with the size cap enforced on the bytes actually received (before the body is buffered whole).
+
+    Raises BodyTooLarge (HTTP 413) over the cap and ValueError for invalid JSON. A declared Content-Length is only an early hint."""
+    parts, total = [], 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > settings.MAX_BODY_BYTES:
+            raise BodyTooLarge()
+        parts.append(chunk)
+    return json.loads(b"".join(parts) or b"null")
+
+
+@app.exception_handler(BodyTooLarge)
+async def body_too_large_handler(_: Request, __: BodyTooLarge):
+    return _error(413, "too_large", "Request body is too large.")
+
+
 @app.middleware("http")
 async def gate(request: Request, call_next):
     path = request.url.path
@@ -84,7 +107,9 @@ async def gate(request: Request, call_next):
         if not _origin_ok(request):
             return _error(403, "bad_origin", "Cross-site requests are not allowed.")
         length = request.headers.get("content-length")
-        if length and length.isdigit() and int(length) > settings.MAX_BODY_BYTES:
+        if length is not None and not length.isdigit():
+            return _error(400, "bad_length", "The Content-Length header is not valid.")
+        if length and int(length) > settings.MAX_BODY_BYTES:          # an early hint only: read_json_body counts the bytes received
             return _error(413, "too_large", "Request body is too large.")
     if access is not None and access.enabled and not _is_public(path):
         if not access.valid_session(request.cookies.get(COOKIE_NAME, "")):
@@ -131,7 +156,7 @@ async def auth_login(request: Request):
         return _error(429, "too_many_attempts", f"Too many failed attempts. Try again in {max(1, round(wait / 60))} minute(s).",
                       headers={"Retry-After": str(wait)})
     try:
-        body = await request.json()
+        body = await read_json_body(request)
     except ValueError:
         body = None
     code = body.get("code") if isinstance(body, dict) else None
@@ -185,22 +210,26 @@ async def config():
 @app.post("/api/runs", status_code=201)
 async def create_run(request: Request):
     try:
-        body = await request.json()
+        body = await read_json_body(request)
     except ValueError:
         return _error(400, "invalid_json", "Request body must be JSON.")
     if not isinstance(body, dict):
         return _error(400, "invalid_json", "Request body must be a JSON object.")
 
     txn_hash = validate_hash(body.get("txn_hash"))
-    chain = str(body.get("chain") or "").strip().lower()
+    chain = text_field(body, "chain").lower()
     if chain not in settings.CHAIN_IDS:
         known = next((c for c in settings.CHAINS if c["id"] == chain), None)
         raise ValidationError("chain", (known and known["note"]) or "Choose a supported network.")
-    model_id = str(body.get("mode") or "").strip().lower()
+    model_id = text_field(body, "mode").lower()
     model = next((m for m in settings.models() if m["id"] == model_id), None)
     if not model:
         raise ValidationError("mode", "Choose an available analysis model.")
     user_key = validate_secret("model_key", body.get("model_key"), "The model API key")
+
+    # Every input is validated BEFORE any external call: a malformed request never triggers key validation.
+    rpc_key = validate_secret("rpc_key", body.get("rpc_key"), "The RPC key")
+    rpc_url = await asyncio.to_thread(resolve_rpc, body.get("rpc_url"), rpc_key)
 
     reg = settings.registry()
     resolved = reg.resolve(model["id"])
@@ -221,9 +250,6 @@ async def create_run(request: Request):
                           field="model_key" if user_key else None)
     else:
         user_key = ""
-
-    rpc_key = validate_secret("rpc_key", body.get("rpc_key"), "The RPC key")
-    rpc_url = await asyncio.to_thread(resolve_rpc, body.get("rpc_url"), rpc_key)
 
     report = settings.environment_report()
     if not report["ready"]:

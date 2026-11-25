@@ -1,5 +1,6 @@
 """Transaction collection over RPC, with no explorer access at all. OFFLINE: a local fake node on 127.0.0.1."""
 import json
+from decimal import Decimal
 import os
 import stat
 import subprocess
@@ -45,7 +46,8 @@ def blocked_explorer(tmp_path, monkeypatch):
 def test_collection_works_with_explorers_blocked_and_never_touches_them(node, blocked_explorer, monkeypatch):
     """THE regression: both explorers return 403 to this server, yet Collect transaction succeeds over RPC."""
     monkeypatch.setenv("FAULTSEEKER_RPC_URL", node.ws)         # a ws:// endpoint is accepted and used over HTTP
-    for chain in ("eth", "bsc"):
+    for chain, chain_id in (("eth", 1), ("bsc", 56)):
+        node.chain_id = chain_id                                  # the endpoint is verified against the selected network
         info = TransactionInfoCollector().run(TX, chain)
         assert info["status"] == "Success" and info["transaction_hash"] == TX
         assert info["address_info"] == {"from_address": FROM, "to_address": [TO]}
@@ -71,7 +73,7 @@ def test_token_transfers_have_the_exact_shape_fund_flow_parses(node, monkeypatch
     f = FundFlowAnalyzer.__new__(FundFlowAnalyzer)               # no model needed for the arithmetic
     f.txn_info = info
     f._get_balance_change()
-    assert f.balance_change[FROM][TOKEN]["amount"] == pytest.approx(-1234.56789 + 0.000005)
+    assert Decimal(f.balance_change[FROM][TOKEN]["amount"]) == Decimal("-1234.56789") + Decimal("0.000005")      # exact, no float rounding
     assert f.balance_change[POOL][TOKEN]["label"] == "USDC"
 
 
@@ -214,6 +216,7 @@ def test_real_worker_collects_over_rpc_when_explorers_are_blocked(tmp_path, node
         f = bin_dir / name
         f.write_text("#!/bin/sh\n" + body)
         f.chmod(f.stat().st_mode | stat.S_IEXEC)
+    node.chain_id = 56                                            # this run selects bsc, and the endpoint is verified against it
     root = Path(worker.__file__).resolve().parents[2]
     env = dict(os.environ, PATH=str(bin_dir) + os.pathsep + os.environ["PATH"], PYTHONPATH=str(root), PYTHONUNBUFFERED="1",
                OPENAI_API_KEY="sk-test-" + "k" * 24, FAULTSEEKER_RPC_URL=node.http, FAULTSEEKER_RPC_RETRIES="0")

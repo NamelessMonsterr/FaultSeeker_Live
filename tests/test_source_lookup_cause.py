@@ -23,7 +23,7 @@ def clean(monkeypatch):
     cd.ContractDownloader.lookup_outcomes.clear()
 
 
-def lookup(monkeypatch, tmp_path, sourcify, getcode_stderr=None, getcode_files=False):
+def lookup(monkeypatch, tmp_path, sourcify, getcode_stderr=None, getcode_files=False, getcode_output=None):
     def fetch(chain_id, address, out):
         if isinstance(sourcify, Exception):
             raise sourcify
@@ -32,6 +32,7 @@ def lookup(monkeypatch, tmp_path, sourcify, getcode_stderr=None, getcode_files=F
     def run_getcode(chain, address, out):
         if getcode_stderr is not None:
             raise subprocess.CalledProcessError(1, "getCode", stderr=getcode_stderr)
+        return getcode_output                       # a zero exit: whatever the tool printed, if anything
     monkeypatch.setattr(source_fetcher, "fetch", fetch)
     monkeypatch.setattr(cd.ContractDownloader, "_run_getcode", staticmethod(run_getcode))
     monkeypatch.setattr(cd.ContractDownloader, "_has_sources", staticmethod(lambda out: getcode_files))
@@ -54,10 +55,10 @@ def test_an_unreachable_lookup_is_not_called_unverified(monkeypatch, tmp_path):
     assert "not evidence that the contract is unverified" in cd.describe_source_lookup(o)
 
 
-def test_a_contract_neither_service_has_is_reported_as_unverified(monkeypatch, tmp_path):
-    o = lookup(monkeypatch, tmp_path, 0, None, getcode_files=False)
-    assert o["sourcify"] == "no verified match" and o["explorer"] == "returned no source files"
-    assert o["cause"] == "unverified"
+def test_a_contract_neither_service_has_and_the_tool_calls_unverified_is_reported_as_unverified(monkeypatch, tmp_path):
+    # Changed by audit F08: an EMPTY zero-exit used to be called "unverified"; only an explicit not-verified report is (see the F08 tests below).
+    o = lookup(monkeypatch, tmp_path, 0, None, getcode_files=False, getcode_output="Contract source code not verified")
+    assert o["sourcify"] == "no verified match" and o["cause"] == "unverified"
 
 
 def test_an_unrecognized_failure_says_the_cause_is_unknown(monkeypatch, tmp_path):
@@ -119,3 +120,46 @@ def test_missing_source_is_an_evidence_gap_not_an_execution_failure():
     f = out["functions"][0]
     assert f["execution"] == "completed" and f["evidence"] == "source_missing" and out["coverage"]["limited"] is False
     assert any("not a clean result" in w for w in out["warnings"])
+
+
+# ------------------------------------------------------------------------------------------------ audit F08: a zero exit is not proof of "unverified"
+
+@pytest.mark.parametrize("output,cause", [
+    ("Error! Missing/Invalid API Key", "explorer_credentials"), ("NOTOK: Invalid API Key", "explorer_credentials"),
+    ("Max rate limit reached", "explorer_rate_limited"), ("Contract source code not verified", "unverified"),
+    ("", "no_files"), ("some unrecognized banner", "no_files")])
+def test_a_zero_exit_with_no_files_is_classified_from_what_the_tool_printed(monkeypatch, tmp_path, output, cause):
+    o = lookup(monkeypatch, tmp_path, 0, None, getcode_files=False, getcode_output=output)
+    assert o["cause"] == cause, o
+    assert o["sourcify"] == "no verified match"
+
+
+def test_credential_output_is_never_called_unverified_even_with_no_sourcify_match(monkeypatch, tmp_path, capsys):
+    o = lookup(monkeypatch, tmp_path, 0, None, getcode_output="Error! Missing/Invalid API Key")
+    text = cd.describe_source_lookup(o)
+    assert "unverified" not in text.lower() and "neither service has verified source" not in text
+    assert "missing or invalid API key" in text and "not guaranteed" in text
+    out = capsys.readouterr().out
+    assert "Contract source unavailable" in out and "neither service has verified source" not in out
+
+
+def test_silent_no_files_says_the_cause_is_not_established(monkeypatch, tmp_path):
+    o = lookup(monkeypatch, tmp_path, 0, None, getcode_output="")
+    text = cd.describe_source_lookup(o)
+    assert "not established" in text and "neither service has verified source" not in text
+
+
+def test_an_unreachable_sourcify_with_a_silent_explorer_is_connectivity_not_absence(monkeypatch, tmp_path):
+    o = lookup(monkeypatch, tmp_path, source_fetcher.SourceUnavailable("connection refused"), None, getcode_output="")
+    assert o["cause"] == "lookup_unreachable"
+
+
+def test_the_tool_output_is_bounded_and_scrubbed_of_the_key(monkeypatch, tmp_path):
+    monkeypatch.setenv("ETHERSCAN_API_KEY", KEY)
+    o = lookup(monkeypatch, tmp_path, 0, None, getcode_output=f"Error! Invalid API Key {KEY} " + "x" * 5000)
+    assert KEY not in repr(o) and len(o["explorer"]) < 400 and o["cause"] == "explorer_credentials"
+
+
+def test_a_source_success_after_a_noisy_zero_exit_is_still_found(monkeypatch, tmp_path):
+    o = lookup(monkeypatch, tmp_path, 0, None, getcode_files=True, getcode_output="Error! Invalid API Key (but files were written)")
+    assert o["cause"] == "found"

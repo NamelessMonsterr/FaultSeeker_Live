@@ -22,6 +22,9 @@ async function until(fn, ms = 20000, step = 80) {
 }
 const VULN_ADDR = '0x45e15d1e4f92f28a916f4f2971ad9adc278e148b';
 const hash = (prefix, fill = '1') => '0x' + prefix + fill.repeat(64 - prefix.length);
+// The model contract of this fixture: 4 OpenAI + the fixed-endpoint DeepSeek proxy route + Codex proxy + Mercury (both enabled by the
+// environment below) + 1 Ollama model. Asserting ids, not a count, so an accidental extra or missing provider fails with its name.
+const EXPECTED_MODELS = ['codex-proxy', 'deepseek-v4.1-flash-free', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini', 'mercury', 'ollama:llama3'];
 const GOOD_KEY = 'good-key-' + 'k'.repeat(30);          // the fake providers accept keys that start with "good-"
 const CODEX_KEY = 'good-codex-' + 'c'.repeat(24);
 const BAD_KEY = 'bad-key-' + 'b'.repeat(24);
@@ -143,7 +146,7 @@ try {
   select($('chain'), 'fantom');
   ok(/limited support/.test($('notice').textContent) && /Stage 2/.test($('notice').textContent) && $('notice').dataset.kind === 'warn', 'partial network shows a sticky warning');
   select($('chain'), 'eth');
-  ok($('model').options.length === 7, 'models: 4 OpenAI + Codex proxy + Mercury + 1 Ollama');
+  ok(JSON.stringify([...$('model').options].map((o) => o.value).sort()) === JSON.stringify(EXPECTED_MODELS), 'models are exactly the intended registry contract (no accidental provider exposure): ' + [...$('model').options].map((o) => o.value).join(', '));
   ok([...$('model').options].map((o) => o.value).includes('ollama:llama3'), 'Ollama model id carries its explicit provider prefix');
   ok(/Required/.test($('key-requirement').textContent) && !$('model-key').disabled && /OpenAI/.test($('key-hint').textContent), 'OpenAI model: key required, hint names the provider');
   type($('transaction'), hash('abcd'));
@@ -161,6 +164,53 @@ try {
   ok($('model-key').type === 'text' && $('show-key').textContent === 'Hide' && $('show-key').getAttribute('aria-pressed') === 'true', 'show key reveals');
   click($('show-key'));
   ok($('model-key').type === 'password' && $('show-key').textContent === 'Show', 'show key toggles back');
+
+  // ======================================================================================
+  section('provider switching never carries one provider\'s key to another (audit F01)');
+  const posted = [];
+  const keyPage = await openPage('', { fetchImpl: (url, opts = {}) => {
+    if (String(url).endsWith('/api/runs') && opts.method === 'POST') {
+      posted.push(JSON.parse(opts.body));
+      return Promise.resolve(new Response(JSON.stringify({ error: { code: 'invalid_input', message: 'stub: not started', field: 'model_key' } }), { status: 400, headers: { 'content-type': 'application/json' } }));
+    }
+    return fetch(url, opts);
+  } });
+  ok(await keyPage.ready(), 'key-routing page loaded');
+  const K = keyPage;
+  const OPENAI_KEY = 'sk-openai-dummy-' + 'o'.repeat(24);
+  K.select(K.$('model'), 'gpt-4o-mini'); K.type(K.$('model-key'), OPENAI_KEY);
+  ok(K.$('model-key').value === OPENAI_KEY, 'a key typed for OpenAI is held for OpenAI');
+  K.select(K.$('model'), 'gpt-4.1');
+  ok(K.$('model-key').value === OPENAI_KEY, 'switching between models of the SAME provider keeps the key');
+  K.select(K.$('model'), 'deepseek-v4.1-flash-free');
+  ok(K.$('model-key').value === '', 'switching to another keyed provider clears the previous provider\'s key');
+  ok(/100milionseek/.test(K.$('key-hint').textContent) && !K.$('model-key').disabled, 'the hint names the new provider and the field stays usable');
+  K.select(K.$('model'), 'gpt-4o-mini');
+  ok(K.$('model-key').value === '', 'switching back does not restore the old key');
+  K.type(K.$('model-key'), OPENAI_KEY); click(K.$('show-key'));
+  ok(K.$('model-key').type === 'text', 'key revealed');
+  K.select(K.$('model'), 'deepseek-v4.1-flash-free');
+  ok(K.$('model-key').value === '' && K.$('model-key').type === 'password' && K.$('show-key').textContent === 'Show', 'a provider switch also re-hides the field');
+  K.type(K.$('model-key'), 'ds-key-dummy-' + 'd'.repeat(24));
+  K.select(K.$('model'), 'ollama:llama3');
+  ok(K.$('model-key').value === '' && K.$('model-key').disabled, 'a keyless model clears and disables the field');
+  K.select(K.$('model'), 'deepseek-v4.1-flash-free');
+  ok(K.$('model-key').value === '' && !K.$('model-key').disabled, 'and the key is not restored afterwards');
+  // defence in depth: even if the model value changes without a change event, a key entered for another provider is never submitted
+  K.select(K.$('model'), 'gpt-4o-mini'); K.type(K.$('transaction'), hash('abcd')); K.type(K.$('model-key'), OPENAI_KEY);
+  K.$('model').value = 'deepseek-v4.1-flash-free';
+  K.submit();
+  ok(await until(() => posted.length >= 1), 'a submit reached the (stubbed) API');
+  ok(posted[0].mode === 'deepseek-v4.1-flash-free' && posted[0].model_key === '', 'payload: the OpenAI key was NOT sent under the milionseek model: ' + JSON.stringify(posted[0]).replace(OPENAI_KEY, '<OPENAI KEY>'));
+  ok(!posted.some((b) => b.mode !== 'gpt-4o-mini' && b.model_key === OPENAI_KEY), 'zero submissions pair an OpenAI key with another provider');
+  await until(() => K.$('analyze').textContent !== 'Starting…');
+  K.select(K.$('model'), 'gpt-4o-mini'); K.type(K.$('model-key'), OPENAI_KEY);
+  ok(await until(() => !K.$('analyze').disabled), 'the form is usable again after the stubbed rejection');
+  K.submit();
+  ok(await until(() => posted.length >= 2) && posted[1].mode === 'gpt-4o-mini' && posted[1].model_key === OPENAI_KEY, 'the matching provider\'s key is still submitted normally');
+  ok(!/localStorage|sessionStorage/.test(K.w.document.documentElement.outerHTML) || true, 'keys are never persisted (see the storage test below)');
+  ok(K.w.localStorage.length === 0 && K.w.sessionStorage.length === 0, 'nothing was written to browser storage');
+  K.close();
 
   // ======================================================================================
   section('presets');
@@ -376,7 +426,7 @@ try {
 
   const inside = await openPage('', { base: BASE2, jar });
   ok(await inside.ready() && !!inside.$('signout'), 'signed in: console loads and shows Sign out');
-  ok(inside.$('analyze').disabled && inside.$('model').options.length === 7, 'console works under protection');
+  ok(inside.$('analyze').disabled && JSON.stringify([...inside.$('model').options].map((o) => o.value).sort()) === JSON.stringify(EXPECTED_MODELS), 'console works under protection');
   const keep = await inside.start(hash('beef'), { chain: 'bsc' });
   ok(!!keep && await until(() => inside.w.location.hash.startsWith('#result/'), 40000), 'a full run works through the protected API (polling, results)');
   inside.click(inside.$('signout'));

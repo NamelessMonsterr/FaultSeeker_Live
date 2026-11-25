@@ -182,6 +182,9 @@ select { appearance: none; padding-right: 34px; cursor: pointer;
 .step-state { display: block; font: 11px/1.6 var(--mono); color: var(--muted); letter-spacing: 0.04em; }
 .step[data-status="active"] .step-state { color: var(--cyan); }
 .step[data-status="failed"] .step-state { color: var(--coral); }
+.step[data-status="cancelled"] .step-marker, .step[data-status="interrupted"] .step-marker { border-color: var(--amber); background: var(--amber); color: #2b1d02; }
+.step[data-status="cancelled"] .step-marker::after, .step[data-status="interrupted"] .step-marker::after { content: "–"; }
+.step[data-status="cancelled"] .step-state, .step[data-status="interrupted"] .step-state { color: var(--amber); }
 @keyframes ring { 0% { box-shadow: 0 0 0 0 rgba(67, 212, 228, .45); } 100% { box-shadow: 0 0 0 9px rgba(67, 212, 228, 0); } }
 
 .workspace { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 20px; align-items: start; }

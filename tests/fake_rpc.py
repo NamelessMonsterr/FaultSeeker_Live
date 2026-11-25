@@ -65,6 +65,11 @@ class FakeServer:
         self.failures_left = 0
         self.sourcify = {}            # "chainId/address" -> response dict (404 when absent)
         self.method_errors = {}       # JSON-RPC method -> error message the node answers with
+        self.chain_id = 1             # what eth_chainId answers (1 = Ethereum, 56 = BNB Smart Chain)
+        self.chain_id_raw = "unset"   # when not "unset": the exact eth_chainId result to return (None / garbage), for malformed-id tests
+        self.eth_call_blocks = []     # block tag of every eth_call, to assert token metadata is read at the transaction's block
+        self.historical_calls_fail = False   # eth_call at any block other than "latest" answers with a pruned-state error
+        self.token_decimals_fail = False     # eth_call for decimals() reverts (a token without decimals())
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -109,8 +114,15 @@ class FakeServer:
                     result = {"number": params[0], "timestamp": hex(1_700_000_000)}
                 elif method == "eth_blockNumber":
                     result = "0x6e"
+                elif method == "eth_chainId":
+                    result = hex(outer.chain_id) if outer.chain_id_raw == "unset" else outer.chain_id_raw
                 elif method == "eth_call":
                     to, data = params[0]["to"], params[0]["data"]
+                    outer.eth_call_blocks.append(params[1] if len(params) > 1 else None)
+                    if outer.historical_calls_fail and (len(params) < 2 or params[1] != "latest"):
+                        return self._send(200, {"jsonrpc": "2.0", "id": body["id"], "error": {"message": "missing trie node (historical state is not available)"}})
+                    if outer.token_decimals_fail and data == "0x313ce567":
+                        return self._send(200, {"jsonrpc": "2.0", "id": body["id"], "error": {"message": "execution reverted"}})
                     if to == TOKEN and data == "0x313ce567":
                         result = "0x" + w(6)
                     elif to == TOKEN and data == "0x95d89b41":
