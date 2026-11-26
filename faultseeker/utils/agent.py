@@ -1,5 +1,6 @@
 import abc
 import ast
+from contextlib import contextmanager
 from contextvars import ContextVar
 import json
 from typing import Dict, List, Any, Union
@@ -9,7 +10,7 @@ from openai import OpenAI
 import os
 from faultseeker.budget import BudgetExceeded, InputBudget, Part, fit_parts
 from faultseeker.providers import ProviderConfigError, ResolvedModel, load_registry
-from time import sleep
+from time import monotonic, sleep
 from datetime import datetime
 
 
@@ -27,7 +28,7 @@ class ProviderFailure(ModelResponseError):
     """The provider call failed, or answered without usable text (null, empty or non-text content). This is a provider
     failure, never a model answer: it can not be read as "yes", "not adequate" or any other reply.
 
-    kind: call_failed | null_content | empty_content | non_text_content. The message never quotes the provider's reply."""
+    kind: call_failed | null_content | empty_content | non_text_content | deadline. The message never quotes the provider's reply."""
 
     def __init__(self, kind: str, message: str):
         super().__init__(message)
@@ -47,8 +48,59 @@ class InputLimitExceeded(ProviderFailure):
 
 
 # Pauses before each re-ask when the provider answered 200 but with unusable content (null / empty / non-text).
-# Requests that raise are left to the client's own retry policy (max_retries in the provider registry).
-CONTENT_RETRY_DELAYS = (1.0, 3.0)
+CONTENT_RETRY_DELAYS = (1.0, 3.0, 8.0)
+# Pauses before each re-send of a request that RAISED for a transient reason (timeout, connection error, HTTP 408/409/425/429/5xx).
+# Permanent errors (400, 401, 403, 404, 422, ...) are never retried. Single-request operations (query_json_once) are never retried here.
+TRANSIENT_RETRY_DELAYS = (2.0, 6.0, 15.0)
+
+# Wall-clock budget of the current stage/candidate (a monotonic deadline). Once it has passed no further provider request is started
+# and the failure is terminal, so a flaky provider cannot keep a run silent for tens of minutes.
+_DEADLINE = ContextVar("faultseeker_deadline", default=None)
+
+
+@contextmanager
+def deadline(seconds):
+    """Limits every provider request started inside the block to `seconds` of wall clock (nesting keeps the earlier deadline)."""
+    when = monotonic() + float(seconds)
+    current = _DEADLINE.get()
+    token = _DEADLINE.set(when if current is None else min(current, when))
+    try:
+        yield
+    finally:
+        _DEADLINE.reset(token)
+
+
+def remaining_seconds():
+    """Seconds left of the current deadline, or None when there is none."""
+    when = _DEADLINE.get()
+    return None if when is None else when - monotonic()
+
+
+def describe_provider_exception(exc: BaseException):
+    """(label, status, transient) of an exception raised by a provider call. The label is the class name and, for an HTTP error, the
+    status code; it never contains the response body or any secret. transient says whether sending the same request again can help."""
+    name = type(exc).__name__
+    status = getattr(exc, "status_code", None)
+    if not isinstance(status, int):
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+        status = status if isinstance(status, int) else None
+    label = f"{name} HTTP {status}" if status else name
+    if status is not None:
+        return label, status, status in (408, 409, 425, 429) or 500 <= status <= 599
+    lowered = name.lower()
+    transient = any(w in lowered for w in ("timeout", "connect", "connection", "remoteprotocol", "readerror", "writeerror", "pooltimeout",
+                                           "incompleteread", "brokenpipe", "eof"))
+    return label, None, transient or isinstance(exc, (TimeoutError, ConnectionError))
+
+
+def _body_prefix(exc: BaseException, limit: int = 160) -> str:
+    """The first characters of an HTTP error body, for the technical log only (the run's redactor scrubs known secrets)."""
+    response = getattr(exc, "response", None)
+    text = getattr(response, "text", None)
+    if not isinstance(text, str):
+        text = repr(getattr(exc, "body", "") or "")
+    return " ".join(text.split())[:limit]
 
 # Scoped to the current execution context: a strict single-request operation
 # must not trigger nested content retries in any real provider agent.
@@ -162,31 +214,46 @@ class AbstractAgent(abc.ABC):
         self.memory.append({"role": "user", "content": user_message})
         failure = None
 
-        retry_count = (
-            0
-            if _STRICT_SINGLE_PROVIDER_REQUEST.get()
-            else len(CONTENT_RETRY_DELAYS)
-        )
+        single = _STRICT_SINGLE_PROVIDER_REQUEST.get()
+        content_retries = 0 if single else len(CONTENT_RETRY_DELAYS)
+        transient_retries = 0 if single else len(TRANSIENT_RETRY_DELAYS)
+        content_used = transient_used = 0
 
-        for attempt in range(retry_count + 1):
-            if attempt:
-                sleep(CONTENT_RETRY_DELAYS[attempt - 1])
+        def out_of_time(delay=0.0):
+            left = remaining_seconds()
+            return left is not None and left <= delay + 1.0
 
+        while True:
+            if out_of_time():
+                self.memory.append({"role": "assistant", "content": ''})
+                raise ProviderFailure("deadline", "the wall-clock budget for this stage ended before the provider answered")
             try:
                 content = call()
-            except Exception:
+            except Exception as exc:
                 traceback.print_exc()
+                label, status, transient = describe_provider_exception(exc)
+                print(f"Provider call failed: {label}" + (f" body={_body_prefix(exc)!r}" if status else ""), flush=True)
+                if transient and transient_used < transient_retries:
+                    delay = TRANSIENT_RETRY_DELAYS[transient_used]
+                    if not out_of_time(delay):
+                        transient_used += 1
+                        print(f"         retrying the provider request in {delay:g}s ({transient_used}/{transient_retries})", flush=True)
+                        sleep(delay)
+                        continue
                 self.memory.append({"role": "assistant", "content": ''})
-                raise ProviderFailure(
-                    "call_failed",
-                    "the provider call failed"
-                ) from None
+                raise ProviderFailure("call_failed", f"the provider call failed ({label})") from None
 
             try:
                 text = self._require_text(content)
             except ProviderFailure as exc:
                 failure = exc
-                continue
+                if content_used < content_retries:
+                    delay = CONTENT_RETRY_DELAYS[content_used]
+                    if not out_of_time(delay):
+                        content_used += 1
+                        sleep(delay)
+                        continue
+                break
 
             self.memory.append({"role": "assistant", "content": text})
             return text
@@ -445,10 +512,15 @@ class GPTAgent(AbstractAgent):
         self._enforce_budget(user_message)
 
         def call():
+            extra = {}
+            left = remaining_seconds()
+            if left is not None:                       # never wait longer than the stage has left
+                extra['timeout'] = max(5.0, min(float(getattr(getattr(self.resolved, 'provider', None), 'timeout_seconds', 120.0)), left))
             completion = self._client.chat.completions.create(
                 messages=self._truncate_history(self.memory),
                 model=self.model,
-                **self._request_params(temperature)
+                **self._request_params(temperature),
+                **extra
             )
             choices = getattr(completion, 'choices', None)
             return choices[0].message.content if choices else None       # no choices counts as no content

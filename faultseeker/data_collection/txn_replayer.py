@@ -44,14 +44,14 @@ class TransactionReplayer:
     def transaction_replay(txn_hash, chain):
         """Execute transaction replay using cast command.
 
-        The RPC endpoint is the foundry.toml alias for ``chain`` unless the FAULTSEEKER_RPC_URL environment variable is
+        The RPC endpoint is the foundry.toml alias for ``chain`` unless FAULTSEEKER_RPC_URL (or the operator's FAULTSEEKER_DEFAULT_RPC_<CHAIN>) is
         set (the web server sets it per run for custom endpoints). The URL is never printed because it may embed a
         provider key. cast runs with an empty temporary HOME and a minimal environment so its output does not depend on
         a warm signature cache; function identity is normalised in the trace parser either way (utils/selectors.py).
         """
         import shutil
         import tempfile
-        custom_rpc = os.environ.get('FAULTSEEKER_RPC_URL', '').strip()
+        custom_rpc = rpc_client.configured_endpoint(chain)
         rpc_target = custom_rpc or chain
         command = ["cast", "run", "--quick", txn_hash, '--rpc-url', rpc_target]
 

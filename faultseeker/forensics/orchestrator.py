@@ -6,6 +6,7 @@ from faultseeker.data_collection.txn_info_collector import TransactionInfoCollec
 from faultseeker.forensics.trace_analyzer import TraceAnalyzer
 from faultseeker.forensics.address_classifier import AddressClassifier
 from faultseeker.forensics.result import ForensicsResult
+from faultseeker.utils.agent import deadline
 from faultseeker.utils.utils import build_agent
 
 
@@ -91,7 +92,33 @@ class ForensicsOrchestrator:
                     
 
     
+    @staticmethod
+    def _stage_seconds():
+        """Wall-clock budget of Stage 1's model-calling steps: FAULTSEEKER_STAGE1_SECONDS (60-7200), default 900 (15 minutes)."""
+        raw = os.environ.get('FAULTSEEKER_STAGE1_SECONDS', '').strip()
+        try:
+            value = int(raw) if raw else 900
+        except ValueError:
+            value = 900
+        return min(max(value, 60), 7200)
+
     def run(self, txn_hash: str, chain: str):
+        with deadline(self._stage_seconds()):
+            return self._run(txn_hash, chain)
+
+    @staticmethod
+    def _preflight(txn_hash: str, chain: str) -> bool:
+        """False, after printing the failure in the collection format, when the endpoint cannot serve this run (wrong network, unknown
+        transaction, pruned history, unreachable). Runs before the replay so an unusable endpoint fails in seconds."""
+        from faultseeker.data_collection import rpc_client, rpc_collector
+        try:
+            rpc_collector.preflight(rpc_client.RpcClient(rpc_client.resolve_endpoint(chain)), chain, txn_hash)
+            return True
+        except rpc_client.RpcError as exc:
+            print(f"RPC collection failed ({exc.kind}): {exc.message}", flush=True)
+            return False
+
+    def _run(self, txn_hash: str, chain: str):
         # Initialize state
         self.address_inspected = {}
         self.same_funciton_calls = {}
@@ -107,6 +134,10 @@ class ForensicsOrchestrator:
         self.txn_hash = txn_hash
 
         start = time.time()
+
+        print("      → Checking the RPC endpoint (network, transaction, archive state)...", flush=True)
+        if not self._preflight(txn_hash, chain):
+            return None
 
         # Collect transaction data using refactored methods
         print("      → Collecting transaction sequence...")

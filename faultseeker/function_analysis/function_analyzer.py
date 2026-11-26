@@ -15,7 +15,7 @@ from faultseeker.prompts.function_analysis import (
     LocalTaskPrompts,
 )
 from faultseeker.budget import Part, REQUIRED
-from faultseeker.utils.agent import AbstractAgent, InputLimitExceeded, ModelResponseError, ProviderFailure
+from faultseeker.utils.agent import AbstractAgent, InputLimitExceeded, ModelResponseError, ProviderFailure, deadline, remaining_seconds
 from faultseeker.utils.evidence import normalize_confidence, normalize_evidence
 from faultseeker.utils.identity import IdentityError, resolve_identity
 from faultseeker.utils.solidity_selectors import function_matches_selector, is_bare_selector
@@ -785,6 +785,10 @@ class FunctionAnalyzer:
         completed_steps, last_error, completed, stopped = 0, None, False, 'iteration limit'
         while True:
             i += 1
+            left = remaining_seconds()
+            if left is not None and left <= 0:
+                stopped = 'wall-clock'
+                break
             try:
                 self._select_task()
                 self._perform_task()
@@ -810,7 +814,9 @@ class FunctionAnalyzer:
                 # The provider gave no usable text (already re-asked by the agent). That is neither "adequate" nor "not
                 # adequate": the candidate stops here, as a provider failure, instead of burning the iteration cap.
                 # An input-budget refusal is the application's own limit, not a provider failure, and is named as such.
-                last_error, stopped = exc, 'input budget' if isinstance(exc, InputLimitExceeded) else 'provider'
+                last_error = exc
+                stopped = ('input budget' if isinstance(exc, InputLimitExceeded)
+                           else 'wall-clock' if getattr(exc, 'kind', '') == 'deadline' else 'provider')
                 break
 
             except CandidateIncomplete as exc:
@@ -831,6 +837,7 @@ class FunctionAnalyzer:
                 'iteration limit': f"iteration limit ({i}) reached without an adequacy confirmation",
                 'provider': "stopped by a provider failure without an adequacy confirmation",
                 'input budget': "stopped because a request did not fit the model input budget (an application limit, not a provider outage)",
+                'wall-clock': "stopped because the candidate's wall-clock budget ended (an application limit; the provider was too slow or kept failing)",
             }.get(stopped, "stopped by an error without an adequacy confirmation")
 
             detail = f"{reason} after {completed_steps} completed step(s)"
@@ -1311,6 +1318,16 @@ class FunctionAnalyzer:
             setattr(self, field, deepcopy(value))
 
 
+    @staticmethod
+    def _candidate_seconds():
+        """Wall-clock budget of one candidate attempt: FAULTSEEKER_CANDIDATE_SECONDS (30-7200), default 900 (15 minutes)."""
+        raw = os.environ.get('FAULTSEEKER_CANDIDATE_SECONDS', '').strip()
+        try:
+            value = int(raw) if raw else 900
+        except ValueError:
+            value = 900
+        return min(max(value, 30), 7200)
+
     def _run_candidate(self, identities, label):
         """Run a candidate with bounded real attempts and isolated per-attempt state.
 
@@ -1338,7 +1355,8 @@ class FunctionAnalyzer:
             self._restore_candidate_attempt_state(baseline)
 
             try:
-                self._function_analysis_init()
+                with deadline(self._candidate_seconds()):        # a stuck or flaky provider cannot hold a candidate indefinitely
+                    self._function_analysis_init()
 
             except ProviderFailure as exc:
                 # Provider failures are terminal and must never trigger another attempt.

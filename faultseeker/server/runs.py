@@ -30,6 +30,7 @@ import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from faultseeker import chains
 from . import progress, results, settings
 from .security import RUN_ID_RE, Redactor
 from .worker import MARKER
@@ -93,6 +94,10 @@ class Run:
             "last_activity_at": self.last_activity_at, "error": self.error,
             "stages": self.stages, "current": self.current, "summary": self.summary,
         }
+
+
+def chain_env(chain: str) -> str:
+    return re.sub(r'[^A-Za-z0-9]', '_', str(chain or '')).upper() or '<CHAIN>'
 
 
 class RunManager:
@@ -184,6 +189,7 @@ class RunManager:
         """Everything that must never appear in logs, errors, stored metadata or API responses."""
         out = [model_key, effective_key, rpc_url, os.environ.get("ETHERSCAN_API_KEY", "").strip(), settings.ACCESS_CODE]
         out += [os.environ.get(n, "").strip() for n in reg.all_key_envs()]      # server-held keys of every provider
+        out += [os.environ.get(f"FAULTSEEKER_DEFAULT_RPC_{c.upper()}", "").strip() for c in chains.CHAINS]   # operator RPC defaults may embed a key
         for provider in reg.providers.values():                                   # private endpoints are sensitive too
             if provider.type == "openai_compatible" and not provider.public_endpoint:
                 out.append((provider.base_url or os.environ.get(provider.base_url_env or "", "")).strip().rstrip("/"))
@@ -612,8 +618,12 @@ class RunManager:
             }
             code = {"not_successful": "tx_not_successful", "not_found": "tx_not_found",
                     "history_unavailable": "rpc_history_unavailable", "wrong_chain": "rpc_wrong_chain"}.get(kind, "rpc_failed")
-            return {"code": code, "message": detail,
-                    "hint": hints.get(kind, "Check the RPC connection (URL, key, rate limits) and run again.")}
+            hint = hints.get(kind, "Check the RPC connection (URL, key, rate limits) and run again.")
+            if kind in ("unreachable", "rejected") and run.rpc_mode == "server":
+                # The run used the SERVER's endpoint: that is the operator's configuration, not the user's mistake.
+                hint = ("The server's own RPC endpoint for this network did not work. Provide your own archive-capable RPC under "
+                        "“RPC connection”, or ask the operator to set FAULTSEEKER_DEFAULT_RPC_" + chain_env(run.chain) + " to an archive endpoint.")
+            return {"code": code, "message": detail, "hint": hint}
         if run.cast_error and ("Stage 1" in message or not message or "Forensics" in message):
             detail = run.cast_error
             hint = ("Replaying older transactions needs an archive-capable RPC. Provide one under "

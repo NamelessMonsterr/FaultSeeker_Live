@@ -75,6 +75,10 @@ def main():
                 "bar@0x" + "bb" * 20 + " (CandidateIncomplete: iteration limit (31) reached without an adequacy confirmation "
                 "after 1 completed step(s); last error ProviderDown: provider outage [redacted])"})
         sys.exit(1)
+    if mode == "server_rpc_dead":
+        say("RPC collection failed (unreachable): could not resolve binance.llamarpc.com (gaierror).")
+        marker({"event": "error", "type": "RuntimeError", "message": "Stage 1 (Forensics) failed to produce results"})
+        sys.exit(1)
     if mode == "wrong_chain":
         say("RPC collection failed (wrong_chain): This RPC endpoint reports chain ID 56, but the selected network (Ethereum) is chain ID 1. "
             "It is an endpoint for a different network.")

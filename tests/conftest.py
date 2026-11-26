@@ -120,3 +120,14 @@ def start_run(client, **kw):
     r = client.post("/api/runs", json=payload(**kw))
     assert r.status_code == 201, r.text
     return r.json()["id"]
+
+
+@pytest.fixture(autouse=True)
+def _no_real_provider_backoff(monkeypatch):
+    """The transient-retry pauses (2s, 6s, 15s) are real waits in production; the offline suite must not sleep through them."""
+    try:
+        import faultseeker.utils.agent as agent_module
+    except ImportError:                      # the minimal-requirements run
+        return
+    monkeypatch.setattr(agent_module, "TRANSIENT_RETRY_DELAYS", (0.0, 0.0, 0.0))
+    monkeypatch.setattr(agent_module, "CONTENT_RETRY_DELAYS", (0.0, 0.0, 0.0))        # same attempt counts as production, no real waiting

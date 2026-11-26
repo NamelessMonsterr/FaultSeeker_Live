@@ -207,13 +207,18 @@ def test_registry_params_are_passed_through_verbatim(tmp_path, monkeypatch):
     (429, {"error": {"message": "slow down", "type": "rate_limit_error"}}),
     (400, {"error": {"message": "Unsupported parameter: 'temperature'", "param": "temperature", "code": "unsupported_parameter"}}),
 ])
-def test_failed_calls_are_made_once_and_never_retried_or_rewritten(monkeypatch, status, error, capsys):
+def test_failed_calls_are_retried_only_when_transient_and_never_rewritten(monkeypatch, status, error, capsys):
+    # Changed after the live-test failures: a TRANSIENT failure (429, 5xx, timeout) is re-sent a bounded number of times with backoff
+    # (1 request + len(TRANSIENT_RETRY_DELAYS) retries); a permanent one (400, 401, 404, ...) is still sent exactly once. Parameters are
+    # never silently changed either way.
+    from faultseeker.utils import agent as agent_module
+    per_query = 1 + (len(agent_module.TRANSIENT_RETRY_DELAYS) if status in (408, 409, 425, 429) or status >= 500 else 0)
     with FakeProvider(chat_status=status, chat_error=error) as codex:
         agent = agent_for(monkeypatch, "codex-proxy", CODEX_PROXY_BASE_URL=codex.base_url, CODEX_PROXY_MODEL="m",
                           CODEX_PROXY_API_KEY=CODEX_KEY, CODEX_PROXY_TEMPERATURE="0.3")
         assert agent.query("hello", temperature=0, format="str") == "An error occurred."
         assert agent.query("hello", format="json") in ("An error occurred.", ["An error occurred."])   # list shape: see results.py
-        assert len(codex.chat_requests()) == 2, "exactly one HTTP call per query: no SDK retries, no second attempt"
+        assert len(codex.chat_requests()) == 2 * per_query, "bounded: one request, plus the transient retries only when the failure is transient"
         assert {r["body"].get("temperature") for r in codex.chat_requests()} == {0.3}, "parameters are not silently changed"
     assert "Error code" in capsys.readouterr().err        # the failure is printed (and later classified), not swallowed
 

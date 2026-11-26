@@ -88,10 +88,16 @@ def _foundry_alias(chain: str) -> str:
     return ""
 
 
-def resolve_endpoint(chain: str) -> str:
-    """HTTP(S) endpoint for `chain`: FAULTSEEKER_RPC_URL first, then the foundry.toml alias."""
+def configured_endpoint(chain: str) -> str:
+    """The endpoint that is NOT the foundry.toml alias, or '': the run's own FAULTSEEKER_RPC_URL first, then the operator's server-wide
+    default for this chain, FAULTSEEKER_DEFAULT_RPC_<CHAIN> (e.g. FAULTSEEKER_DEFAULT_RPC_ETH, set in the host environment, not in the repo)."""
     custom = os.environ.get("FAULTSEEKER_RPC_URL", "").strip()
-    url = custom or _foundry_alias(chain)
+    return custom or os.environ.get(f"FAULTSEEKER_DEFAULT_RPC_{str(chain).upper()}", "").strip()
+
+
+def resolve_endpoint(chain: str) -> str:
+    """HTTP(S) endpoint for `chain`: the run's endpoint, then the operator's per-chain default, then the foundry.toml alias."""
+    url = configured_endpoint(chain) or _foundry_alias(chain)
     if not url:
         raise RpcError("no_endpoint", f"No RPC endpoint is configured for '{chain}'. Provide one under RPC connection.")
     return http_url(url)

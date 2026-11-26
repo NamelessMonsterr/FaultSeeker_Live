@@ -414,15 +414,14 @@ FAULTSEEKER_TEST_FOUNDRY_DIRS=/f/1.4.4:/f/1.5.1:/f/1.9.0 python -m pytest tests 
 
 ### Results
 
-**Fresh results for this revision (main2 audit-fix build; run offline from the working tree; nothing here is a live ETH/BSC result):**
+**Fresh results for this revision (live-failure follow-up build; run offline from the working tree; nothing here is a live ETH/BSC result):**
 
 | Run | Conditions | Result |
 |---|---|---|
-| Python suite | Python **3.11.15** (uv-managed), full `requirements.txt` + `requirements-dev.txt`, **no Foundry** on PATH. `python -m pytest tests -q -p no:cacheprovider -rs` | **954 passed, 0 failed, 5 skipped**. Skips: 4 in `test_cast_integration.py` (Foundry `cast` + `anvil` not installed) and 1 in `test_selectors.py:34` (`cast` not installed) |
-| Browser suite | Node v22.23.4, jsdom 31, server on Python 3.11.15 with the fake worker and local fake providers. `cd tests/ui && npm install && npm test` | **275 checks passed, 0 failed** |
-| Real browser | Headless Chromium 153 (npm `@sparticuz/chromium`) against the real server and fake worker: a cancelled run (new `cancelled` stage state), desktop 1280x900 and mobile 390x844 | Rendered and inspected by eye; no horizontal overflow. The key-routing fix (F01) and the other audit fixes have no visual change and are covered by jsdom and Python tests |
+| Python suite | Python **3.11.15** (uv-managed), full `requirements.txt` + `requirements-dev.txt`, **no Foundry** on PATH. `python -m pytest tests -q -p no:cacheprovider -rs` | **991 passed, 0 failed, 5 skipped**. Skips: 4 in `test_cast_integration.py` (Foundry `cast` + `anvil` not installed) and 1 in `test_selectors.py:34` (`cast` not installed) |
+| Browser suite | Node v22.23.4, jsdom 31, server on Python 3.11.15 with the fake worker and local fake providers. `cd tests/ui && npm install && npm test` | **275 checks passed, 0 failed** (no UI code changed in this revision) |
 
-The immediately previous revision (budgeting build) recorded 820 passed / 5 skipped (Python 3.11.15) and 258 browser checks.
+The immediately previous revision (audit-fix build) recorded 954 passed / 5 skipped (Python 3.11.15) and 275 browser checks.
 
 The Foundry integration tests (`test_cast_integration.py`) were **not run** here: Foundry is unavailable, so real-`cast` behaviour was not re-verified in this revision.
 
@@ -448,7 +447,29 @@ with an unreachable endpoint the chain check now stops the replay before `cast` 
 the replay-cache tests now supply a complete cast footer and a chain id (`test_pipeline_patches.py`, F03/F04); the model-registry contract tests now include the DeepSeek route and assert model ids instead of a count (`test_api.py`, `test_providers.py`, `ui.test.mjs`, F11);
 the fake node answers `eth_chainId`, so the RPC tests state which chain their node serves (setup only).
 
+Changed again in the live-failure follow-up: `test_providers.py::test_failed_calls_are_retried_only_when_transient_and_never_rewritten` (formerly "made once and never retried") now expects the bounded transient retry for 429/5xx and a single request for permanent errors such as 400; parameters are still never rewritten.
+The test conftest zeroes the retry pauses (same attempt counts, no real waiting).
+
 Key package versions are whatever pip resolved on the build date; they were not pinned for this run.
+
+### Live-test failure follow-up (main2 831ca1d)
+
+Both live runs passed Stages 1-4 and ended at Stage 5 on the DeepSeek proxy (null content on ETH, "provider call failed" on BSC), failing closed with no fake result.
+What changed in this revision, and what did not:
+
+| Observation | Change |
+|---|---|
+| A raised error (timeout, 503, 429) was never retried | Bounded backoff for transient errors only (see the Provider request machine); permanent HTTP errors are not retried |
+| Null content ended after 2 re-asks | 3 re-asks with backoff (1s, 3s, 8s) |
+| The failure said only "the provider call failed" | The message and the technical log now say, for example, `InternalServerError HTTP 503` or `APITimeoutError`, plus a bounded body prefix in the log |
+| A stuck Stage 5 could stay silent for 20+ minutes | Wall-clock budgets for Stage 1 and for each candidate; a candidate that runs out of time ends as a recorded failure |
+| Server default RPCs unusable | The operator can set `FAULTSEEKER_DEFAULT_RPC_<CHAIN>` (for example `FAULTSEEKER_DEFAULT_RPC_ETH`, `..._BSC`) in the host environment: precedence is the run's own RPC, then this default, then the `foundry.toml` alias. The value is redacted from logs. An archive preflight now fails an unusable endpoint before the replay, and a run that used the server's endpoint says so in its hint |
+| Second submit blocked | A second submit while a run is active already returns a `busy` notice with an Open button (covered by the existing browser test); a run held up by a stuck stage is now bounded by the budgets above, and Cancel stops it |
+| Run history lost on restart | Runs are stored under `FAULTSEEKER_DATA_DIR`; on a host without a persistent disk they are lost on restart. Point it at a mounted disk to keep them |
+
+Not changed, on purpose: the `foundry.toml` aliases (the BSC default `binance.llamarpc.com` is dead for the reporter; no replacement endpoint could be verified offline), the DeepSeek registry entry, and the capture/replay feature.
+Not built: resuming from saved Stage 1-4 results and an automatic fallback provider. Both change what "a fresh run" means (the acceptance test requires a fresh run) and the fallback needs a second per-run key in the UI; they need a decision before building.
+No live run was made, so nothing here shows that DeepSeek, OpenAI or Mercury completes Stage 5, or what detection quality is.
 
 ### Audit fixes (main2 audit, findings F01-F11 and R01-R02)
 
@@ -496,6 +517,9 @@ These flows were implicit (flags, list lengths, substring tests). They are now e
 | **Source lookup** (`ContractDownloader.lookup_outcomes`) | Sourcify → explorer API → found \| unverified \| credentials \| rate-limited \| unreachable \| no_files \| unknown | A zero exit with no files is classified by what the tool printed; an empty zero exit is `no_files` (absence not established), not "unverified"; keys are scrubbed everywhere; found source is reported as latest, not block-pinned |
 | **Run terminal state** (`RunManager._decide` → `_settle`) | running → completed \| failed \| cancelled \| interrupted | Exactly one settle step: no stage stays `active` (it becomes `failed` / `cancelled` / `interrupted`), completed stages stay `done`, the headline no longer says "Starting the pipeline", and a terminal event is recorded; precedence is shutdown > cancel > timeout > fatal > result |
 | **RPC redirects and addresses** (`rpc_client._opener`) | request → connect to a validated public address → response \| 3xx refused | Redirects are never followed; when the server enforces public endpoints (the default) every DNS answer must be public and the connection is pinned to the validated address; the foundry `cast` subprocess is not covered by this check (see limitations) |
+| **Provider request** (`AbstractAgent._chat_strict`) | send → ok \| raised: transient (timeout, connection, HTTP 408/409/425/429/5xx) → backoff 2s, 6s, 15s then fail \| raised: permanent (400/401/403/404/422) → fail at once \| null/empty content → re-ask 1s, 3s, 8s then fail | Transient and content retries are counted separately and bounded; single-request operations (`query_json_once`) are never retried here; the failure message and the technical log name the exception class and HTTP status (never the body in the message); no request starts after the stage deadline |
+| **Wall-clock budgets** (`agent.deadline`) | Stage 1 (`FAULTSEEKER_STAGE1_SECONDS`, 900) and each candidate attempt (`FAULTSEEKER_CANDIDATE_SECONDS`, 900) run inside a monotonic deadline | A retry whose pause would pass the deadline is not started; the per-request timeout never exceeds what is left; a candidate that runs out of time is a recorded failed candidate ("wall-clock budget", not a provider outage), never silent and never dropped |
+| **RPC preflight** (`rpc_collector.preflight`, run before the replay) | chain id → transaction known → state at the block before it | A pruned, wrong-network, unknown-hash or unreachable endpoint fails in seconds with its own message and archive hint, before the expensive replay; a pending transaction is left to the collector |
 | **Stage 1 model replies** (`forensics/contracts.py`) | reply → typed value \| `ProviderFailure` \| `ForensicsModelError` | No `eval` anywhere (a test scans the package); an explicit `[]` of victims is valid, a provider failure or unusable reply is never "no victims" or a clean classification; `unknown`/`vulnerable` match in any letter case; one `query_json` per operation, no loop around it |
 | **Ranking** (`normalize`) | raw ranked entries → resolved to an accepted finding \| dropped (reason); ranking usable \| unranked fallback | A ranked key must resolve uniquely to an accepted finding (never invents one); optional ranking failure keeps valid findings (shown unranked) |
 | **Report** (`normalize`) | raw finding → accepted (valid identity + readable evidence) \| rejected | Raw objects, confidence fields, provider error sentinels and malformed values are never shown; junk is never promoted; rejected verdict entries, unusable evidence, limited coverage and shortened verdict input are surfaced as warnings |
@@ -531,6 +555,7 @@ Other implicit machines exist (run lifecycle, key validation, sessions, progress
 | `test_evidence_report_contract.py` | Readable evidence, junk never promoted, rejection and coverage warnings, confidence finiteness and range, evidence-type validation |
 | `test_input_limit.py` | Budget configuration and precedence, invalid overrides, the 10,237-character request under a restrictive and a sufficient budget, enforcement on every request path (system/history/tool messages, output reserve, multibyte text, Ollama), the defined reduction order, fail-closed required content, per-function and coverage propagation |
 | `test_audit_requests.py`, `test_audit_replay.py`, `test_audit_amounts.py`, `test_audit_terminal_state.py`, `test_audit_ssrf_provenance.py` | Audit findings F01-F10, R01, R02: streamed body cap and typed fields, replay acceptance / cache provenance / chain verification, unknown decimals and exact arithmetic, terminal run state, redirects and connect-time address checks, source provenance |
+| `test_provider_resilience.py`, `test_rpc_defaults_preflight.py` | Transient retry/backoff and exception labelling, wall-clock budgets (fake clock), per-chain RPC defaults and precedence, the archive preflight and its place before the replay |
 | `test_rpc_history.py` | Pruned-history versus genuinely unmined versus unrelated RPC errors, retry behaviour, run classification |
 | `test_source_lookup_cause.py` | Source lookup causes (credentials, unreachable, unverified, unknown), no key leak, evidence gap kept separate from execution failure |
 | `test_worker_error_publication.py` | Generic worker errors are sanitized in the API; detail only in the technical log |

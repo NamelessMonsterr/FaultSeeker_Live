@@ -46,6 +46,23 @@ def verify_chain(client: RpcClient, chain: str) -> int:
     return actual
 
 
+def preflight(client: RpcClient, chain: str, txn_hash: str) -> dict:
+    """Cheap checks, in order, BEFORE the expensive replay: the endpoint serves the selected network (eth_chainId), it knows the
+    transaction, and (for a mined transaction) it can answer a state query at the block BEFORE the transaction, which is what a
+    replay needs. A pruned or non-archive endpoint therefore fails here, in seconds, with the archive-RPC message."""
+    chain_id = verify_chain(client, chain)
+    tx = client.call("eth_getTransactionByHash", [txn_hash])
+    if not tx:
+        raise RpcError("not_found", "The RPC node does not know this transaction hash. Check the hash and the selected network.")
+    block = tx.get("blockNumber")
+    if block:
+        number = _int(block)
+        sender = tx.get("from")
+        if number > 0 and isinstance(sender, str) and re.fullmatch(r"0x[0-9a-fA-F]{40}", sender):
+            client.call("eth_getBalance", [sender, hex(number - 1)])      # history_unavailable if that state has been pruned
+    return {"chain_id": chain_id, "block_number": _int(block) if block else None}
+
+
 def _addr(topic_or_word: str) -> str:
     """Last 20 bytes of a 32-byte hex word, lower-case."""
     h = topic_or_word[2:] if topic_or_word.startswith("0x") else topic_or_word
